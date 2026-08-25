@@ -125,6 +125,24 @@
     <Compile Include="common\ProcessExplorer.Designer.cs">
       <DependentUpon>ProcessExplorer.cs</DependentUpon>
     </Compile>
+    <Compile Include="common\gamefinder\GameCandidate.cs" />
+    <Compile Include="common\gamefinder\IGameLibrarySource.cs" />
+    <Compile Include="common\gamefinder\GameScanContext.cs" />
+    <Compile Include="common\gamefinder\GameFinderScanner.cs" />
+    <Compile Include="common\gamefinder\SteamLibrarySource.cs" />
+    <Compile Include="common\gamefinder\EpicLibrarySource.cs" />
+    <Compile Include="common\gamefinder\VdfTextReader.cs" />
+    <Compile Include="common\gamefinder\SimpleJsonReader.cs" />
+    <Compile Include="common\gamefinder\ExecutableRules.cs" />
+    <Compile Include="common\gamefinder\ExecutablePicker.cs" />
+    <Compile Include="common\gamefinder\ExecutableEnumerator.cs" />
+    <Compile Include="common\gamefinder\ExecutablePickerFixture.cs" />
+    <Compile Include="common\GameFinder.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="common\GameFinder.Designer.cs">
+      <DependentUpon>GameFinder.cs</DependentUpon>
+    </Compile>
     <Compile Include="common\ProcessExplorerEntry.cs" />
     <Compile Include="common\ResolutionHelper.cs" />
     <Compile Include="common\ResolutionModeWrapper.cs" />
@@ -166,6 +184,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="common\VibranceSettings.resx">
       <DependentUpon>VibranceSettings.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="common\GameFinder.resx">
+      <DependentUpon>GameFinder.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>

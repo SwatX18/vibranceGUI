@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 using System.Xml.Linq;
 using System.Drawing;
+using System.IO;
 
 namespace vibrance.GUI.common
 {
@@ -14,6 +15,15 @@ namespace vibrance.GUI.common
         private GraphicsAdapter _graphicsAdapter;
         private ListViewItem _sender;
         private int _vibranceDefaultValue;
+        // The executable this dialog edits. Comes from the list items tag, "Change executable..." replaces it
+        private string _filePath;
+        // Carried through the dialog untouched, so saving does not erase what the game finder found out
+        private string _installDirectory;
+        private bool _isExecutableUnconfirmed;
+        // The designer text of labelTitle, kept so the title can be rebuilt for another executable
+        private string _labelTitlePrefix;
+        // Only set when we extracted the icon ourselves, the initial image belongs to the list views image list
+        private Image _extractedIconImage;
 
         public VibranceSettings(IVibranceProxy v, int minValue, int maxValue, int defaultValue, ListViewItem sender, ApplicationSetting setting, List<ResolutionModeWrapper> supportedResolutionList, GraphicsAdapter graphicsAdapter)
         {
@@ -25,8 +35,12 @@ namespace vibrance.GUI.common
             this._sender = sender;
             this._graphicsAdapter = graphicsAdapter;
             this._v = v;
+            this._filePath = sender.Tag == null ? string.Empty : sender.Tag.ToString();
+            this._installDirectory = setting == null ? null : setting.InstallDirectory;
+            this._isExecutableUnconfirmed = setting != null && setting.IsExecutableUnconfirmed;
+            this._labelTitlePrefix = this.labelTitle.Text;
             labelIngameLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, trackBarIngameLevel.Value);
-            this.labelTitle.Text += $@"""{sender.Text}""";
+            reloadTitle();
             this.pictureBox.Image = this._sender.ListView.LargeImageList.Images[this._sender.ImageIndex];
             this.cBoxResolution.DataSource = supportedResolutionList;
 
@@ -92,9 +106,110 @@ namespace vibrance.GUI.common
 
         public ApplicationSetting GetApplicationSetting()
         {
-            return new ApplicationSetting(_sender.Text, _sender.Tag.ToString(), this.trackBarIngameLevel.Value, 
-                (ResolutionModeWrapper)this.cBoxResolution.SelectedItem, this.checkBoxResolution.Checked, 
+            ApplicationSetting setting = new ApplicationSetting(resolveApplicationName(), _filePath, this.trackBarIngameLevel.Value,
+                (ResolutionModeWrapper)this.cBoxResolution.SelectedItem, this.checkBoxResolution.Checked,
                 this.trackBarBrightness.Value, this.trackBarContrast.Value, this.trackBarGamma.Value);
+            // The constructor above knows nothing about these two, they have to be assigned afterwards
+            setting.InstallDirectory = _installDirectory;
+            setting.IsExecutableUnconfirmed = _isExecutableUnconfirmed;
+            return setting;
+        }
+
+        private void buttonChangeExecutable_Click(object sender, EventArgs e)
+        {
+            using (OpenFileDialog dialog = new OpenFileDialog())
+            {
+                dialog.Title = "Select the executable of this game";
+                dialog.Filter = "Executable files (*.exe)|*.exe";
+                dialog.CheckFileExists = true;
+                string initialDirectory = resolveInitialDirectory();
+                if (initialDirectory != null)
+                {
+                    dialog.InitialDirectory = initialDirectory;
+                }
+
+                // Cancelling leaves the dialog completely untouched
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+
+                _filePath = dialog.FileName;
+                // The user just told us which executable it is, so it is not a guess of the game finder anymore
+                _isExecutableUnconfirmed = false;
+                reloadTitle();
+                reloadIcon();
+            }
+        }
+
+        private string resolveInitialDirectory()
+        {
+            try
+            {
+                // The install directory the game finder stored, so the picker opens inside the game
+                if (!string.IsNullOrEmpty(_installDirectory) && Directory.Exists(_installDirectory))
+                {
+                    return _installDirectory;
+                }
+
+                if (!string.IsNullOrEmpty(_filePath))
+                {
+                    string directory = Path.GetDirectoryName(_filePath);
+                    if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                    {
+                        return directory;
+                    }
+                }
+            }
+            catch (ArgumentException)
+            {
+                // A settings file may hold a path which is not valid anymore, let the dialog decide where to open
+            }
+
+            return null;
+        }
+
+        private void reloadTitle()
+        {
+            this.labelTitle.Text = _labelTitlePrefix + $@"""{resolveApplicationName()}""";
+        }
+
+        private void reloadIcon()
+        {
+            Image previousImage = _extractedIconImage;
+            try
+            {
+                Icon icon = Icon.ExtractAssociatedIcon(_filePath);
+                if (icon == null)
+                {
+                    return;
+                }
+
+                using (Bitmap extracted = icon.ToBitmap())
+                {
+                    // The same size the application list uses, so the icon does not suddenly shrink
+                    _extractedIconImage = new Bitmap(extracted, new Size(48, 48));
+                }
+                this.pictureBox.Image = _extractedIconImage;
+            }
+            catch (Exception)
+            {
+                // Keeping the previous icon is the only sane fallback, the executable itself is already selected
+                return;
+            }
+
+            // Only images this dialog created may be disposed, the initial one belongs to the list views image list
+            if (previousImage != null)
+            {
+                previousImage.Dispose();
+            }
+        }
+
+        private string resolveApplicationName()
+        {
+            // Never the display text of the list item: it may carry the "(?)" marker of an unconfirmed executable,
+            // and Name is the key which gets compared against the process name of the foreground window
+            return Path.GetFileNameWithoutExtension(_filePath);
         }
 
         private void checkBoxResolution_CheckedChanged(object sender, EventArgs e)

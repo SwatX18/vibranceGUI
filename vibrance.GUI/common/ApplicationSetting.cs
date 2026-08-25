@@ -15,6 +15,13 @@ namespace vibrance.GUI.common
         public bool IsResolutionChangeNeeded { get; set; }
         [XmlElement(IsNullable = true)]
         public ResolutionModeWrapper ResolutionSettings { get; set; }
+        // Install folder of the game as reported by the store. Null for manually added entries.
+        // Used as the initial directory of the "Change executable..." picker.
+        public string InstallDirectory { get; set; }
+        // True while the executable was inferred by the game finder and has never been seen in the
+        // foreground. Rendered as a "(?)" marker. Default false, so settings files written before
+        // this feature load unchanged.
+        public bool IsExecutableUnconfirmed { get; set; }
 
         public ApplicationSetting(){ }
 
