@@ -226,6 +226,14 @@ namespace vibrance.GUI.common
             StringBuilder sb = new StringBuilder(windowTextLength + 1);
             GetWindowTextA(hwnd, sb, sb.Capacity);
 
+            //one pid that is already in hand, three syscalls, once per foreground change. It is what
+            //lets a setting match on its install directory when the stored executable name is a guess
+            string imagePath;
+            if (!PathResolver.TryGetProcessImagePath((int)processId, out imagePath))
+            {
+                imagePath = null;
+            }
+
             try
             {
                 using (Process p = Process.GetProcessById((int)processId))
@@ -236,6 +244,7 @@ namespace vibrance.GUI.common
                         ProcessId = processId,
                         MainWindowTitle = p.MainWindowTitle,
                         ProcessName = p.ProcessName,
+                        ProcessImagePath = imagePath,
                         WindowText = sb.ToString()
                     };
                     GetInstance().DispatchWinEventHookEvent(e);

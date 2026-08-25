@@ -653,8 +653,17 @@ namespace vibrance.GUI.common
                 //indistinguishable from a broken feature - and from a wrong executable guess, which is
                 //exactly what the "(?)" marker exists to make visible. One double-click lowers it per game
                 ApplicationSetting setting = new ApplicationSetting(name, path, _maxTrackBarValue, null, false, 50, 50, 100);
-                //the constructor above knows nothing about these two, they have to be assigned afterwards
-                setting.InstallDirectory = candidate.InstallDirectory;
+                //the constructor above knows nothing about these two, they have to be assigned afterwards.
+                //The install directory is resolved through junctions here and only here - Steam libraries
+                //are junctioned often enough that a stored D:\Games\... would never prefix match the path
+                //Windows reports for the running game, and the foreground callback is no place for io
+                string installDirectory = PathResolver.ResolveFinalDirectoryPath(candidate.InstallDirectory);
+                //an installer is free to write "C:\Program Files (x86)" as its InstallLocation, and storing
+                //that would match nearly every program on the machine. Dropping it costs this entry its
+                //directory match and leaves it matching by name, which is what it did before this feature
+                setting.InstallDirectory = ApplicationSettingMatcher.IsSharedProgramDirectory(installDirectory)
+                    ? null
+                    : installDirectory;
                 setting.IsExecutableUnconfirmed = candidate.Confidence == ExecutableConfidence.Guessed;
 
                 //by mutation, never by reassignment: the proxy holds this very list instance
@@ -759,10 +768,19 @@ namespace vibrance.GUI.common
             _applicationSettings.RemoveAll(x => x != null && string.Equals(x.FileName, fileName, StringComparison.OrdinalIgnoreCase));
         }
 
+        //held in a field rather than written at the call site, so that the foreground callback does not
+        //allocate a delegate on every window switch
+        private static readonly Func<ApplicationSetting, bool> UnconfirmedOnly =
+            delegate(ApplicationSetting setting) { return setting.IsExecutableUnconfirmed; };
+
         /// <summary>
-        /// Clears the marker of a guessed executable the first time that executable really shows up in the
-        /// foreground. Runs on the ui thread inside the foreground callback, at the moment a game goes
-        /// fullscreen, so the common path is one boolean test and the save is left to the debounced worker.
+        /// Clears the marker of a guessed executable the first time the game it belongs to really shows up
+        /// in the foreground. Runs on the ui thread inside the foreground callback, at the moment a game
+        /// goes fullscreen, so the common path is one boolean test and the save is left to the debounced
+        /// worker.
+        /// The same match rule as the proxies use, deliberately: the marker warns that a guessed
+        /// executable might never activate the profile, and a process running from under the install
+        /// directory is proof that it does - whichever of the folder's executables Windows put in front.
         /// </summary>
         private void OnForegroundChangedConfirmExecutable(object sender, WinEventHookEventArgs e)
         {
@@ -771,9 +789,8 @@ namespace vibrance.GUI.common
                 return;
             }
 
-            ApplicationSetting setting = _applicationSettings.FirstOrDefault(
-                x => x.IsExecutableUnconfirmed &&
-                     string.Equals(x.Name, e.ProcessName, StringComparison.OrdinalIgnoreCase));
+            ApplicationSetting setting = ApplicationSettingMatcher.FindMatch(
+                _applicationSettings, e.ProcessName, e.ProcessImagePath, UnconfirmedOnly);
             if (setting == null)
             {
                 return;

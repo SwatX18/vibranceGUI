@@ -146,7 +146,7 @@ namespace vibrance.GUI.AMD
         {
             if (_applicationSettings.Count > 0)
             {
-                ApplicationSetting applicationSetting = _applicationSettings.FirstOrDefault(x => string.Equals(x.Name, e.ProcessName, StringComparison.OrdinalIgnoreCase));
+                ApplicationSetting applicationSetting = ApplicationSettingMatcher.FindMatch(_applicationSettings, e.ProcessName, e.ProcessImagePath);
                 if (applicationSetting != null)
                 {
                     Screen screen = Screen.FromHandle(e.Handle);

@@ -25,6 +25,7 @@ namespace vibrance.GUI
         private const string MessageBoxCaption = "vibranceGUI Error";
         private const string SelfTestMessageBoxCaption = "vibranceGUI game finder self test";
         private const string GpuSelfTestMessageBoxCaption = "vibranceGUI graphics adapter self test";
+        private const string MatchingSelfTestMessageBoxCaption = "vibranceGUI foreground matching self test";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
@@ -63,6 +64,15 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, GraphicsAdapterFixture.Run().ToArray()),
                     GpuSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: matching is pure string work over settings built in the
+            // fixture, so it needs no driver, no running game and no settings file.
+            if (args.Contains("--selftest-matching"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, MatchingFixture.Run().ToArray()),
+                    MatchingSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

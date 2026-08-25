@@ -137,6 +137,12 @@ namespace vibrance.GUI.common
                 _filePath = dialog.FileName;
                 // The user just told us which executable it is, so it is not a guess of the game finder anymore
                 _isExecutableUnconfirmed = false;
+                // An executable outside the stored folder means this entry is no longer that game. Keeping
+                // the old install directory would leave it matching the old game with the new game's profile
+                if (!ApplicationSettingMatcher.IsUnderDirectory(_installDirectory, _filePath))
+                {
+                    _installDirectory = null;
+                }
                 reloadTitle();
                 reloadIcon();
             }
