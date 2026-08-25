@@ -24,6 +24,8 @@ namespace vibrance.GUI
         private const string ErrorGraphicsAdapterAmbiguous = "Both NVIDIA and AMD graphic drivers have been found on your system. This can happen when you recently switched your graphic card and did not uninstall the old drivers. Make sure to uninstall unused graphic drivers to keep your system safe and stable. Use the program \"Display Driver Uninstaller\" to uninstall your old drivers!\n\nIn case you want to do it manually: The related files are located in your Windows folder and are called \"nvapi.dll\" (NVIDIA) and \"atiadlxx.dll\" (AMD) and \"atiadlxy.dll\" (AMD). You are free to rename/delete the files that you no longer need but proceed with caution!\n\nPress Yes to open \"Display Driver Uninstaller\" download website in your Browser now.\nPress No to quit vibranceGUI.";
         private const string MessageBoxCaption = "vibranceGUI Error";
         private const string SelfTestMessageBoxCaption = "vibranceGUI game finder self test";
+        private const string GpuSelfTestMessageBoxCaption = "vibranceGUI graphics adapter self test";
+        private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
         static void Main(string[] args)
@@ -54,15 +56,51 @@ namespace vibrance.GUI
                 return;
             }
 
+            // Same placement, and for the same reason: both fixtures are pure, so they have to
+            // stay runnable on a machine that GetAdapter() cannot resolve and would exit from.
+            // That is exactly the machine whose adapter name is worth checking.
+            if (args.Contains("--selftest-gpu"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, GraphicsAdapterFixture.Run().ToArray()),
+                    GpuSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             NativeMethods.SetDllDirectory(CommonUtils.GetVibrance_GUI_AppDataPath());
 
             GraphicsAdapter adapter = GraphicsAdapterHelper.GetAdapter();
+
+            // Captured here, while it still means something. Everything below - the File.Exists
+            // inside AreBothVendorDriversInstalled() above all - overwrites the thread's last
+            // error, degrading 126 "the specified module could not be found", which tells a user
+            // their driver DLL is missing, into 2 "the system cannot find the file specified".
+            // That message is what users are asked to paste into a bug report.
+            int adapterDetectionWin32Error = Marshal.GetLastWin32Error();
+
             Form vibranceGui = null;
 
             bool isForcedAmdAdapterExecution = args.Contains("--force-amd");
             bool isForcedNvidiaAdapterExecution = args.Contains("--force-nvidia");
 
-            if (adapter == GraphicsAdapter.Amd || isForcedAmdAdapterExecution)
+            // Both drivers installed is the one case the driver files cannot settle. Precedence,
+            // highest first: an explicit --force flag, the stored choice, what the attached
+            // displays say, and only then the chooser. A machine that resolves to a single vendor
+            // never reaches any of this and keeps resolving exactly as it did.
+            if (GraphicsAdapterHelper.AreBothVendorDriversInstalled() &&
+                !isForcedAmdAdapterExecution && !isForcedNvidiaAdapterExecution)
+            {
+                adapter = ResolveInstalledDriverConflict(adapter);
+                if (adapter != GraphicsAdapter.Amd && adapter != GraphicsAdapter.Nvidia)
+                {
+                    // Cancelled, or the fallback dialog has already had its say.
+                    return;
+                }
+            }
+
+            GraphicsAdapter effectiveAdapter = GraphicsAdapterHelper.ApplyForcedAdapter(adapter,
+                isForcedAmdAdapterExecution, isForcedNvidiaAdapterExecution);
+
+            if (effectiveAdapter == GraphicsAdapter.Amd)
             {
                 Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy = (x, y) => new AmdDynamicVibranceProxy(Environment.Is64BitOperatingSystem
                     ? new AmdAdapter64()
@@ -75,7 +113,7 @@ namespace vibrance.GUI
                     AmdDynamicVibranceProxy.AmdDefaultLevel,
                     isForcedAmdAdapterExecution);
             }
-            else if (adapter == GraphicsAdapter.Nvidia || isForcedNvidiaAdapterExecution)
+            else if (effectiveAdapter == GraphicsAdapter.Nvidia)
             {
                 const string nvidiaAdapterName = "vibranceDLL.dll";
                 string resourceName = $"{typeof(Program).Namespace}.NVIDIA.{nvidiaAdapterName}";
@@ -94,9 +132,9 @@ namespace vibrance.GUI
                     NvidiaDynamicVibranceProxy.NvapiDefaultLevel,
                     isForcedNvidiaAdapterExecution);
             }
-            else if (adapter == GraphicsAdapter.Unknown)
+            else if (effectiveAdapter == GraphicsAdapter.Unknown)
             {
-                string errorMessage = new Win32Exception(Marshal.GetLastWin32Error()).Message;
+                string errorMessage = new Win32Exception(adapterDetectionWin32Error).Message;
                 if (MessageBox.Show(ErrorGraphicsAdapterUnknown + errorMessage,
                     MessageBoxCaption, MessageBoxButtons.YesNo, MessageBoxIcon.Error) == DialogResult.Yes)
                 {
@@ -104,13 +142,11 @@ namespace vibrance.GUI
                 }
                 return;
             }
-            else if (adapter == GraphicsAdapter.Ambiguous)
+            else if (effectiveAdapter == GraphicsAdapter.Ambiguous)
             {
-                if (MessageBox.Show(ErrorGraphicsAdapterAmbiguous, MessageBoxCaption, MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Error) == DialogResult.Yes)
-                {
-                    System.Diagnostics.Process.Start("http://www.guru3d.com/files-details/display-driver-uninstaller-download.html");
-                }
+                // Not reachable through ResolveInstalledDriverConflict, which never lets an
+                // unresolved Ambiguous past it. Kept so the vendor cannot silently go unhandled.
+                ShowLegacyAmbiguousDriverDialog();
                 return;
             }
             if (args.Contains("-minimized"))
@@ -118,10 +154,118 @@ namespace vibrance.GUI
                 vibranceGui.WindowState = FormWindowState.Minimized;
                 ((VibranceGUI)vibranceGui).SetAllowVisible(false);
             }
-            vibranceGui.Text += buildFormTitleText(adapter, isForcedAmdAdapterExecution, isForcedNvidiaAdapterExecution);
+            vibranceGui.Text += buildFormTitleText(effectiveAdapter, isForcedAmdAdapterExecution, isForcedNvidiaAdapterExecution);
             Application.Run(vibranceGui);
 
             GC.KeepAlive(mutex);
+        }
+
+        /// <summary>
+        /// Settles the case the driver files alone cannot: both vendors' DLLs are installed, so
+        /// the old code gave up here and told the user to uninstall a driver. A stored choice wins
+        /// first, then whatever adapter actually drives an attached display, and only when both of
+        /// those come up empty is the user asked.
+        /// Returns Ambiguous when the user declined to choose, which means "quit".
+        /// </summary>
+        static GraphicsAdapter ResolveInstalledDriverConflict(GraphicsAdapter detectedAdapter)
+        {
+            GraphicsAdapter storedAdapter = GraphicsAdapter.Unknown;
+            try
+            {
+                storedAdapter = new SettingsController().ReadGraphicsAdapterPreference();
+            }
+            catch (Exception ex)
+            {
+                LogSafely(ex.ToString());
+            }
+
+            // A stored choice is honoured only while the hardware it names is still around,
+            // otherwise a user who swapped cards would be stuck on last year's answer.
+            if (storedAdapter != GraphicsAdapter.Unknown && GraphicsAdapterHelper.IsVendorDriverInstalled(storedAdapter))
+            {
+                LogAdapterResolution("the stored preference", storedAdapter);
+                return storedAdapter;
+            }
+
+            if (detectedAdapter == GraphicsAdapter.Amd || detectedAdapter == GraphicsAdapter.Nvidia)
+            {
+                LogAdapterResolution("the attached display devices", detectedAdapter);
+                return detectedAdapter;
+            }
+
+            return AskUserForGraphicsAdapter();
+        }
+
+        static GraphicsAdapter AskUserForGraphicsAdapter()
+        {
+            try
+            {
+                using (GraphicsAdapterChooser chooser = new GraphicsAdapterChooser(GraphicsAdapterHelper.GetDisplayAdapters()))
+                {
+                    if (chooser.ShowDialog() != DialogResult.OK ||
+                        (chooser.SelectedAdapter != GraphicsAdapter.Amd && chooser.SelectedAdapter != GraphicsAdapter.Nvidia))
+                    {
+                        return GraphicsAdapter.Ambiguous;
+                    }
+
+                    if (chooser.ShouldRememberChoice)
+                    {
+                        try
+                        {
+                            new SettingsController().SetGraphicsAdapterPreference(chooser.SelectedAdapter);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Not being able to remember the answer is no reason not to act on it.
+                            LogSafely(ex.ToString());
+                        }
+                    }
+
+                    LogAdapterResolution("the chooser dialog", chooser.SelectedAdapter);
+                    return chooser.SelectedAdapter;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogSafely(ex.ToString());
+                return ShowLegacyAmbiguousDriverDialog();
+            }
+        }
+
+        /// <summary>
+        /// The pre-existing dialog, now only the fallback for when the chooser itself cannot be
+        /// shown. Its DDU advice is right for a leftover driver and wrong for hybrid hardware,
+        /// which is why it is no longer the first thing a user meets.
+        /// </summary>
+        static GraphicsAdapter ShowLegacyAmbiguousDriverDialog()
+        {
+            if (MessageBox.Show(ErrorGraphicsAdapterAmbiguous, MessageBoxCaption, MessageBoxButtons.YesNo,
+                MessageBoxIcon.Error) == DialogResult.Yes)
+            {
+                System.Diagnostics.Process.Start(DisplayDriverUninstallerUrl);
+            }
+            return GraphicsAdapter.Ambiguous;
+        }
+
+        /// <summary>
+        /// The line to ask a user for when they report that vibranceGUI picked the wrong GPU.
+        /// </summary>
+        static void LogAdapterResolution(string source, GraphicsAdapter adapter)
+        {
+            LogSafely(string.Format("Both GPU drivers are installed. Resolved to {0} from {1}.{2}{3}",
+                adapter, source, Environment.NewLine, GraphicsAdapterHelper.DescribeDisplayAdapters()));
+        }
+
+        static void LogSafely(string message)
+        {
+            try
+            {
+                VibranceGUI.Log(message);
+            }
+            catch (Exception)
+            {
+                // Logging must never be the reason startup fails.
+            }
         }
 
         static string buildFormTitleText(GraphicsAdapter adapter, bool isForcedAmdAdapterExecution, bool isForcedNvidiaAdapterExecution)
