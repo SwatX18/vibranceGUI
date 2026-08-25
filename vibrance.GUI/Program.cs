@@ -26,6 +26,7 @@ namespace vibrance.GUI
         private const string SelfTestMessageBoxCaption = "vibranceGUI game finder self test";
         private const string GpuSelfTestMessageBoxCaption = "vibranceGUI graphics adapter self test";
         private const string MatchingSelfTestMessageBoxCaption = "vibranceGUI foreground matching self test";
+        private const string StabilitySelfTestMessageBoxCaption = "vibranceGUI stability fixes self test";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
@@ -73,6 +74,16 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, MatchingFixture.Run().ToArray()),
                     MatchingSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: the display handle enumeration bound/dedupe is driven by a
+            // stub, and the restore branch check runs through the AMD proxy's mockable adapter
+            // interface, so neither one touches a driver or the prebuilt NVIDIA DLL.
+            if (args.Contains("--selftest-stability"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, StabilityFixture.Run().ToArray()),
+                    StabilitySelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
