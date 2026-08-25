@@ -148,6 +148,7 @@
     <Compile Include="common\PathResolver.cs" />
     <Compile Include="common\ApplicationSettingMatcher.cs" />
     <Compile Include="common\MatchingFixture.cs" />
+    <Compile Include="common\StabilityFixture.cs" />
     <Compile Include="common\ResolutionHelper.cs" />
     <Compile Include="common\ResolutionModeWrapper.cs" />
     <Compile Include="common\DeviceGammaRampHelper.cs" />

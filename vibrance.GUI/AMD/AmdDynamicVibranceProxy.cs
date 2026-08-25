@@ -144,70 +144,73 @@ namespace vibrance.GUI.AMD
 
         private void OnWinEventHook(object sender, WinEventHookEventArgs e)
         {
-            if (_applicationSettings.Count > 0)
+            //an empty list still has to reach the restore branch below. Gating the whole handler on
+            //Count > 0 stranded vibrance, the resolution and the gamma ramp whenever the last entry was
+            //removed while its game held the foreground, with no way back short of restarting.
+            ApplicationSetting applicationSetting = _applicationSettings.Count > 0
+                ? ApplicationSettingMatcher.FindMatch(_applicationSettings, e.ProcessName, e.ProcessImagePath)
+                : null;
+
+            if (applicationSetting != null)
             {
-                ApplicationSetting applicationSetting = ApplicationSettingMatcher.FindMatch(_applicationSettings, e.ProcessName, e.ProcessImagePath);
-                if (applicationSetting != null)
+                Screen screen = Screen.FromHandle(e.Handle);
+                _gameScreen = screen;
+
+                //apply application specific saturation
+                if (_vibranceInfo.userVibranceSettingDefault != applicationSetting.IngameLevel)
                 {
-                    Screen screen = Screen.FromHandle(e.Handle);
-                    _gameScreen = screen;
-
-                    //apply application specific saturation
-                    if (_vibranceInfo.userVibranceSettingDefault != applicationSetting.IngameLevel)
+                    if (_vibranceInfo.affectPrimaryMonitorOnly)
                     {
-                        if (_vibranceInfo.affectPrimaryMonitorOnly)
-                        {
-                            _amdAdapter.SetSaturationOnDisplay(applicationSetting.IngameLevel, screen.DeviceName);
-                        }
-                        else
-                        {
-                            _amdAdapter.SetSaturationOnAllDisplays(applicationSetting.IngameLevel);
-                        }
+                        _amdAdapter.SetSaturationOnDisplay(applicationSetting.IngameLevel, screen.DeviceName);
                     }
-
-                    //test if a resolution change is needed
-                    if (_vibranceInfo.neverChangeResolution == false && applicationSetting.IsResolutionChangeNeeded &&
-                        IsResolutionChangeNeeded(screen, applicationSetting.ResolutionSettings) &&
-                        _windowsResolutionSettings.ContainsKey(screen.DeviceName) &&
-                        _windowsResolutionSettings[screen.DeviceName].Item2.Contains(applicationSetting.ResolutionSettings))
+                    else
                     {
-                        PerformResolutionChange(screen, applicationSetting.ResolutionSettings);
-                        _vibranceInfo.isResolutionChangeApplied = true;
-                    }
-
-                    //test if color settings change is needed
-                    if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == false &&
-                        DeviceGammaRampHelper.IsGammaRampEqualToWindowsValues(_vibranceInfo, applicationSetting) == false)
-                    {
-                        DeviceGammaRampHelper.SetGammaRamp(screen, brightness: applicationSetting.Brightness, contrast: applicationSetting.Contrast, gamma: applicationSetting.Gamma);
-                        _vibranceInfo.isColorSettingApplied = true;
+                        _amdAdapter.SetSaturationOnAllDisplays(applicationSetting.IngameLevel);
                     }
                 }
-                else
+
+                //test if a resolution change is needed
+                if (_vibranceInfo.neverChangeResolution == false && applicationSetting.IsResolutionChangeNeeded &&
+                    IsResolutionChangeNeeded(screen, applicationSetting.ResolutionSettings) &&
+                    _windowsResolutionSettings.ContainsKey(screen.DeviceName) &&
+                    _windowsResolutionSettings[screen.DeviceName].Item2.Contains(applicationSetting.ResolutionSettings))
                 {
-                    IntPtr processHandle = e.Handle;
-                    if (GetForegroundWindow() != processHandle)
-                        return;
+                    PerformResolutionChange(screen, applicationSetting.ResolutionSettings);
+                    _vibranceInfo.isResolutionChangeApplied = true;
+                }
 
-                    //apply Windows saturation
-                    _amdAdapter.SetSaturationOnAllDisplays(_vibranceInfo.userVibranceSettingDefault);
+                //test if color settings change is needed
+                if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == false &&
+                    DeviceGammaRampHelper.IsGammaRampEqualToWindowsValues(_vibranceInfo, applicationSetting) == false)
+                {
+                    DeviceGammaRampHelper.SetGammaRamp(screen, brightness: applicationSetting.Brightness, contrast: applicationSetting.Contrast, gamma: applicationSetting.Gamma);
+                    _vibranceInfo.isColorSettingApplied = true;
+                }
+            }
+            else
+            {
+                IntPtr processHandle = e.Handle;
+                if (GetForegroundWindow() != processHandle)
+                    return;
 
-                    //test if a resolution change is needed
-                    Screen currentScreen = Screen.FromHandle(processHandle);
-                    if (_vibranceInfo.neverChangeResolution == false && _vibranceInfo.isResolutionChangeApplied == true &&
-                        _gameScreen != null && _gameScreen.Equals(currentScreen) && 
-                        _windowsResolutionSettings.ContainsKey(currentScreen.DeviceName) &&
-                        IsResolutionChangeNeeded(currentScreen, _windowsResolutionSettings[currentScreen.DeviceName].Item1))
-                    {
-                        PerformResolutionChange(currentScreen, _windowsResolutionSettings[currentScreen.DeviceName].Item1);
-                        _vibranceInfo.isResolutionChangeApplied = false;
-                    }
+                //apply Windows saturation
+                _amdAdapter.SetSaturationOnAllDisplays(_vibranceInfo.userVibranceSettingDefault);
 
-                    //apply windows color settings if color settings were previously changed
-                    if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == true)
-                    {
-                        RestoreWindowsColorSettings();
-                    }
+                //test if a resolution change is needed
+                Screen currentScreen = Screen.FromHandle(processHandle);
+                if (_vibranceInfo.neverChangeResolution == false && _vibranceInfo.isResolutionChangeApplied == true &&
+                    _gameScreen != null && _gameScreen.Equals(currentScreen) && 
+                    _windowsResolutionSettings.ContainsKey(currentScreen.DeviceName) &&
+                    IsResolutionChangeNeeded(currentScreen, _windowsResolutionSettings[currentScreen.DeviceName].Item1))
+                {
+                    PerformResolutionChange(currentScreen, _windowsResolutionSettings[currentScreen.DeviceName].Item1);
+                    _vibranceInfo.isResolutionChangeApplied = false;
+                }
+
+                //apply windows color settings if color settings were previously changed
+                if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == true)
+                {
+                    RestoreWindowsColorSettings();
                 }
             }
         }
