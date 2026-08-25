@@ -48,10 +48,11 @@ namespace vibrance.GUI.common
             if (setting != null)
             {
                 // Sets the progress bar value to the Ingame Vibrance setting
-                this.trackBarIngameLevel.Value = setting.IngameLevel;
-                this.trackBarBrightness.Value = setting.Brightness;
-                this.trackBarContrast.Value = setting.Contrast;
-                this.trackBarGamma.Value = setting.Gamma;
+                // The saved values are clamped, they come from an unvalidated settings file and TrackBar.Value throws outside of its range
+                this.trackBarIngameLevel.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarIngameLevel, setting.IngameLevel);
+                this.trackBarBrightness.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarBrightness, setting.Brightness);
+                this.trackBarContrast.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarContrast, setting.Contrast);
+                this.trackBarGamma.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarGamma, setting.Gamma);
                 this.cBoxResolution.SelectedItem = setting.ResolutionSettings;
                 this.checkBoxResolution.Checked = setting.IsResolutionChangeNeeded;
                 reloadTrackbarLabels();
