@@ -451,6 +451,19 @@ namespace vibrance.GUI.common
                 labelWindowsLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, vibranceWindowsLevel);
 
                 trackBarWindowsLevel.Value = vibranceWindowsLevel;
+
+                //the saved color settings have to be restored before the checkboxes are set, their CheckedChanged handlers trigger a save of these trackbars.
+                //the clamped values are written back so that the caller hands the proxy exactly what the user interface shows.
+                brightnessWindowsLevel = ClampToTrackBarRange(trackBarBrightness, brightnessWindowsLevel);
+                trackBarBrightness.Value = brightnessWindowsLevel;
+                labelBrightness.Text = TrackbarLabelHelper.ResolveBrightnessLabelLevel(brightnessWindowsLevel);
+                contrastWindowsLevel = ClampToTrackBarRange(trackBarContrast, contrastWindowsLevel);
+                trackBarContrast.Value = contrastWindowsLevel;
+                labelContrast.Text = TrackbarLabelHelper.ResolveContrastLabelLevel(contrastWindowsLevel);
+                gammaWindowsLevel = ClampToTrackBarRange(trackBarGamma, gammaWindowsLevel);
+                trackBarGamma.Value = gammaWindowsLevel;
+                labelGamma.Text = TrackbarLabelHelper.ResolveGammaLabelLevel(gammaWindowsLevel);
+
                 checkBoxPrimaryMonitorOnly.Checked = affectPrimaryMonitorOnly;
                 checkBoxNeverChangeResolutions.Checked = neverSwitchResolution;
                 checkBoxNeverChangeColorSettings.Checked = neverChangeColorSettings;
@@ -475,6 +488,12 @@ namespace vibrance.GUI.common
                     }
                 }
             }
+        }
+
+        private static int ClampToTrackBarRange(TrackBar trackBar, int value)
+        {
+            //TrackBar.Value throws for values outside of its range and the settings file is not validated on load
+            return Math.Min(Math.Max(value, trackBar.Minimum), trackBar.Maximum);
         }
 
         private void SaveVibranceSettings(int windowsLevel, bool affectPrimaryMonitorOnly, bool neverSwitchResolution, bool neverChangeColorSettings, int brightnessWindowsLevel, int contrastWindowsLevel, int gammaWindowsLevel)

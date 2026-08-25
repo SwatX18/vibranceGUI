@@ -14,25 +14,35 @@ namespace vibrance.GUI.common
 
         public static void SetGammaRamp(Screen screen, int brightness = 50, int contrast = 50, int gamma = 100)
         {
-            if(brightness == 0 || contrast == 0 || gamma == 0)
+            if(brightness < 0 || contrast < 0 || gamma < 0)
             {
                 return;
             }
-            SetGammaRamp(screen, (double)brightness / 100, (double)contrast / 100, (double)gamma / 100);
+            SetGammaRamp(screen, brightness: (double)brightness / 100, contrast: (double)contrast / 100, gamma: (double)gamma / 100);
         }
         /// <summary>
-        /// Applies gamma, brightness, contrast to the selected screen.
+        /// Applies brightness, contrast, gamma to the selected screen.
         /// </summary>
         /// <param name="screen">Screen to apply the gamma ramp to</param>
-        /// <param name="gamma">Gamma, default value 1.</param>
         /// <param name="brightness">Brightness, default value 0.5</param>
         /// <param name="contrast">Contrast, default value 0.5.</param>
+        /// <param name="gamma">Gamma, default value 1.</param>
         public static void SetGammaRamp(Screen screen, double brightness = 0.5, double contrast = 0.5, double gamma = 1.0)
         {
             var hdc = GetScreenDeviceContext(screen);
-            var newGammaRamp = CalculateGammaRamp(hdc, gamma, brightness, contrast);
-            ApplyGammaRamp(hdc, newGammaRamp);
-            ReleaseDeviceContext(hdc);
+            if (hdc == IntPtr.Zero)
+            {
+                return;
+            }
+            try
+            {
+                var newGammaRamp = CalculateGammaRamp(hdc, gamma: gamma, brightness: brightness, contrast: contrast);
+                ApplyGammaRamp(hdc, newGammaRamp);
+            }
+            finally
+            {
+                ReleaseDeviceContext(hdc);
+            }
         }
 
         /// <summary>
@@ -41,10 +51,20 @@ namespace vibrance.GUI.common
         /// <param name="screen">Screen to get the gamma ramp of</param>
         public static GammaRamp GetGammaRamp(Screen screen)
         {
-            GammaRamp currentGammaRamp = new GammaRamp(); 
+            GammaRamp currentGammaRamp = new GammaRamp();
             var hdc = GetScreenDeviceContext(screen);
-            NativeAPI.GetDeviceGammaRamp(hdc, ref currentGammaRamp);
-            ReleaseDeviceContext(hdc);
+            if (hdc == IntPtr.Zero)
+            {
+                return currentGammaRamp;
+            }
+            try
+            {
+                NativeAPI.GetDeviceGammaRamp(hdc, ref currentGammaRamp);
+            }
+            finally
+            {
+                ReleaseDeviceContext(hdc);
+            }
             return currentGammaRamp;
         }
 
@@ -61,7 +81,8 @@ namespace vibrance.GUI.common
 
         private static void ReleaseDeviceContext(IntPtr hdc)
         {
-            if (NativeAPI.ReleaseDC(IntPtr.Zero, hdc) == 0)
+            //the device context was created with CreateDC, so it must be freed with DeleteDC (ReleaseDC does not work here)
+            if (!NativeAPI.DeleteDC(hdc))
             {
                 VibranceGUI.Log(string.Format("Failed to release device context handle {0}", hdc.ToString()));
             }                
@@ -119,9 +140,9 @@ namespace vibrance.GUI.common
             ushort[] Green = new ushort[256];
             ushort[] Blue = new ushort[256];
 
-            Red = CalculateLUT(brightness, contrast, gamma);
-            Green = CalculateLUT(brightness, contrast, gamma);
-            Blue = CalculateLUT(brightness, contrast, gamma);
+            Red = CalculateLUT(brightness: brightness, contrast: contrast, gamma: gamma);
+            Green = CalculateLUT(brightness: brightness, contrast: contrast, gamma: gamma);
+            Blue = CalculateLUT(brightness: brightness, contrast: contrast, gamma: gamma);
 
             GammaRamp ramp = new GammaRamp(Red, Green, Blue);
             return ramp;
@@ -175,20 +196,44 @@ namespace vibrance.GUI.common
 
             public override bool Equals(object obj)
             {
-                if (obj is GammaRamp)
+                if (!(obj is GammaRamp))
                 {
                     return false;
                 }
                 GammaRamp other = (GammaRamp)obj;
-                return this.Red.Equals(other.Red) && this.Blue.Equals(other.Blue) && this.Green.Equals(other.Green);
+                return AreRampChannelsEqual(this.Red, other.Red) && AreRampChannelsEqual(this.Blue, other.Blue) && AreRampChannelsEqual(this.Green, other.Green);
+            }
+
+            private static bool AreRampChannelsEqual(UInt16[] left, UInt16[] right)
+            {
+                if (left == null || right == null)
+                {
+                    return left == right;
+                }
+                return left.SequenceEqual(right);
             }
 
             public override int GetHashCode()
             {
+                //has to hash the channel contents, Equals compares them by value
                 int hashCode = -1058441243;
-                hashCode = hashCode * -1521134295 + EqualityComparer<ushort[]>.Default.GetHashCode(Red);
-                hashCode = hashCode * -1521134295 + EqualityComparer<ushort[]>.Default.GetHashCode(Green);
-                hashCode = hashCode * -1521134295 + EqualityComparer<ushort[]>.Default.GetHashCode(Blue);
+                hashCode = hashCode * -1521134295 + GetRampChannelHashCode(Red);
+                hashCode = hashCode * -1521134295 + GetRampChannelHashCode(Green);
+                hashCode = hashCode * -1521134295 + GetRampChannelHashCode(Blue);
+                return hashCode;
+            }
+
+            private static int GetRampChannelHashCode(UInt16[] channel)
+            {
+                if (channel == null)
+                {
+                    return 0;
+                }
+                int hashCode = 17;
+                for (int i = 0; i < channel.Length; i++)
+                {
+                    hashCode = hashCode * 31 + channel[i];
+                }
                 return hashCode;
             }
         };
@@ -200,8 +245,8 @@ namespace vibrance.GUI.common
             [DllImport("gdi32.dll")]
             public static extern IntPtr CreateDC(string lpszDriver, string lpszDevice, string lpszOutput, IntPtr lpInitData);
 
-            [DllImport("user32.dll", EntryPoint = "ReleaseDC")]
-            public static extern int ReleaseDC([In] IntPtr hWnd, [In] IntPtr hDC);
+            [DllImport("gdi32.dll", EntryPoint = "DeleteDC")]
+            public static extern bool DeleteDC([In] IntPtr hdc);
 
             [DllImport("user32.dll", EntryPoint = "GetDC")]
             public static extern IntPtr GetDC([In] IntPtr hWnd);

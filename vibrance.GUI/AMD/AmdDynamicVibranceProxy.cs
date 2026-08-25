@@ -12,25 +12,6 @@ namespace vibrance.GUI.AMD
 {
     public class AmdDynamicVibranceProxy : IVibranceProxy
     {
-        #region DllImports
-        [DllImport("gdi32.dll")]
-        public static extern bool GetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
-
-        [DllImport("gdi32.dll")]
-        public static extern bool SetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-        public struct RAMP
-        {
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public UInt16[] Red;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public UInt16[] Green;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public UInt16[] Blue;
-        }
-        #endregion
-
         public const int AmdMinLevel = 0;
         public const int AmdMaxLevel = 300;
         public const int AmdDefaultLevel = 100;
@@ -136,6 +117,13 @@ namespace vibrance.GUI.AMD
 
         public void HandleDvcExit()
         {
+            //the gamma ramp is global display driver state, it does not revert when the process exits.
+            //it is restored first so that a failing driver call below cannot skip it.
+            if (_vibranceInfo.isColorSettingApplied)
+            {
+                RestoreWindowsColorSettings();
+            }
+
             _amdAdapter.SetSaturationOnAllDisplays(_vibranceInfo.userVibranceSettingDefault);
         }
 
@@ -191,7 +179,7 @@ namespace vibrance.GUI.AMD
                     if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == false &&
                         DeviceGammaRampHelper.IsGammaRampEqualToWindowsValues(_vibranceInfo, applicationSetting) == false)
                     {
-                        DeviceGammaRampHelper.SetGammaRamp(screen, applicationSetting.Gamma, applicationSetting.Brightness, applicationSetting.Contrast);
+                        DeviceGammaRampHelper.SetGammaRamp(screen, brightness: applicationSetting.Brightness, contrast: applicationSetting.Contrast, gamma: applicationSetting.Gamma);
                         _vibranceInfo.isColorSettingApplied = true;
                     }
                 }
@@ -218,15 +206,7 @@ namespace vibrance.GUI.AMD
                     //apply windows color settings if color settings were previously changed
                     if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == true)
                     {
-                        if (_vibranceInfo.affectPrimaryMonitorOnly && _gameScreen != null && _gameScreen.DeviceName.Equals(currentScreen.DeviceName))
-                        {
-                            DeviceGammaRampHelper.SetGammaRamp(_gameScreen, _vibranceInfo.userColorSettings.brightness, _vibranceInfo.userColorSettings.contrast, _vibranceInfo.userColorSettings.gamma);
-                        }
-                        else
-                        {
-                            Screen.AllScreens.ToList().ForEach(screen => DeviceGammaRampHelper.SetGammaRamp(screen, _vibranceInfo.userColorSettings.brightness, _vibranceInfo.userColorSettings.contrast, _vibranceInfo.userColorSettings.gamma));
-                        }
-                        _vibranceInfo.isColorSettingApplied = false;
+                        RestoreWindowsColorSettings();
                     }
                 }
             }
@@ -245,6 +225,20 @@ namespace vibrance.GUI.AMD
         private static void PerformResolutionChange(Screen screen, ResolutionModeWrapper resolutionSettings)
         {
             ResolutionHelper.ChangeResolutionEx(resolutionSettings, screen.DeviceName);
+        }
+
+        private void RestoreWindowsColorSettings()
+        {
+            //the gamma ramp is only ever applied to the game screen, restoring every screen would overwrite color settings this application never touched
+            if (_gameScreen != null)
+            {
+                DeviceGammaRampHelper.SetGammaRamp(_gameScreen, brightness: _vibranceInfo.userColorSettings.brightness, contrast: _vibranceInfo.userColorSettings.contrast, gamma: _vibranceInfo.userColorSettings.gamma);
+            }
+            else
+            {
+                Screen.AllScreens.ToList().ForEach(screen => DeviceGammaRampHelper.SetGammaRamp(screen, brightness: _vibranceInfo.userColorSettings.brightness, contrast: _vibranceInfo.userColorSettings.contrast, gamma: _vibranceInfo.userColorSettings.gamma));
+            }
+            _vibranceInfo.isColorSettingApplied = false;
         }
     }
 }

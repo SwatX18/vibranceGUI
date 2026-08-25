@@ -214,6 +214,12 @@ namespace vibrance.GUI.common
 
         static void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
+            //the hook spans the whole range from EventSystemForeground to EventSystemMinimizeend, only these two are of interest
+            if (eventType != WinEvent.EventSystemForeground && eventType != WinEvent.EventSystemMinimizeend)
+            {
+                return;
+            }
+
             uint processId;
             GetWindowThreadProcessId(hwnd, out processId);
             int windowTextLength = GetWindowTextLength(hwnd);

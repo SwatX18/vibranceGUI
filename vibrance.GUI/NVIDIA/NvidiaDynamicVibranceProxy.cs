@@ -226,7 +226,7 @@ namespace vibrance.GUI.NVIDIA
                     if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == false &&
                         DeviceGammaRampHelper.IsGammaRampEqualToWindowsValues(_vibranceInfo, applicationSetting) == false)
                     {
-                        DeviceGammaRampHelper.SetGammaRamp(screen, applicationSetting.Gamma, applicationSetting.Brightness, applicationSetting.Contrast);
+                        DeviceGammaRampHelper.SetGammaRamp(screen, brightness: applicationSetting.Brightness, contrast: applicationSetting.Contrast, gamma: applicationSetting.Gamma);
                         _vibranceInfo.isColorSettingApplied = true;
                     }
                 }
@@ -241,12 +241,9 @@ namespace vibrance.GUI.NVIDIA
                     Screen currentScreen = Screen.FromHandle(processHandle);
 
                     //test if changing the vibrance value is needed
-                    if (_vibranceInfo.affectPrimaryMonitorOnly && !equalsDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault))
+                    if (_vibranceInfo.affectPrimaryMonitorOnly && !equalsDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault) &&
+                        (_gameScreen == null || _gameScreen.DeviceName.Equals(currentScreen.DeviceName)))
                     {
-                        if (_gameScreen != null && !_gameScreen.DeviceName.Equals(currentScreen.DeviceName))
-                        {
-                            return;
-                        }
                         setDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault);
                     }
                     else if (!_vibranceInfo.affectPrimaryMonitorOnly && !_vibranceInfo.displayHandles.TrueForAll(handle => equalsDVCLevel(handle, _vibranceInfo.userVibranceSettingDefault)))
@@ -266,15 +263,7 @@ namespace vibrance.GUI.NVIDIA
                     //apply windows color settings if color settings were previously changed
                     if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == true)
                     {
-                        if (_vibranceInfo.affectPrimaryMonitorOnly && _gameScreen != null && _gameScreen.DeviceName.Equals(currentScreen.DeviceName))
-                        {
-                            DeviceGammaRampHelper.SetGammaRamp(_gameScreen, _vibranceInfo.userColorSettings.brightness, _vibranceInfo.userColorSettings.contrast, _vibranceInfo.userColorSettings.gamma);
-                        }
-                        else
-                        {
-                            Screen.AllScreens.ToList().ForEach(screen => DeviceGammaRampHelper.SetGammaRamp(screen, _vibranceInfo.userColorSettings.brightness, _vibranceInfo.userColorSettings.contrast, _vibranceInfo.userColorSettings.gamma));
-                        }
-                        _vibranceInfo.isColorSettingApplied = false;
+                        RestoreWindowsColorSettings();
                     }
                 }
             }
@@ -293,6 +282,20 @@ namespace vibrance.GUI.NVIDIA
         private static void PerformResolutionChange(Screen screen, ResolutionModeWrapper resolutionSettings)
         {
             ResolutionHelper.ChangeResolutionEx(resolutionSettings, screen.DeviceName);
+        }
+
+        private static void RestoreWindowsColorSettings()
+        {
+            //the gamma ramp is only ever applied to the game screen, restoring every screen would overwrite color settings this application never touched
+            if (_gameScreen != null)
+            {
+                DeviceGammaRampHelper.SetGammaRamp(_gameScreen, brightness: _vibranceInfo.userColorSettings.brightness, contrast: _vibranceInfo.userColorSettings.contrast, gamma: _vibranceInfo.userColorSettings.gamma);
+            }
+            else
+            {
+                Screen.AllScreens.ToList().ForEach(screen => DeviceGammaRampHelper.SetGammaRamp(screen, brightness: _vibranceInfo.userColorSettings.brightness, contrast: _vibranceInfo.userColorSettings.contrast, gamma: _vibranceInfo.userColorSettings.gamma));
+            }
+            _vibranceInfo.isColorSettingApplied = false;
         }
 
         private void EnumerateDisplayHandles()
@@ -406,6 +409,13 @@ namespace vibrance.GUI.NVIDIA
 
         public void HandleDvcExit()
         {
+            //the gamma ramp is global display driver state, it does not revert when the process exits.
+            //it is restored first so that a failing driver call below cannot skip it.
+            if (_vibranceInfo.isColorSettingApplied)
+            {
+                RestoreWindowsColorSettings();
+            }
+
             if (_vibranceInfo.affectPrimaryMonitorOnly)
             {
                 setDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault);
