@@ -8,6 +8,8 @@ namespace vibrance.GUI.common
         bool SetVibranceSettings(string windowsLevel, string affectPrimaryMonitorOnly, string neverSwitchResolution, string neverChangeColorSettings, List<ApplicationSetting> applicationSettings, 
             string brightnessWindowsLevel, string contrastWindowsLevel, string gammaWindowsLevel);
         bool SetVibranceSetting(string szKeyName, string value);
+        GraphicsAdapter ReadGraphicsAdapterPreference();
+        bool SetGraphicsAdapterPreference(GraphicsAdapter graphicsAdapter);
         void ReadVibranceSettings(GraphicsAdapter graphicsAdapter, out int vibranceWindowsLevel, out bool affectPrimaryMonitorOnly, out bool neverSwitchResolution,
             out bool neverChangeColorSettings, out List<ApplicationSetting> applicationSettings, out int brightnessWindowsLevel, out int contrastWindowsLevel, out int gammaWindowsLevel);
     }
