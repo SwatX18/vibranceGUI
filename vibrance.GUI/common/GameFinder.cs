@@ -440,7 +440,25 @@ namespace vibrance.GUI.common
 
         private static string GetStoreName(GameSource source)
         {
-            return source == GameSource.Epic ? "Epic Games" : "Steam";
+            switch (source)
+            {
+                case GameSource.Epic:
+                    return "Epic Games";
+                case GameSource.Ea:
+                    return "EA";
+                case GameSource.BattleNet:
+                    return "Battle.net";
+                case GameSource.Rockstar:
+                    return "Rockstar";
+                case GameSource.Ubisoft:
+                    return "Ubisoft";
+                case GameSource.OtherLauncher:
+                    // The Uninstall registry knows the publisher, not the store the user bought it
+                    // from. "Installed" says only what was actually observed.
+                    return "Installed";
+                default:
+                    return "Steam";
+            }
         }
 
         /// <summary>

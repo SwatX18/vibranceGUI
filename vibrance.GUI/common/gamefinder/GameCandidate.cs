@@ -2,7 +2,18 @@
 
 namespace vibrance.GUI.common.gamefinder
 {
-    public enum GameSource { Steam = 0, Epic = 1 }
+    // Appended to, never renumbered: the Store column is rendered from this per candidate. It is
+    // not persisted to the settings file, so a new member costs nothing outside this assembly.
+    public enum GameSource
+    {
+        Steam = 0,
+        Epic = 1,
+        Ea = 2,             // Electronic Arts, EA Games
+        BattleNet = 3,      // Blizzard Entertainment
+        Rockstar = 4,       // Rockstar Games
+        Ubisoft = 5,        // Ubisoft, Ubisoft Entertainment
+        OtherLauncher = 6   // an allowlisted publisher with no store of its own worth naming
+    }
 
     public enum ExecutableConfidence
     {

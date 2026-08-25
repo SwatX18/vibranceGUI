@@ -17,12 +17,15 @@ namespace vibrance.GUI.common.gamefinder
             _sources = sources == null ? new List<IGameLibrarySource>() : sources;
         }
 
-        // The single registration point for a new store: Steam, then Epic.
+        // The single registration point for a new store: Steam, then Epic, then the Uninstall
+        // registry. The registry source comes last because it is the broadest: a game owned on
+        // Steam or Epic that also registers an uninstall entry keeps the row its own store made.
         public static List<IGameLibrarySource> CreateDefaultSources()
         {
             List<IGameLibrarySource> sources = new List<IGameLibrarySource>();
             sources.Add(new SteamLibrarySource());
             sources.Add(new EpicLibrarySource());
+            sources.Add(new UninstallRegistrySource());
             return sources;
         }
 

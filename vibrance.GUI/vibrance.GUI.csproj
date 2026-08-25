@@ -131,6 +131,7 @@
     <Compile Include="common\gamefinder\GameFinderScanner.cs" />
     <Compile Include="common\gamefinder\SteamLibrarySource.cs" />
     <Compile Include="common\gamefinder\EpicLibrarySource.cs" />
+    <Compile Include="common\gamefinder\UninstallRegistrySource.cs" />
     <Compile Include="common\gamefinder\VdfTextReader.cs" />
     <Compile Include="common\gamefinder\SimpleJsonReader.cs" />
     <Compile Include="common\gamefinder\ExecutableRules.cs" />
