@@ -10,6 +10,7 @@ using vibrance.GUI.AMD;
 using vibrance.GUI.AMD.vendor;
 using vibrance.GUI.AMD.vendor.utils;
 using vibrance.GUI.common;
+using vibrance.GUI.common.gamefinder;
 using vibrance.GUI.NVIDIA;
 
 namespace vibrance.GUI
@@ -22,6 +23,7 @@ namespace vibrance.GUI
         private const string ErrorGraphicsAdapterUnknown = "Failed to determine your Graphic GraphicsAdapter type (NVIDIA/AMD). Make sure you have installed a proper GPU driver. Intel laptops are not supported as stated on the website. When installing your GPU driver did not work, please contact @juvlarN at twitter. Press Yes to open twitter in your browser now. Error: ";
         private const string ErrorGraphicsAdapterAmbiguous = "Both NVIDIA and AMD graphic drivers have been found on your system. This can happen when you recently switched your graphic card and did not uninstall the old drivers. Make sure to uninstall unused graphic drivers to keep your system safe and stable. Use the program \"Display Driver Uninstaller\" to uninstall your old drivers!\n\nIn case you want to do it manually: The related files are located in your Windows folder and are called \"nvapi.dll\" (NVIDIA) and \"atiadlxx.dll\" (AMD) and \"atiadlxy.dll\" (AMD). You are free to rename/delete the files that you no longer need but proceed with caution!\n\nPress Yes to open \"Display Driver Uninstaller\" download website in your Browser now.\nPress No to quit vibranceGUI.";
         private const string MessageBoxCaption = "vibranceGUI Error";
+        private const string SelfTestMessageBoxCaption = "vibranceGUI game finder self test";
 
         [STAThread]
         static void Main(string[] args)
@@ -41,6 +43,17 @@ namespace vibrance.GUI
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            // Runs before the GPU vendor detection below on purpose: the picker is pure, so the
+            // self test must stay runnable on a build agent or a reviewer's machine that has
+            // neither an NVIDIA nor an AMD driver, where GetAdapter() shows an error and exits.
+            if (args.Contains("--selftest-gamefinder"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, ExecutablePickerFixture.Run().ToArray()),
+                    SelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             NativeMethods.SetDllDirectory(CommonUtils.GetVibrance_GUI_AppDataPath());
 
             GraphicsAdapter adapter = GraphicsAdapterHelper.GetAdapter();

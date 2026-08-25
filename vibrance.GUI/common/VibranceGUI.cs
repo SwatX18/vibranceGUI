@@ -8,6 +8,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+using vibrance.GUI.common.gamefinder;
 using Application = System.Windows.Forms.Application;
 using MessageBox = System.Windows.Forms.MessageBox;
 
@@ -32,6 +33,14 @@ namespace vibrance.GUI.common
         private readonly Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> _windowsResolutionSettings;
 
         private readonly bool _isForcedExecution;
+
+        // Kept in sync with _applicationSettings by RefreshUnconfirmedCache. The foreground handler runs on
+        // the ui thread for every window switch, so it tests this boolean before it looks at anything else
+        private bool _hasUnconfirmedEntries;
+        private bool _isForegroundConfirmationSubscribed;
+
+        private const string ToolTipExecutableUnconfirmed =
+            "Not detected yet. vibranceGUI has not seen this executable in the foreground, so this may be the wrong file. Double-click to change the executable.";
 
         public VibranceGUI(
             Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy,
@@ -380,6 +389,7 @@ namespace vibrance.GUI.common
                 this.checkBoxPrimaryMonitorOnly.Enabled = flag;
                 this.buttonAddProgram.Enabled = flag;
                 this.buttonProcessExplorer.Enabled = flag;
+                this.buttonFindGames.Enabled = flag;
                 this.buttonRemoveProgram.Enabled = flag;
                 this.checkBoxNeverChangeResolutions.Enabled = flag;
                 this.checkBoxNeverChangeColorSettings.Enabled = flag;
@@ -480,14 +490,19 @@ namespace vibrance.GUI.common
                     Icon icon = Icon.ExtractAssociatedIcon(application.FileName);
                     if (icon != null)
                     {
-                        this.listApplications.LargeImageList.Images.Add(icon);
-                        ListViewItem lvi = new ListViewItem(application.Name);
-                        lvi.ImageIndex = this.listApplications.Items.Count;
-                        lvi.Tag = application.FileName;
-                        this.listApplications.Items.Add(lvi);
+                        ApplyApplicationListItemAppearance(AddApplicationListItem(application.FileName, icon, application.Name), application);
                     }
                 }
             }
+
+            //the vendor proxy owns the singleton, it created it on this thread while it was initializing.
+            //without the guard a failed proxy would make the form install a second hook of its own
+            if (_v != null && _v.GetVibranceInfo().isInitialized && !_isForegroundConfirmationSubscribed)
+            {
+                WinEventHook.GetInstance().WinEventHookHandler += OnForegroundChangedConfirmExecutable;
+                _isForegroundConfirmationSubscribed = true;
+            }
+            RefreshUnconfirmedCache();
         }
 
         private void SaveVibranceSettings(int windowsLevel, bool affectPrimaryMonitorOnly, bool neverSwitchResolution, bool neverChangeColorSettings, int brightnessWindowsLevel, int contrastWindowsLevel, int gammaWindowsLevel)
@@ -558,14 +573,225 @@ namespace vibrance.GUI.common
             string path = processExplorerEntry.Path;
             if (icon != null)
             {
-                this.listApplications.LargeImageList.Images.Add(icon);
-                ListViewItem lvi = new ListViewItem(Path.GetFileNameWithoutExtension(path));
-                lvi.ImageIndex = this.listApplications.Items.Count;
-                lvi.Tag = path;
-                this.listApplications.Items.Add(lvi);
+                ListViewItem lvi = AddApplicationListItem(path, icon, Path.GetFileNameWithoutExtension(path));
                 this.listApplications.SelectedIndices.Clear();
                 lvi.Selected = true;
                 listApplications_DoubleClick(this, EventArgs.Empty);
+            }
+        }
+
+        /// <summary>
+        /// The only place in the program which adds to the image list of the application list. The image
+        /// index of an item is the position it is inserted at, so the icon and the item have to be added
+        /// together and in this order: LargeImageList.Images.Add first, then ImageIndex read from
+        /// Items.Count before Items.Add pushes it up. Appending at the end never disturbs an existing
+        /// index, which is what makes bulk adding safe and keeps the fixup loop of
+        /// buttonRemoveProgram_Click correct.
+        /// </summary>
+        private ListViewItem AddApplicationListItem(string fileName, Icon icon, string text)
+        {
+            InitializeApplicationList();
+
+            this.listApplications.LargeImageList.Images.Add(icon);
+            ListViewItem lvi = new ListViewItem(text);
+            lvi.ImageIndex = this.listApplications.Items.Count;
+            lvi.Tag = fileName;
+            this.listApplications.Items.Add(lvi);
+            return lvi;
+        }
+
+        /// <summary>
+        /// Adds every game the game finder returned in one go. Opens no dialog, so the ApplicationSetting
+        /// is built here instead of by VibranceSettings, and the whole batch is saved once at the end.
+        /// Ui thread only.
+        /// </summary>
+        public void AddProgramsBulk(List<GameCandidate> candidates)
+        {
+            if (candidates == null || candidates.Count == 0)
+            {
+                return;
+            }
+
+            InitializeApplicationList();
+
+            int addedCount = 0;
+            foreach (GameCandidate candidate in candidates)
+            {
+                if (candidate == null || string.IsNullOrEmpty(candidate.ExecutablePath))
+                {
+                    continue;
+                }
+
+                string path = candidate.ExecutablePath;
+                //an entry the File.Exists sweep of ReadVibranceSettings would drop on the next start is
+                //not worth adding in the first place
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+
+                if (_applicationSettings.FirstOrDefault(x => string.Equals(x.FileName, path, StringComparison.OrdinalIgnoreCase)) != null)
+                {
+                    continue;
+                }
+
+                string name = Path.GetFileNameWithoutExtension(path);
+                //a second entry with the same name could never activate, the runtime matches on the name alone
+                if (_applicationSettings.FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)) != null)
+                {
+                    continue;
+                }
+
+                Icon icon = ResolveCandidateIcon(candidate);
+                if (icon == null)
+                {
+                    continue;
+                }
+
+                //the maximum, not _defaultIngameValue: the vendor default is the neutral value on both
+                //vendors, so a whole bulk added library would apply no visible change at all and would be
+                //indistinguishable from a broken feature - and from a wrong executable guess, which is
+                //exactly what the "(?)" marker exists to make visible. One double-click lowers it per game
+                ApplicationSetting setting = new ApplicationSetting(name, path, _maxTrackBarValue, null, false, 50, 50, 100);
+                //the constructor above knows nothing about these two, they have to be assigned afterwards
+                setting.InstallDirectory = candidate.InstallDirectory;
+                setting.IsExecutableUnconfirmed = candidate.Confidence == ExecutableConfidence.Guessed;
+
+                //by mutation, never by reassignment: the proxy holds this very list instance
+                _applicationSettings.Add(setting);
+                ApplyApplicationListItemAppearance(AddApplicationListItem(setting.FileName, icon, setting.Name), setting);
+                addedCount++;
+            }
+
+            RefreshUnconfirmedCache();
+            this.listApplications.SelectedIndices.Clear();
+            ForceSaveVibranceSettings();
+            SetFindGamesStatus(addedCount);
+        }
+
+        private Icon ResolveCandidateIcon(GameCandidate candidate)
+        {
+            if (candidate.Icon != null)
+            {
+                return candidate.Icon;
+            }
+
+            try
+            {
+                //the finder extracts the icon on its worker thread, but extraction is allowed to fail there
+                return Icon.ExtractAssociatedIcon(candidate.ExecutablePath);
+            }
+            catch (Exception ex)
+            {
+                //one unreadable executable must not take the rest of the batch down with it
+                Log(ex);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Tells the user what the game finder added. The finder window is already gone at this point, so
+        /// this is the only place the message can appear.
+        /// </summary>
+        private void SetFindGamesStatus(int addedCount)
+        {
+            this.labelFindGamesStatus.Text = addedCount > 0
+                ? string.Format("Added {0} game{1}. Double-click a game to set its ingame vibrance level.", addedCount, addedCount == 1 ? "" : "s")
+                : "No games were added.";
+        }
+
+        /// <summary>
+        /// Renders the marker of an executable the game finder guessed. Only the display text is decorated,
+        /// never ApplicationSetting.Name, which is the key the foreground process name is compared against.
+        /// </summary>
+        private void ApplyApplicationListItemAppearance(ListViewItem lvi, ApplicationSetting setting)
+        {
+            if (lvi == null || setting == null)
+            {
+                return;
+            }
+
+            if (setting.IsExecutableUnconfirmed)
+            {
+                lvi.Text = setting.Name + " (?)";
+                lvi.ForeColor = SystemColors.GrayText;
+                lvi.ToolTipText = ToolTipExecutableUnconfirmed;
+            }
+            else
+            {
+                lvi.Text = setting.Name;
+                lvi.ForeColor = SystemColors.WindowText;
+                lvi.ToolTipText = string.Empty;
+            }
+        }
+
+        private ListViewItem FindApplicationListItem(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName))
+            {
+                return null;
+            }
+
+            foreach (ListViewItem lvi in this.listApplications.Items)
+            {
+                if (lvi.Tag != null && string.Equals(lvi.Tag.ToString(), fileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return lvi;
+                }
+            }
+
+            return null;
+        }
+
+        private void RefreshUnconfirmedCache()
+        {
+            _hasUnconfirmedEntries = _applicationSettings != null &&
+                _applicationSettings.Exists(x => x != null && x.IsExecutableUnconfirmed);
+        }
+
+        private void RemoveSettingByFileName(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName))
+            {
+                return;
+            }
+
+            _applicationSettings.RemoveAll(x => x != null && string.Equals(x.FileName, fileName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Clears the marker of a guessed executable the first time that executable really shows up in the
+        /// foreground. Runs on the ui thread inside the foreground callback, at the moment a game goes
+        /// fullscreen, so the common path is one boolean test and the save is left to the debounced worker.
+        /// </summary>
+        private void OnForegroundChangedConfirmExecutable(object sender, WinEventHookEventArgs e)
+        {
+            if (!_hasUnconfirmedEntries)
+            {
+                return;
+            }
+
+            ApplicationSetting setting = _applicationSettings.FirstOrDefault(
+                x => x.IsExecutableUnconfirmed &&
+                     string.Equals(x.Name, e.ProcessName, StringComparison.OrdinalIgnoreCase));
+            if (setting == null)
+            {
+                return;
+            }
+
+            setting.IsExecutableUnconfirmed = false;
+            ListViewItem lvi = FindApplicationListItem(setting.FileName);
+            if (lvi != null)
+            {
+                ApplyApplicationListItemAppearance(lvi, setting);
+            }
+            RefreshUnconfirmedCache();
+
+            //no ForceSaveVibranceSettings here, serializing the whole file inside the foreground callback is
+            //exactly what must not happen. Losing the flag on a crash costs one more "(?)" on the next start
+            if (!settingsBackgroundWorker.IsBusy)
+            {
+                settingsBackgroundWorker.RunWorkerAsync();
             }
         }
 
@@ -601,23 +827,52 @@ namespace vibrance.GUI.common
             ListViewItem selectedItem = this.listApplications.SelectedItems[0];
             if (selectedItem != null)
             {
-                ApplicationSetting actualSetting = _applicationSettings.FirstOrDefault(x => x.FileName == selectedItem.Tag.ToString());
+                //captured before the dialog runs, "Change executable..." is allowed to replace the path
+                string originalFileName = selectedItem.Tag.ToString();
+                ApplicationSetting actualSetting = _applicationSettings.FirstOrDefault(x => x.FileName == originalFileName);
                 VibranceSettings settingsWindow = new VibranceSettings(_v, _minTrackBarValue, _maxTrackBarValue, _defaultIngameValue, selectedItem, actualSetting, _supportedResolutionList, _graphicsAdapter);
                 DialogResult result = settingsWindow.ShowDialog();
                 if (result == DialogResult.OK)
                 {
                     ApplicationSetting newSetting = settingsWindow.GetApplicationSetting();
-                    if (_applicationSettings.FirstOrDefault(x => x.FileName == newSetting.FileName) != null)
-                    {
-                        _applicationSettings.Remove(_applicationSettings.First(x => x.FileName == newSetting.FileName));
-                    }
+                    RemoveSettingByFileName(originalFileName);
+                    RemoveSettingByFileName(newSetting.FileName);
                     _applicationSettings.Add(newSetting);
+                    if (!string.Equals(originalFileName, newSetting.FileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        selectedItem.Tag = newSetting.FileName;
+                        ReplaceApplicationListItemIcon(selectedItem, newSetting.FileName);
+                    }
+                    ApplyApplicationListItemAppearance(selectedItem, newSetting);
+                    RefreshUnconfirmedCache();
                     ForceSaveVibranceSettings();
                 }
                 else if (actualSetting == null)
                 {
                     removeApplicationListItem(selectedItem);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Repaints the icon of an item whose executable was changed. Uses the indexer of the image
+        /// collection on purpose: RemoveAt plus Add would shift every following image index and silently
+        /// break both the removal and the icon of the per-game dialog.
+        /// </summary>
+        private void ReplaceApplicationListItemIcon(ListViewItem lvi, string fileName)
+        {
+            try
+            {
+                Icon icon = Icon.ExtractAssociatedIcon(fileName);
+                if (icon != null)
+                {
+                    this.listApplications.LargeImageList.Images[lvi.ImageIndex] = icon.ToBitmap();
+                }
+            }
+            catch (Exception ex)
+            {
+                //the executable is already saved, keeping the old icon is the only thing left to get wrong
+                Log(ex);
             }
         }
 
@@ -632,6 +887,7 @@ namespace vibrance.GUI.common
                 _applicationSettings.Remove(_applicationSettings.FirstOrDefault(x => x.FileName.Equals(eachItem.Tag.ToString())));
             }
 
+            RefreshUnconfirmedCache();
             ForceSaveVibranceSettings();
         }
 
@@ -647,6 +903,18 @@ namespace vibrance.GUI.common
         {
             ProcessExplorer ex = new ProcessExplorer(this);
             ex.Show();
+        }
+
+        private void buttonFindGames_Click(object sender, EventArgs e)
+        {
+            //modal on purpose, the finder holds its close back while its scan is still running
+            using (GameFinder finder = new GameFinder(_applicationSettings))
+            {
+                if (finder.ShowDialog(this) == DialogResult.OK)
+                {
+                    AddProgramsBulk(finder.GetSelectedCandidates());
+                }
+            }
         }
     }
 }

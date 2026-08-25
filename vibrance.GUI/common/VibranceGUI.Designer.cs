@@ -53,9 +53,11 @@
             this.checkBoxNeverChangeColorSettings = new System.Windows.Forms.CheckBox();
             this.groupBox5 = new System.Windows.Forms.GroupBox();
             this.buttonProcessExplorer = new System.Windows.Forms.Button();
+            this.buttonFindGames = new System.Windows.Forms.Button();
             this.buttonRemoveProgram = new System.Windows.Forms.Button();
             this.listApplications = new System.Windows.Forms.ListView();
             this.buttonAddProgram = new System.Windows.Forms.Button();
+            this.labelFindGamesStatus = new System.Windows.Forms.Label();
             this.groupBoxColorSettings = new System.Windows.Forms.GroupBox();
             this.groupBox8 = new System.Windows.Forms.GroupBox();
             this.labelGamma = new System.Windows.Forms.Label();
@@ -311,6 +313,7 @@
             // groupBox5
             // 
             this.groupBox5.Controls.Add(this.buttonProcessExplorer);
+            this.groupBox5.Controls.Add(this.buttonFindGames);
             this.groupBox5.Controls.Add(this.buttonRemoveProgram);
             this.groupBox5.Controls.Add(this.listApplications);
             this.groupBox5.Controls.Add(this.buttonAddProgram);
@@ -334,6 +337,19 @@
             this.buttonProcessExplorer.UseVisualStyleBackColor = true;
             this.buttonProcessExplorer.Click += new System.EventHandler(this.buttonProcessExplorer_Click);
             // 
+            // buttonFindGames
+            // 
+            this.buttonFindGames.Location = new System.Drawing.Point(400, 31);
+            this.buttonFindGames.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.buttonFindGames.Name = "buttonFindGames";
+            this.buttonFindGames.Size = new System.Drawing.Size(150, 35);
+            this.buttonFindGames.TabIndex = 4;
+            this.buttonFindGames.Text = "Find games";
+            this.toolTip.SetToolTip(this.buttonFindGames, "Searches your Steam and Epic Games libraries for installed games and lets you add " +
+        "several of them at once.");
+            this.buttonFindGames.UseVisualStyleBackColor = true;
+            this.buttonFindGames.Click += new System.EventHandler(this.buttonFindGames_Click);
+            // 
             // buttonRemoveProgram
             // 
             this.buttonRemoveProgram.Location = new System.Drawing.Point(279, 31);
@@ -351,6 +367,7 @@
             this.listApplications.Location = new System.Drawing.Point(10, 75);
             this.listApplications.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.listApplications.Name = "listApplications";
+            this.listApplications.ShowItemToolTips = true;
             this.listApplications.Size = new System.Drawing.Size(574, 262);
             this.listApplications.TabIndex = 1;
             this.listApplications.UseCompatibleStateImageBehavior = false;
@@ -366,6 +383,17 @@
             this.buttonAddProgram.Text = "Add manually";
             this.buttonAddProgram.UseVisualStyleBackColor = true;
             this.buttonAddProgram.Click += new System.EventHandler(this.buttonAddProgram_Click);
+            // 
+            // labelFindGamesStatus
+            // 
+            this.labelFindGamesStatus.AutoSize = true;
+            this.labelFindGamesStatus.ForeColor = System.Drawing.Color.Green;
+            this.labelFindGamesStatus.Location = new System.Drawing.Point(15, 1110);
+            this.labelFindGamesStatus.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.labelFindGamesStatus.Name = "labelFindGamesStatus";
+            this.labelFindGamesStatus.Size = new System.Drawing.Size(0, 20);
+            this.labelFindGamesStatus.TabIndex = 19;
+            this.labelFindGamesStatus.Text = "";
             // 
             // groupBoxColorSettings
             // 
@@ -495,6 +523,7 @@
             this.ClientSize = new System.Drawing.Size(628, 1161);
             this.Controls.Add(this.groupBoxColorSettings);
             this.Controls.Add(this.groupBox5);
+            this.Controls.Add(this.labelFindGamesStatus);
             this.Controls.Add(this.labelPaypal);
             this.Controls.Add(this.buttonPaypal);
             this.Controls.Add(this.groupBoxSettings);
@@ -561,6 +590,8 @@
         private System.Windows.Forms.ListView listApplications;
         private System.Windows.Forms.Button buttonAddProgram;
         private System.Windows.Forms.Button buttonProcessExplorer;
+        private System.Windows.Forms.Button buttonFindGames;
+        private System.Windows.Forms.Label labelFindGamesStatus;
         private System.Windows.Forms.CheckBox checkBoxNeverChangeResolutions;
         private System.Windows.Forms.CheckBox checkBoxNeverChangeColorSettings;
         private System.Windows.Forms.GroupBox groupBoxColorSettings;
