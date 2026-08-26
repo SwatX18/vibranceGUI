@@ -27,6 +27,8 @@ namespace vibrance.GUI
         private const string GpuSelfTestMessageBoxCaption = "vibranceGUI graphics adapter self test";
         private const string MatchingSelfTestMessageBoxCaption = "vibranceGUI foreground matching self test";
         private const string StabilitySelfTestMessageBoxCaption = "vibranceGUI stability fixes self test";
+        private const string GammaSelfTestMessageBoxCaption = "vibranceGUI gamma restore self test";
+        private const string GammaDisplaySelfTestMessageBoxCaption = "vibranceGUI gamma restore hardware self test";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
@@ -84,6 +86,29 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, StabilityFixture.Run().ToArray()),
                     StabilitySelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again, and deliberately not folded into --selftest-stability: this is
+            // the pure half only - CalculateLUT/ComposeGammaRamp/IsPlausibleGammaRamp math with no
+            // display access - so it stays runnable anywhere, any time. StabilityFixture documents
+            // "no live GPU driver" as a hard constraint and forces SetNeverChangeColorSettings(true)
+            // so it can never reach a real screen; a hardware round trip would violate that.
+            if (args.Contains("--selftest-gamma"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, GammaRestoreFixture.Run().ToArray()),
+                    GammaSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Unlike every self test above, this one can write to a real display's gamma ramp - it
+            // runs the pure half first, then asks for confirmation before touching hardware, and
+            // always restores what it found before returning. Opt in only; not part of
+            // --selftest-gamma or the regression suite.
+            if (args.Contains("--selftest-gamma-display"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, GammaRestoreFixture.RunWithDisplay().ToArray()),
+                    GammaDisplaySelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -277,7 +302,10 @@ namespace vibrance.GUI
                 adapter, source, Environment.NewLine, GraphicsAdapterHelper.DescribeDisplayAdapters()));
         }
 
-        static void LogSafely(string message)
+        // Internal rather than private: DeviceGammaRampHelper's WinEvent-reachable restore path
+        // reuses this so a broken log write (e.g. File.AppendText failing) cannot itself throw an
+        // exception across the native WinEvent callback frame.
+        internal static void LogSafely(string message)
         {
             try
             {
