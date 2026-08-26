@@ -29,6 +29,7 @@ namespace vibrance.GUI
         private const string StabilitySelfTestMessageBoxCaption = "vibranceGUI stability fixes self test";
         private const string GammaSelfTestMessageBoxCaption = "vibranceGUI gamma restore self test";
         private const string GammaDisplaySelfTestMessageBoxCaption = "vibranceGUI gamma restore hardware self test";
+        private const string ResolutionSelfTestMessageBoxCaption = "vibranceGUI resolution change self test";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
@@ -98,6 +99,21 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, GammaRestoreFixture.Run().ToArray()),
                     GammaSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: ResolutionChangeFixture only ever drives ChangeResolutionEx
+            // through a fake IDisplayModeDevice, so - unlike --selftest-gamma-display - there is
+            // deliberately no hardware variant of this one, and there must never be one. A gamma
+            // ramp has a guaranteed undo (RestoreOriginal in GammaRestoreFixture); a display mode
+            // change does not - CDS_UPDATEREGISTRY gets no revert-if-unconfirmed safety net the way
+            // an interactive Windows Settings change does, and a mode the panel cannot show would
+            // leave a user unable to even see a dialog asking them to confirm it, which is literally
+            // what issue #114 reports.
+            if (args.Contains("--selftest-resolution"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, ResolutionChangeFixture.Run().ToArray()),
+                    ResolutionSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

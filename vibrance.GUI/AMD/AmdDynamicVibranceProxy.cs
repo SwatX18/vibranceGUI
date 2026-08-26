@@ -171,12 +171,18 @@ namespace vibrance.GUI.AMD
 
                 //test if a resolution change is needed
                 if (_vibranceInfo.neverChangeResolution == false && applicationSetting.IsResolutionChangeNeeded &&
-                    IsResolutionChangeNeeded(screen, applicationSetting.ResolutionSettings) &&
+                    ResolutionHelper.IsResolutionChangeNeeded(screen.DeviceName, applicationSetting.ResolutionSettings) &&
                     _windowsResolutionSettings.ContainsKey(screen.DeviceName) &&
                     _windowsResolutionSettings[screen.DeviceName].Item2.Contains(applicationSetting.ResolutionSettings))
                 {
-                    PerformResolutionChange(screen, applicationSetting.ResolutionSettings);
-                    _vibranceInfo.isResolutionChangeApplied = true;
+                    ResolutionHelper.ResolutionChangeResult result = ResolutionHelper.ChangeResolutionEx(
+                        applicationSetting.ResolutionSettings, screen.DeviceName, false);
+                    // AppliedUnverified means CDS_UPDATEREGISTRY itself reported success but the
+                    // post-apply readback did not confirm it - see the matching comment in
+                    // NvidiaDynamicVibranceProxy's OnWinEventHook.
+                    _vibranceInfo.isResolutionChangeApplied =
+                        result == ResolutionHelper.ResolutionChangeResult.Applied ||
+                        result == ResolutionHelper.ResolutionChangeResult.AppliedUnverified;
                 }
 
                 //test if color settings change is needed
@@ -201,12 +207,19 @@ namespace vibrance.GUI.AMD
                 //test if a resolution change is needed
                 Screen currentScreen = Screen.FromHandle(processHandle);
                 if (_vibranceInfo.neverChangeResolution == false && _vibranceInfo.isResolutionChangeApplied == true &&
-                    _gameScreen != null && _gameScreen.Equals(currentScreen) && 
+                    _gameScreen != null && _gameScreen.Equals(currentScreen) &&
                     _windowsResolutionSettings.ContainsKey(currentScreen.DeviceName) &&
-                    IsResolutionChangeNeeded(currentScreen, _windowsResolutionSettings[currentScreen.DeviceName].Item1))
+                    ResolutionHelper.IsResolutionChangeNeeded(currentScreen.DeviceName, _windowsResolutionSettings[currentScreen.DeviceName].Item1))
                 {
-                    PerformResolutionChange(currentScreen, _windowsResolutionSettings[currentScreen.DeviceName].Item1);
-                    _vibranceInfo.isResolutionChangeApplied = false;
+                    ResolutionHelper.ResolutionChangeResult result = ResolutionHelper.ChangeResolutionEx(
+                        _windowsResolutionSettings[currentScreen.DeviceName].Item1, currentScreen.DeviceName, true);
+                    // A failed (or unverified) revert must leave the flag true so the next
+                    // foreground event retries it; Suppressed (the give-up state) deliberately
+                    // still clears it - see the matching comment in NvidiaDynamicVibranceProxy's
+                    // OnWinEventHook.
+                    if (result != ResolutionHelper.ResolutionChangeResult.Failed &&
+                        result != ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
+                        _vibranceInfo.isResolutionChangeApplied = false;
                 }
 
                 //apply windows color settings if color settings were previously changed
@@ -215,21 +228,6 @@ namespace vibrance.GUI.AMD
                     RestoreWindowsColorSettings();
                 }
             }
-        }
-
-        private static bool IsResolutionChangeNeeded(Screen screen, ResolutionModeWrapper resolutionSettings)
-        {
-            Devmode mode;
-            if (resolutionSettings != null && ResolutionHelper.GetCurrentResolutionSettings(out mode, screen.DeviceName) && !resolutionSettings.Equals(mode))
-            {
-                return true;
-            }
-            return false;
-        }
-
-        private static void PerformResolutionChange(Screen screen, ResolutionModeWrapper resolutionSettings)
-        {
-            ResolutionHelper.ChangeResolutionEx(resolutionSettings, screen.DeviceName);
         }
 
         private void RestoreWindowsColorSettings()

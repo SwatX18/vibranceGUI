@@ -125,7 +125,7 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
 | The main window (controls, workers, watched-app list) | `vibrance.GUI/common/VibranceGUI.cs` + `VibranceGUI.Designer.cs` |
 | The per-game dialog (ingame level, resolution) | `vibrance.GUI/common/VibranceSettings.cs` |
 | The running-process picker | `vibrance.GUI/common/ProcessExplorer.cs` |
-| Resolution switching / `DispChangeBadFlags` errors | `vibrance.GUI/common/ResolutionHelper.cs:101-126` |
+| Resolution switching / `DispChangeBadFlags` errors | `vibrance.GUI/common/ResolutionHelper.cs:237-359` (`ChangeResolutionEx`) — see [§6.4](#64-the-optional-resolution-switch) |
 | NVIDIA native calls (P/Invoke declarations) | `vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:19-115` — the implementation is a **prebuilt binary from another repository** |
 | AMD native calls | `vibrance.GUI/AMD/vendor/AmdAdapter32.cs` (and its clone `AmdAdapter64.cs`) plus `vibrance.GUI/AMD/vendor/adl32/`, `adl64/` |
 | Startup wiring / which proxy gets built | `vibrance.GUI/Program.cs` — the only composition root |
@@ -140,9 +140,12 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
 2. **Everything runs on the UI thread — including the driver calls.** The hook is
    `WINEVENT_OUTOFCONTEXT`, so callbacks arrive through the message queue of the thread that installed
    it, which is the WinForms UI thread (`common/WinEventHook.cs:187-190`, pumped by `Program.cs:96`).
-   NvAPI round-trips, ADL calls and `ChangeDisplaySettingsEx` all block the UI, and one path pops a
-   **modal message box from inside the foreground-change callback**
-   (`common/ResolutionHelper.cs:122`) — i.e. over the game that just took focus.
+   NvAPI round-trips, ADL calls and `ChangeDisplaySettingsEx` all block the UI. **Historical note:**
+   one path used to pop a modal message box from inside this very callback on a resolution-change
+   failure (`common/ResolutionHelper.cs`, pre-`work/resolution-change`) — i.e. over the game that had
+   just taken focus. `ResolutionHelper.cs` no longer has a `using System.Windows.Forms` or any
+   `MessageBox` call site (the word itself still appears once, in a doc comment describing this very
+   fact); see [§6.4](#64-the-optional-resolution-switch) and **D2**.
 3. **The build is x86-only, and stays that way until someone rebuilds the native DLL.**
    `vibrance.GUI/NVIDIA/vibranceDLL.dll` is a PE32 i386 image (VERIFIED binary), and `PlatformTarget`
    is `x86` in all four configurations (`vibrance.GUI.csproj:33,44,65,74`).
@@ -678,49 +681,155 @@ open when you are debugging a vendor-specific report:
 
 ### 6.4 The optional resolution switch
 
-Both proxies contain a verbatim-duplicated pair of helpers, `IsResolutionChangeNeeded` and
-`PerformResolutionChange` (`NvidiaDynamicVibranceProxy.cs:271-284`, `AmdDynamicVibranceProxy.cs:158-171`),
-which delegate to `ResolutionHelper.ChangeResolutionEx`.
+**This section describes the post-fix design (branch `work/resolution-change`).** The two-phase
+`CDS_UPDATEREGISTRY|CDS_NORESET` pattern this subsection used to describe, `ChangeResolution` (a
+second, dead implementation of the same pattern) and the per-proxy `IsResolutionChangeNeeded`/
+`PerformResolutionChange` duplication are all **gone**. The root `-4` (`DISP_CHANGE_BADFLAGS`) some
+users hit could never be confirmed from this repository — it originates inside `user32` — so the fix
+does not chase it; instead it closes every defect *around* the failure, which is where the real user
+harm (a permanently blocked WinEvent thread, a stranded desktop resolution, an infinite retry loop)
+actually lived. See `T0-CONTRACTS.md`-style history in the git log of this branch for the four
+defects fixed together.
 
-`common/ResolutionHelper.cs:101-126` implements the documented two-phase multi-monitor pattern:
+**The seam.** `common/ResolutionHelper.cs:18-28` defines `internal interface IDisplayModeDevice`
+(`TryGetCurrentMode`, `TryEnumerateMode`, `ChangeMode` — `Devmode` passed **by value**, not `ref`, so
+a fake can record exactly what it was handed). `RealDisplayModeDevice` (`:501-522`) is the only
+production implementation, calling `EnumDisplaySettings`/`ChangeDisplaySettingsEx` directly.
+`common/ResolutionChangeFixture.cs` drives the internal overloads against its own
+`FakeDisplayModeDevice`, the same pattern `DeviceGammaRampHelper`/`IGammaDevice`/
+`GammaRestoreFixture` already established for the gamma ramp.
 
-```csharp
-// stage the mode for one device
-ChangeDisplaySettingsEx(lpszDeviceName, ref mode, IntPtr.Zero,
-    CdsUpdateregistry | CdsNoreset, IntPtr.Zero);   // :113
-// then commit globally: null device, null devmode, no flags
-ChangeDisplaySettingsEx(null, IntPtr.Zero, IntPtr.Zero, CdsNone, IntPtr.Zero);   // :114
+**The call.** Both proxies now call two public members directly instead of their own duplicated
+helpers: `ResolutionHelper.IsResolutionChangeNeeded(deviceName, target)` (`:177-180`) as a guard, then
+`ResolutionHelper.ChangeResolutionEx(target, deviceName, isRevert)` (`:219-222`) to act
+(`NvidiaDynamicVibranceProxy.cs:241-254,289-307`; `AmdDynamicVibranceProxy.cs:173-186,209-223`). The
+`isRevert` flag selects which of two different give-up bounds applies (below) and which wording a
+failure notification uses.
+
+**The sequence** (internal overload, `common/ResolutionHelper.cs:237-359`):
+
+```
+1. TryGetCurrentMode  -> unreadable: Failed, logged once, no notification, not counted toward give-up
+2. target.MatchesAchievedMode(current)? -> AlreadyMatching, clear this device's failure state, done
+3. copy current -> desired; overwrite width/height/bpp/frequency/fixedOutput; OR (not overwrite)
+   OwnedFields into dmFields, so DM_POSITION (and anything else EnumDisplaySettings already set)
+   survives untouched
+4. ChangeMode(CDS_TEST)
+     rejected AND DM_DISPLAYFIXEDOUTPUT was declared AND its value actually differs from the
+     device's own current value -> drop that one bit, restore the device's own current value,
+                                    retry ONCE (skipped when the value already matched - dropping
+                                    the bit would change nothing observable, so it is never worth a
+                                    second driver call)
+     still rejected -> Failed (step 7), CDS_UPDATEREGISTRY is never reached
+5. ChangeMode(CDS_UPDATEREGISTRY)
+     Successful -> continue; Notupdated -> logged once, continue (mode is live regardless);
+     anything else -> Failed (step 7)
+6. TryGetCurrentMode again; must match target on the four fields, or -> AppliedUnverified (step 7) -
+   a DISTINCT result from Failed, because CDS_UPDATEREGISTRY itself already reported success here;
+   the mode most likely DID change, so the proxies keep treating it as applied rather than
+   discarding a change that plausibly landed
+7. Failed/AppliedUnverified: bump a per-(device,target,direction) consecutive-failure counter; log
+   once per (device, dedup key) - the real DispChange code for a step 4/5 rejection, a fixed
+   "readback-mismatch" key (with the achieved-vs-target values in the message, not a synthetic
+   DispChange code) for step 6; once the counter reaches the direction's bound, raise
+   ResolutionChangeFailed exactly once and every further call for that exact key returns Suppressed
+   **without touching the driver at all**, until a success on a DIFFERENT target/direction for the
+   same device clears it (see ClearFailureState - once a key is itself suppressed, the driver is
+   never called for it again through this path, so it cannot produce a success of its own)
 ```
 
-Three problems are visible in those 26 lines:
+`CDS_TEST` then `CDS_UPDATEREGISTRY` replaces the old stage-then-commit pattern: `CDS_UPDATEREGISTRY`
+alone both applies and persists in one authoritative call, so there is no longer a reachable state
+where the registry holds a mode nothing ever confirmed was applied, and `CDS_TEST` catches a mode the
+driver would reject before anything is written — which matters because `CDS_UPDATEREGISTRY` gets no
+15-second revert-if-unconfirmed safety net the way an interactive Windows Settings change does.
+`CDS_NORESET` is never passed at all (asserted by `ResolutionChangeFixture` check 1).
 
-1. **`dmFields` is never updated.** The struct still carries whatever bitmask `EnumDisplaySettings`
-   reported. `ChangeDisplaySettingsEx` only honours members flagged in `dmFields`, so a scaling choice
-   (`dmDisplayFixedOutput`) can be silently ignored, and nothing declares the fields the code *did*
-   change (`:106-110`).
-2. **The commit at `:114` runs unconditionally**, even when the staging call failed, and its return
-   value is discarded.
-3. **Failure is reported with a modal `MessageBox` from inside the foreground-change callback**
-   (`:122`), producing literally `Changing the resolution failed: DispChangeBadflags`. That is the
-   string in issues #114 and #132. Because the guard is "does the current mode differ from the
-   target?", a failed change leaves the condition true and **the box comes back on every subsequent
-   foreground switch**.
+**No `using System.Windows.Forms` and no `MessageBox` call site in `ResolutionHelper.cs`.** A give-up
+is reported through `ResolutionHelper.ResolutionChangeFailed` (`:117`), which `VibranceGUI`'s
+constructor subscribes (`VibranceGUI.cs:94`) and turns into a `notifyIcon` balloon tip
+(`OnResolutionChangeFailed`, `VibranceGUI.cs:557-580`) — non-modal, and, because the raise is
+deferred to the give-up attempt rather than fired on every failure, at most one balloon per
+(device, target) streak. There is deliberately no "IsGivingUp" flag on the event args: a give-up is
+the only reason it is ever raised, so a field that would always read `true` carries no information.
+`CleanUp()` unsubscribes both this and `SystemEvents.DisplaySettingsChanged` in a `finally`
+(`VibranceGUI.cs:433-434`) — mandatory, not just good practice; see the guard described next.
 
-The working user-side mitigation is the "Never change resolutions" checkbox, which short-circuits
-every call site (`NvidiaDynamicVibranceProxy.cs:222,244`; `AmdDynamicVibranceProxy.cs:117,145`). It is
-also the default on the unmerged `feature/add-color-settings` branch (commit `6900bac`), which tells
-you what the maintainer concluded about this feature.
+**`OnDisplaySettingsChanged`/`OnResolutionChangeFailed` guard both `IsDisposed` and
+`!IsHandleCreated`, not just `InvokeRequired`** (`VibranceGUI.cs:515-580`). `Control.InvokeRequired`
+returns **false** whenever the control has no window handle yet, and the handle genuinely does not
+exist for the whole span of the constructor's NvAPI/ADL initialisation after these handlers are
+subscribed (`backgroundWorker_DoWork` busy-waits on `!IsHandleCreated`) — exactly the window in which
+a `SystemEvents` notification is likely at autostart, as monitors settle, since `SystemEvents` starts
+its own dedicated thread and message pump the moment the first handler is attached, independent of
+the form's handle entirely. Without the explicit check, a notification landing in that window would
+mutate `_windowsResolutionSettings` directly on the `SystemEvents` thread. The same guard covers the
+symmetric shutdown case: `CleanUp()`'s `-=` cannot cover a notification already in flight, which
+could otherwise find the handle destroyed, or the form disposed (`BeginInvoke` throwing
+`ObjectDisposedException` on the `SystemEvents` thread with nothing there to catch it).
 
-**UNCERTAIN:** the root cause of the `-4` (`DISP_CHANGE_BADFLAGS`) cannot be determined from this
-repository — it originates inside `user32`. The candidates consistent with the code are (a)
-`CDS_UPDATEREGISTRY|CDS_NORESET` being rejected for a device that is not attached to the desktop or is
-a mirroring/virtual driver — reachable because `lpszDeviceName` comes straight from
-`Screen.FromHandle(e.Handle).DeviceName` with no attachment check; (b) the stale
-`dmFields`/`dmDisplayFixedOutput` combination above; (c) a display-topology change since startup
-(hot-plug, sleep/resume, driver restart) making the cached `_windowsResolutionSettings[deviceName]`
-entry refer to a different physical device. Note the asymmetry: the *ingame* direction validates that
-the target mode is in the device's supported list (`NvidiaDynamicVibranceProxy.cs:226`), but the
-*revert* direction applies the mode captured at app start with no validation at all.
+**Give-up bounds are asymmetric on purpose** (`ApplyFailureBound = 3`, `RevertFailureBound = 10`,
+`ResolutionHelper.cs:87-88`): giving up on an *apply* only strands the user at their own Windows
+resolution, the safe side; giving up on a *revert* strands them at the **game's** resolution, with
+nothing else in the program that will ever retry it, so it is worth trying substantially longer
+before accepting that outcome.
+
+**The frozen-snapshot fix.** `_windowsResolutionSettings` (`VibranceGUI.cs`) used to be built once in
+the constructor and never touched again — if the user changed their desktop resolution by hand, or
+plugged in a monitor, the cached "Windows resolution" the revert path compares against went stale,
+and every API call involved still reported success (see former defect **D58** below). The
+constructor now calls `RebuildWindowsResolutionSettings(true)` (`VibranceGUI.cs:69`), and
+`SystemEvents.DisplaySettingsChanged` (`Microsoft.Win32`, already referenced via `System.dll`) is
+subscribed in the constructor (`:95`) and **must** be unsubscribed in `CleanUp()` (`:433`) — it holds
+a strong reference to the handler on its own dedicated thread, so a leaked subscription leaks the
+form and can fault at shutdown. The handler (`OnDisplaySettingsChanged`, `:515-548`) guards
+`IsDisposed`/`!IsHandleCreated` and marshals onto the UI thread with `BeginInvoke` (see above) before
+calling `RebuildWindowsResolutionSettings(false)` — `false` so a hot-plug or resolution change never
+pops the constructor's own failure dialog from inside an arbitrary system event, which would be
+exactly the D2-shaped mistake this whole fix removes.
+**The single most dangerous line in the fix:** while `_v.GetVibranceInfo().isResolutionChangeApplied`
+is true (a game's own resolution change is currently live), a refresh must **not** overwrite the
+already-captured "Windows resolution" (`Item1`) for any known device — a live read at that moment
+would return the *game's* mode, not the desktop's, and silently adopting it would strand the desktop
+at the game's resolution forever, since the revert path compares against exactly that value
+(`RebuildWindowsResolutionSettings`, `VibranceGUI.cs:446-507`). Only `Item2` (the supported-mode
+list) refreshes in that case; a screen with no prior entry still gets both, since it cannot be the
+screen the game is running on. `Item2` is also reused — the same `List<ResolutionModeWrapper>`
+instance, not a fresh copy — for any device already in the dictionary regardless of that flag, since
+it is a property of the device rather than of whichever mode is currently active; re-enumerating it
+on every refresh would cost several hundred `EnumDisplaySettings` P/Invokes per screen on the UI
+thread, twice per alt-tab cycle (vibranceGUI's own resolution changes fire `DisplaySettingsChanged`
+too), and reusing the identical instance is also what keeps `_supportedResolutionList` — captured
+once, in the constructor, and `readonly` — from silently going stale after a refresh.
+
+**The fixed-output-loop fix.** `IsResolutionChangeNeeded`/`ChangeResolutionEx`'s "does this still
+need changing?" guard is `ResolutionModeWrapper.MatchesAchievedMode` (`ResolutionModeWrapper.cs`),
+which compares only `DmPelsWidth`/`DmPelsHeight`/`DmBitsPerPel`/`DmDisplayFrequency` —
+**deliberately not** `DmDisplayFixedOutput`. `Equals`/`GetHashCode`/`ToString` are untouched and still
+compare all five fields (the combo box lookup and the `applicationData.xml` round trip depend on
+that). `DmDisplayFixedOutput` is only honoured by `ChangeDisplaySettingsEx` when
+`DM_DISPLAYFIXEDOUTPUT` survives into the *achieved* mode's own `dmFields`, which is driver-dependent
+— some drivers apply the four real fields correctly but silently pin this one to their own default
+regardless of what was requested. Basing the guard on a field a driver is free to never honour is
+what let a user's "(Center)" mode selection (former defect **D59** below) re-fire a real mode set and
+registry write on every single foreground event, forever, even though the mode had genuinely already
+been achieved on every field the driver actually supports.
+
+The working user-side mitigation is still the "Never change resolutions" checkbox, which
+short-circuits every call site. It is also the default on the unmerged `feature/add-color-settings`
+branch (commit `6900bac`), which tells you what the maintainer concluded about this feature before
+this fix existed.
+
+**UNCERTAIN, still:** the root cause of a `DISP_CHANGE_BADFLAGS`-class rejection from `CDS_TEST`
+itself cannot be determined from this repository — it originates inside `user32`/the driver. The
+candidates consistent with the code are unchanged from before this fix: (a) the device not being
+attached to the desktop, or a mirroring/virtual driver, rejecting the mode outright — `deviceName`
+comes straight from `Screen.FromHandle(e.Handle).DeviceName` with no attachment check; (b) a
+display-topology change since the mode was captured (hot-plug, sleep/resume, driver restart) making
+the cached entry refer to a different physical device. What changed is that `CDS_TEST` now catches
+this **before** anything is written, and the give-up bound and notification mean a persistently
+rejecting device stops being retried and tells the user, instead of retrying forever with a modal box
+on every switch.
 
 ### 6.5 Shutdown
 
@@ -777,10 +886,11 @@ exists.
 
 | Thread | What runs on it |
 |---|---|
-| **UI / STA main thread** (`Application.Run`, `Program.cs:96`) | all WinForms work; **all WinEvent callbacks** and therefore all vibrance writes, all `ChangeDisplaySettingsEx` calls, and the `MessageBox` in `ResolutionHelper`; both proxy constructors |
+| **UI / STA main thread** (`Application.Run`, `Program.cs:96`) | all WinForms work; **all WinEvent callbacks** and therefore all vibrance writes and all `ChangeDisplaySettingsEx` calls; both proxy constructors |
 | `backgroundWorker` (`VibranceGUI.cs:116-151`) | one-shot startup load: busy-wait for the handle, `Invoke` the settings read, then push configuration into the proxy |
 | `settingsBackgroundWorker` (`VibranceGUI.cs:181-185`) | `Thread.Sleep(5000)` then save ([§9.6](#96-the-debounced-save)) |
 | `ProcessExplorer.backgroundWorker` (`ProcessExplorer.cs:107-110`) | enumerate running processes, report each entry back to the UI thread |
+| `Microsoft.Win32.SystemEvents`' own dedicated thread | raises `DisplaySettingsChanged` (`VibranceGUI.cs:500-518`); the handler `BeginInvoke`s onto the UI thread before touching `_windowsResolutionSettings`, which `OnWinEventHook` reads with no locking of its own — see [§6.4](#64-the-optional-resolution-switch) |
 
 Consequences you must design around:
 
@@ -825,8 +935,8 @@ source; the ellipses mark text abbreviated for this table only.
 | "VibranceProxy failed to initialize! Press Ok to open the vibranceGUI Steam Guide in your browser. Scroll down to section \"Troubleshooting, Errors, Q&A\"." | `NvapiErrorInitFailed`, `NvidiaDynamicVibranceProxy.cs:123-124`; shown `:158` and **reused by AMD** at `AmdDynamicVibranceProxy.cs:48` | immediately after that dump. OK → `https://vibrancegui.com/vibrance/guide` (**D21**) |
 | "VibranceProxy failed to initialize! Graphics card system type (Desktop / Laptop) is unknown!" | `NvapiErrorSystypeUnknown`, `NvidiaDynamicVibranceProxy.cs:128`, shown `:180` | any enumerated GPU reports `NvSystemTypeUnknown`. Really means "the NvAPI call failed" (**D19**) |
 | "VibranceProxy detected that you are running a Laptop with integrated NVIDIA card. …" | `NvapiErrorSystypeUnsupported`, `NvidiaDynamicVibranceProxy.cs:125-127` | **never — dead constant** (**D20**) |
-| "Current resolution mode could not be determined. Switching back to your Windows resolution will not work." | `VibranceGUI.cs:70` | `EnumDisplaySettings` failed for a monitor during form construction; once per failing monitor, before the window is visible |
-| "Changing the resolution failed: *DispChangeBadflags*" (or any other `DispChange` member name) | `ResolutionHelper.cs:122` (live path); `:95` is the same message in the dead `ChangeResolution` | a staging `ChangeDisplaySettingsEx` failed. Modal, raised **inside the foreground-change callback**, and it repeats on every subsequent switch (**D2**, issues #114/#132) |
+| "Current resolution mode could not be determined. Switching back to your Windows resolution will not work." | `VibranceGUI.cs:489` (`RebuildWindowsResolutionSettings`, `showFailureDialog: true` path only) | `EnumDisplaySettings` failed for a monitor. Shown only from the constructor's own build — the `SystemEvents.DisplaySettingsChanged` refresh path (`showFailureDialog: false`) never shows it, deliberately: see [§6.4](#64-the-optional-resolution-switch) |
+| *(historical)* "Changing the resolution failed: DispChangeBadflags" (or any other `DispChange` member name) | **removed** — `ResolutionHelper.cs` has no `using System.Windows.Forms` and no `MessageBox` call site after `work/resolution-change` | was a staging `ChangeDisplaySettingsEx` failure, raised **inside the foreground-change callback**, repeating on every subsequent switch (**D2**, issues #114/#132 — see [§6.4](#64-the-optional-resolution-switch) for the replacement: a `notifyIcon` balloon tip via `ResolutionHelper.ResolutionChangeFailed`) |
 | Balloon tips: "Registered to Autostart!" / "Registering to Autostart failed!" / "Updated Autostart Path!" / "Updating Autostart Path failed!" / "Unregistered from Autostart!" / "Unregistering from Autostart failed!" | `VibranceGUI.cs:266-288` | the autostart checkbox — **including when it is set programmatically at startup** ([§9.5](#95-autostart)) |
 | Status label: "Initializing…" → "Running!" (green) → "Closing…" (red) | `VibranceGUI.Designer.cs:194`; `VibranceGUI.cs:205-206`; `:318-319` | "Running!" appears only if `isInitialized` was true (`:139-141`) — if it never turns green, the vendor layer failed silently (**D23**) |
 | "NVAPI Unloaded: …" | `VibranceGUI.cs:210` | **never** — `ReportProgress(2)` is never called (**§12.7**) |
@@ -1654,9 +1764,14 @@ parameterless constructor for XML and one taking a `Devmode` (`:18-25`).
   is `Enum.GetName(typeof(Dmdfo), DmDisplayFixedOutput)`, which returns `null` for out-of-range values.
   This is the text shown in the settings combo box.
 - `Equals` (`:33-56`) accepts **either** a `ResolutionModeWrapper` **or** a raw `Devmode` (converting on
-  the fly) and compares all five fields. **`GetHashCode()` is not overridden**, so the type is broken as
-  a dictionary or hash-set key; `List<T>.Contains` (used at `NvidiaDynamicVibranceProxy.cs:226`) works
-  only because it falls through to `Equals`.
+  the fly) and compares all five fields; `GetHashCode()` (`:58-67`) is overridden to match.
+- `MatchesAchievedMode(Devmode)` (`:84-90`, added on `work/resolution-change`) — a **second**,
+  narrower comparison used only by `ResolutionHelper.IsResolutionChangeNeeded`/`ChangeResolutionEx`.
+  Compares only the four driver-controlled fields, deliberately excluding `DmDisplayFixedOutput` —
+  see **D59** in [§12.1](#121-the-defects-that-explain-real-upstream-issues) and
+  [§6.4](#64-the-optional-resolution-switch) for why `Equals` itself was left untouched (the settings
+  combo box and the `applicationData.xml` round trip need all five fields to match, `Equals`'s
+  original job).
 
 ### 11.4 `GraphicsAdapter`
 
@@ -1681,20 +1796,35 @@ assigned; `WindowText` and `MainWindowTitle` are assigned and never read.
 
 ### 11.7 Win32 types in `ResolutionHelper.cs`
 
-`Devmode` (`:147-250`) is a faithful `DEVMODEA` — `[StructLayout(Sequential, CharSet = Ansi)]` with two
-32-character `ByValTStr` name fields and the documented field order; `Pointl` (`:252-259`) carries
-`dmPosition`. The enums match `winuser.h`: `DispChange` (`:129-138`;
+`Devmode` (`:469-572`) is a faithful `DEVMODEA` — `[StructLayout(Sequential, CharSet = Ansi)]` with two
+32-character `ByValTStr` name fields and the documented field order; `Pointl` (`:574-581`) carries
+`dmPosition`. The enums match `winuser.h`: `DispChange` (`:450-459`;
 `Successful=0, Restart=1, Failed=-1, Badmode=-2, Notupdated=-3, Badflags=-4, Badparam=-5`), `Dmdfo`
-(`:140-145`; `Default=0, Stretch=1, Center=2`) and `ChangeDisplaySettingsFlags` (`:261-276`). None of
+(`:461-465`; `Default=0, Stretch=1, Center=2`) and `ChangeDisplaySettingsFlags` (`:583-598`). None of
 the `DllImport`s specifies a `CharSet`, so they bind to the ANSI entry points — consistent with the
 `Devmode` declaration.
+
+Added on `work/resolution-change`, alongside the seam described in
+[§6.4](#64-the-optional-resolution-switch):
+
+- `DevmodeFields` (`:604-614`) — the small, named subset of `DM_*` `dmFields` bits
+  `ApplyTargetFields` cares about (`DmPosition`, `DmPelsWidth`, `DmPelsHeight`, `DmBitsPerPel`,
+  `DmDisplayFrequency`, `DmDisplayFixedOutput`, `DmDisplayOrientation`), values unchanged from
+  `winuser.h`.
+- `internal interface IDisplayModeDevice` (`:16-26`) — the device seam; `RealDisplayModeDevice`
+  (`:426-448`) is the only production implementation.
+- `public enum ResolutionChangeResult` (`ResolutionHelper.cs:62-68`, **nested inside**
+  `ResolutionHelper` — callers write `ResolutionHelper.ResolutionChangeResult.Applied`) —
+  `Applied`, `AlreadyMatching`, `Failed`, `Suppressed`.
+- `public class ResolutionFailureEventArgs : EventArgs` (`:34-49`, a **sibling** top-level type, not
+  nested) — `DeviceName`, `Target`, `FailureCode`, `IsRevert`, `IsGivingUp`.
 
 ---
 
 ## 12. Known defects & risk register
 
 Every item below carries a `file:line` citation so you can jump straight to the code and judge for
-yourself. Items are numbered **D1…D57** for reference in issues and commit messages; the numbering is
+yourself. Items are numbered **D1…D59** for reference in issues and commit messages; the numbering is
 this document's, not the project's.
 
 **Read the uncertainty markers literally.** Items marked **INFERENCE** are mechanisms derived from the
@@ -1707,7 +1837,7 @@ established fact in a bug report or a commit message.
 | Issue | Symptom | Mechanism | Confidence |
 |---|---|---|---|
 | **#138** | extreme CPU usage when no dedicated GPU is connected | **D1** below — an infinite loop between `EnumerateDisplayHandles` and the native `enumerateNvidiaDisplayHandle` | **INFERENCE**, well supported (native side VERIFIED binary) |
-| **#114 / #132** | `Changing the resolution failed: DispChangeBadflags`, repeatedly, in Valorant and elsewhere | **D2** below — the staging `ChangeDisplaySettingsEx` fails, the modal box is raised from inside the foreground-change callback, and the guard condition stays true so it repeats | message path is **certain**; the root cause of `-4` is **UNCERTAIN** (originates inside `user32`) |
+| **#114 / #132** *(fixed on `work/resolution-change`)* | `Changing the resolution failed: DispChangeBadflags`, repeatedly, in Valorant and elsewhere | **D2**/**D58**/**D59** below — a modal box on the callback thread, a success read from the wrong `ChangeDisplaySettingsEx` call, a `_windowsResolutionSettings` snapshot that never learned about a user-initiated desktop resolution change (**D58** — probably #114's actual complaint), and a `DmDisplayFixedOutput`-inclusive equality guard that could re-fire a real mode set forever (**D59** — fits #132's "it keeps on saying that") | message/repeat path is **certain**; the root cause of the underlying `-4` is still **UNCERTAIN** (originates inside `user32`) |
 | **#150 / #145 / #142** | hybrid and dual-GPU laptops, AMD chipset + NVIDIA GPU, dual-GPU desktops | **D3** below — four independent mechanisms, the strongest being that any machine with both vendors' drivers present is classified `Ambiguous` and refused | **INFERENCE** |
 | **#144** | vibrance does not reset to the Windows level when the program closes | **D4** below — the reset happens only on the clean `FormClosing` path *and* only if `isInitialized`; abnormal exit restores nothing, and a dropped foreground event can strand the level | **INFERENCE** for the dropped-event half; the abnormal-exit half is **certain** |
 
@@ -1721,19 +1851,49 @@ one core at 100 % plus unbounded growth of `displayHandles` — inside the proxy
 thread, so the window never appears. Fix on either side: bound the loop (`i < NvapiMaxPhysicalGpus` or a
 sane display cap) and/or make the native function return `-1` for every non-`0` status.
 
-**D2 — the resolution failure dialog is modal, on the callback thread, and self-repeating.**
-`ResolutionHelper.ChangeResolutionEx` shows
-`MessageBox.Show("Changing the resolution failed: " + Enum.GetName(...))` at
-`vibrance.GUI/common/ResolutionHelper.cs:122` (and the dead `ChangeResolution` does the same at `:95`).
-It is reached from `PerformResolutionChange` in either proxy
-(`NvidiaDynamicVibranceProxy.cs:281-284`, `AmdDynamicVibranceProxy.cs:168-171`), i.e. **on the UI thread
-inside `OnWinEventHook`** — so the box appears over a game that has just taken the foreground, where it
-can be invisible while blocking input, and the message pump is stalled until it is dismissed. Because
-the guard is "does the current mode differ from the target?", a failed change leaves the condition true
-and the box returns on the next foreground switch. See
-[§6.4](#64-the-optional-resolution-switch) for the three candidate root causes and the two structural
-flaws (`dmFields` never updated; the commit call at `:114` runs unconditionally and its result is
-discarded).
+**D2 — FIXED on `work/resolution-change`. The resolution failure dialog was modal, on the callback
+thread, and self-repeating.** The old `ResolutionHelper.ChangeResolutionEx` showed
+`MessageBox.Show("Changing the resolution failed: " + Enum.GetName(...))`, reached from
+`PerformResolutionChange` in either proxy — i.e. **on the UI thread inside `OnWinEventHook`** — so the
+box appeared over a game that had just taken the foreground, where it could be invisible while
+blocking input, and the message pump was stalled until it was dismissed. Because the guard was "does
+the current mode differ from the target?", a failed change left the condition true and the box
+returned on the next foreground switch. Fixed by removing the `using System.Windows.Forms` and every
+`MessageBox` call site from `ResolutionHelper.cs` entirely and reporting a give-up through the
+`ResolutionHelper.ResolutionChangeFailed` event instead, which `VibranceGUI` turns into a non-modal
+`notifyIcon` balloon tip — see [§6.4](#64-the-optional-resolution-switch) for the full sequence, the
+give-up bounds, and the two related defects below that the deeper investigation of #114/#132 turned
+up along the way. `ResolutionHelper.ChangeResolution` (the dead code that duplicated the same
+`MessageBox` call) and its `ChangeDisplaySettings` P/Invoke are deleted, not just unused.
+
+**D58 — FIXED on `work/resolution-change`. `_windowsResolutionSettings` was a frozen snapshot — likely
+#114's actual complaint.** `VibranceGUI`'s constructor built the "what is the user's Windows
+resolution, and what modes does this device support" dictionary exactly once, at startup, and nothing
+in the whole repository ever refreshed it (`SystemEvents`/`DisplaySettingsChanged`/`WM_DISPLAYCHANGE`
+were all absent — verified, zero hits). If the user changed their desktop resolution by hand, or the
+display topology changed (hot-plug, sleep/resume), the cached "Windows resolution" the revert path
+compared against went stale, and every API call involved still reported success — from the user's
+perspective, alt-tabbing out of the game "changes the resolution back to the wrong thing" with no
+error anywhere. Fixed by subscribing `SystemEvents.DisplaySettingsChanged` in the constructor and
+rebuilding the dictionary in place (mutating the same `Dictionary` instance both proxies hold a
+reference to, NVIDIA's `static`ally) on every change — guarded so a refresh that lands while a game's
+own resolution change is currently applied does not adopt the game's mode as the new "Windows
+resolution" (see [§6.4](#64-the-optional-resolution-switch) for why that guard is the single most
+dangerous line in the whole fix).
+
+**D59 — FIXED on `work/resolution-change`. The "does this still need changing?" guard included
+`DmDisplayFixedOutput`, which some drivers never honestly report back — fits #132's "it keeps on
+saying that".** Old `IsResolutionChangeNeeded` compared the full `ResolutionModeWrapper.Equals`,
+which includes `DmDisplayFixedOutput` (the "(Center)"/"(Stretch)" scaling choice) — but nothing
+declared `DM_DISPLAYFIXEDOUTPUT` in `dmFields` (see D2's `dmFields` problem above), so a driver was
+free to silently ignore the requested value and always report back its own default. A user picking a
+"(Center)" mode could get a change that succeeded on the four real, driver-supported fields yet could
+never satisfy an equality guard that also demanded the ignored fifth one — so a real mode set and
+registry write re-fired on **every** foreground event, forever. Fixed by
+`ResolutionModeWrapper.MatchesAchievedMode`, a second comparison used only by
+`IsResolutionChangeNeeded`/`ChangeResolutionEx` that deliberately excludes `DmDisplayFixedOutput`;
+`Equals`/`GetHashCode`/`ToString` are untouched, since the settings combo box and the
+`applicationData.xml` round trip still need all five fields to match.
 
 **D3 — hybrid/dual-GPU systems.** Four mechanisms, strongest first (all **INFERENCE**, detailed in
 [§7.9](#79-nvidia-specific-failure-modes)): (a) `GraphicsAdapter.cs:33-37` returns `Ambiguous` whenever
@@ -1989,7 +2149,7 @@ re-established in-process.
 | `SetVibranceIngameLevel` / `userVibranceSettingActive` write-only pair (**D13**) | `common/IVibranceProxy.cs:11`, `common/Definitions.cs:14` |
 | `WinEventHookEventArgs.Process` never assigned or read; `WindowText`/`MainWindowTitle` assigned, never read — so the `GetWindowTextLength`/`GetWindowTextA` work is pointless | `common/WinEventHookEventArgs.cs:9-12`; `common/WinEventHook.cs:223-225` |
 | `SettingsController.SetVibranceSetting` never called; the `refreshRate` key is read and discarded | `common/SettingsController.cs:69-79,131-137` |
-| `ResolutionHelper.ChangeResolution` and the no-arg `EnumerateSupportedResolutionModes()` never called | `common/ResolutionHelper.cs:57-60,77-99` |
+| `ResolutionHelper.ChangeResolution` — **deleted** on `work/resolution-change`, along with its `ChangeDisplaySettings` P/Invoke, not merely dead; the no-arg `EnumerateSupportedResolutionModes()` is still present and still never called | `common/ResolutionHelper.cs:141-144` |
 | `VibranceGUI.Log(string)` never called — and it writes to a *different* place than `Log(Exception)` (CWD-relative `vibranceGUI_log.txt` vs `%APPDATA%\vibranceGUI.log`) | `VibranceGUI.cs:334-361` |
 | The `ProgressPercentage == 2` branch ("NVAPI Unloaded: …") is unreachable; only `ReportProgress(1)` is ever called | `VibranceGUI.cs:141,208-211` |
 | `observerStatusLabel` shows a static string forever | `VibranceGUI.Designer.cs:196-203` |
@@ -2014,13 +2174,16 @@ unnecessarily; `IVibranceProxy.cs:2` and `ISettingsController.cs:2` import `vibr
 into `AMD.vendor.adl32`/`adl64`. Meanwhile `AMD/vendor/utils/CommonUtils.cs` hosts the **NVIDIA** DLL
 extraction.
 
-**D57 — the same logic exists twice, in several places.** `OnWinEventHook`,
-`IsResolutionChangeNeeded` and `PerformResolutionChange` are near-duplicates across the two proxies
-(`NvidiaDynamicVibranceProxy.cs:209-284` vs `AmdDynamicVibranceProxy.cs:108-171`); `AmdAdapter32.cs` and
-`AmdAdapter64.cs` are 195/197 identical; `adl32/**` and `adl64/**` differ by one string; the vendor level
-ranges are duplicated *and disagree* between `Program.cs:47-50` and `SettingsController.cs:105-110`;
-`GetForegroundWindow` logic exists both natively (NVIDIA) and as a C# `DllImport`
-(`AmdDynamicVibranceProxy.cs:105-106`). Every fix must be applied twice.
+**D57 — the same logic exists twice, in several places.** `OnWinEventHook` is a near-duplicate across
+the two proxies (`NvidiaDynamicVibranceProxy.cs:213-304` vs `AmdDynamicVibranceProxy.cs:145-224`);
+`AmdAdapter32.cs` and `AmdAdapter64.cs` are 195/197 identical; `adl32/**` and `adl64/**` differ by one
+string; the vendor level ranges are duplicated *and disagree* between `Program.cs:47-50` and
+`SettingsController.cs:105-110`; `GetForegroundWindow` logic exists both natively (NVIDIA) and as a C#
+`DllImport` (`AmdDynamicVibranceProxy.cs:142-143`). Every fix must be applied twice. **One instance
+fixed on `work/resolution-change`:** the per-proxy `IsResolutionChangeNeeded`/`PerformResolutionChange`
+pair this used to call out is deleted from both proxies; both now call
+`ResolutionHelper.IsResolutionChangeNeeded`/`ChangeResolutionEx` directly (see
+[§6.4](#64-the-optional-resolution-switch)).
 
 ### 12.9 Hardcoded values, security surface and correctness nits
 
@@ -2066,9 +2229,9 @@ not that none exists.
 | #144 | vibrance does not reset to Windows level when the program closes | **D4** (+ **D9**). |
 | #138 | extreme CPU usage with no dedicated GPU | **D1**, INFERENCE, well supported. |
 | #137 | does not reliably detect the game in the foreground | Candidates: the dropped-event race (**D4**), the startup blind spot (**D28**), and name-only matching (**D27**) — e.g. a launcher process owning the foreground window. INFERENCE. |
-| #134 | CS2 jumps to the second monitor on alt-tab | No mechanism established. The only code that could plausibly disturb window placement is the global re-apply at `common/ResolutionHelper.cs:114` — **untested hypothesis**. |
+| #134 | CS2 jumps to the second monitor on alt-tab | No mechanism established. The historical candidate was the unconditional global commit call (`ChangeDisplaySettingsEx(null, ...)`) the pre-fix code ran after every staged mode change — **removed** on `work/resolution-change` (see **D2**; the new `CDS_TEST`/`CDS_UPDATEREGISTRY` sequence never touches a device other than the one it was asked about), so this hypothesis no longer applies to current `master`+this branch even though it was never confirmed either way. |
 | #133 | native GUI is bugging | No mechanism identified. |
-| #132, #114 | `DispChangeBadFlags` when changing resolution | **D2**. |
+| #132, #114 | `DispChangeBadFlags` when changing resolution | **D2**/**D58**/**D59**, fixed on `work/resolution-change` — see [§6.4](#64-the-optional-resolution-switch). |
 | #131 | degrades image on return to normal | No mechanism established; on AMD note **D16** (unconditional rewrite of every display on every event). |
 | #128 | contrast/brightness messed up after CS:GO exit | Factually, this app writes **only** the saturation bit — `Adl.AdlDisplayColorSaturation` (`AMD/vendor/AmdAdapter32.cs:135-139`) — and never brightness, contrast, hue or temperature; those ADL constants are defined and unused (`adl32/ADL.cs:44-48`). On NVIDIA it writes only DVC levels. No code path in this repository sets contrast or brightness. |
 | #116 | alt-tab out of Vulkan games → black screen | No mechanism established; the resolution switch (**D2** area) is the only display-mode code, and "Never change resolutions" is the available mitigation. |
@@ -2201,9 +2364,12 @@ Merged from both archaeology passes, de-duplicated. These are genuinely unanswer
 10. Should `applicationData.xml` be namespaced per GPU vendor, or should `IngameLevel` simply be clamped
     on load, so that switching vendors does not crash the app (**D8**)?
 11. For #114/#132: do the affected users have more than one monitor, and does the failing
-    `lpszDeviceName` correspond to an attached display? There is **no logging at all** at
-    `common/ResolutionHelper.cs:113`; adding the device name and `Marshal.GetLastWin32Error()` there is
-    the cheapest next diagnostic step (**D2**).
+    `deviceName` correspond to an attached display? `work/resolution-change` added logging (device
+    name and the `DispChange` code, once per device+code — `RecordFailure`,
+    `common/ResolutionHelper.cs:345-376`) but not `Marshal.GetLastWin32Error()`, since
+    `ChangeDisplaySettingsEx`'s `DispChange` return value already carries the failure code and the
+    Win32 last-error is not documented as meaningful for this API; still the cheapest next
+    diagnostic step if the `DispChange` code alone turns out not to be enough (**D2**).
 12. Is `CommonServiceLocator` retained for a planned DI refactor (compare the `Refactoring_to_WPF`
     branch), or can it — and with it, effectively, Costura — be dropped?
 13. Was the Travis pipeline ever green, and is CI intended to be restored? A GitHub Actions job on
