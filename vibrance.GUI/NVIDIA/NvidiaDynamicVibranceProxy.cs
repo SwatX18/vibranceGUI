@@ -251,8 +251,10 @@ namespace vibrance.GUI.NVIDIA
                 if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == false &&
                     DeviceGammaRampHelper.IsGammaRampEqualToWindowsValues(_vibranceInfo, applicationSetting) == false)
                 {
-                    DeviceGammaRampHelper.SetGammaRamp(screen, brightness: applicationSetting.Brightness, contrast: applicationSetting.Contrast, gamma: applicationSetting.Gamma);
-                    _vibranceInfo.isColorSettingApplied = true;
+                    // only true when a baseline is held and the write landed - never claim a ramp is
+                    // applied (and so due a restore) when it could not be captured for undo
+                    _vibranceInfo.isColorSettingApplied = DeviceGammaRampHelper.ApplyGameGammaRamp(
+                        screen, applicationSetting.Brightness, applicationSetting.Contrast, applicationSetting.Gamma);
                 }
             }
             else
@@ -310,15 +312,18 @@ namespace vibrance.GUI.NVIDIA
 
         private static void RestoreWindowsColorSettings()
         {
-            //the gamma ramp is only ever applied to the game screen, restoring every screen would overwrite color settings this application never touched
-            if (_gameScreen != null)
-            {
-                DeviceGammaRampHelper.SetGammaRamp(_gameScreen, brightness: _vibranceInfo.userColorSettings.brightness, contrast: _vibranceInfo.userColorSettings.contrast, gamma: _vibranceInfo.userColorSettings.gamma);
-            }
-            else
-            {
-                Screen.AllScreens.ToList().ForEach(screen => DeviceGammaRampHelper.SetGammaRamp(screen, brightness: _vibranceInfo.userColorSettings.brightness, contrast: _vibranceInfo.userColorSettings.contrast, gamma: _vibranceInfo.userColorSettings.gamma));
-            }
+            //restores every screen whose gamma ramp this application actually captured a baseline
+            //for, composing the user's brightness/contrast/gamma on top of that baseline instead of
+            //stamping the identity ramp over it. The baseline itself persists across sessions -
+            //dropping it on every restore was itself a defect (B1): the next apply would re-capture
+            //this application's own restore output as if it were the true calibration, and a
+            //non-neutral Windows slider setting compounded further away from it on every alt-tab
+            //out of a game. See DeviceGammaRampHelper's _capturedGammaRamps/_lastWrittenGammaRamps
+            //for how a hot-plugged monitor or an external color change is still detected safely.
+            DeviceGammaRampHelper.RestoreCapturedGammaRamps(
+                _vibranceInfo.userColorSettings.brightness,
+                _vibranceInfo.userColorSettings.contrast,
+                _vibranceInfo.userColorSettings.gamma);
             _vibranceInfo.isColorSettingApplied = false;
         }
 
