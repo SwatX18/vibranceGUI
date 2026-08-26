@@ -97,5 +97,20 @@ namespace vibrance.GUI
 
             GC.KeepAlive(mutex);
         }
+
+        // Internal rather than private: ResolutionHelper's WinEvent-reachable failure-recording
+        // path (ChangeResolutionEx) reuses this so a broken log write (e.g. File.AppendText
+        // failing) cannot itself throw an exception across the native WinEvent callback frame.
+        internal static void LogSafely(string message)
+        {
+            try
+            {
+                VibranceGUI.Log(message);
+            }
+            catch (Exception)
+            {
+                // Logging must never be the reason a resolution change fails to complete.
+            }
+        }
     }
 }
