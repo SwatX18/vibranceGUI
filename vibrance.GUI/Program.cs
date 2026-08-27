@@ -43,8 +43,8 @@ namespace vibrance.GUI
                 Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy = (x, y) => new AmdDynamicVibranceProxy(Environment.Is64BitOperatingSystem
                     ? new AmdAdapter64()
                     : (IAmdAdapter)new AmdAdapter32(), x, y);
-                vibranceGui = new VibranceGUI(getProxy, 
-                    100, 
+                vibranceGui = new VibranceGUI(getProxy,
+                    100,
                     0,
                     300,
                     100,
@@ -80,7 +80,7 @@ namespace vibrance.GUI
             }
             else if(adapter == GraphicsAdapter.Ambiguous)
             {
-                if(MessageBox.Show(ErrorGraphicsAdapterAmbiguous, MessageBoxCaption, MessageBoxButtons.YesNo, 
+                if(MessageBox.Show(ErrorGraphicsAdapterAmbiguous, MessageBoxCaption, MessageBoxButtons.YesNo,
                     MessageBoxIcon.Error) == DialogResult.Yes)
                 {
                     System.Diagnostics.Process.Start("http://www.guru3d.com/files-details/display-driver-uninstaller-download.html");
@@ -96,6 +96,24 @@ namespace vibrance.GUI
             Application.Run(vibranceGui);
 
             GC.KeepAlive(mutex);
+        }
+
+        // Internal rather than private: the vibrance restore path (see
+        // NVIDIA\NvidiaDynamicVibranceProxy.cs's LogDisplayFailureOnce, reached from the
+        // WINEVENT_OUTOFCONTEXT foreground-change callback) reuses this so a broken log write
+        // (e.g. File.AppendText failing, the log file being locked by another process) cannot
+        // itself throw an exception back across that native callback frame. VibranceGUI.Log's own
+        // File.AppendText calls are otherwise unguarded.
+        internal static void LogSafely(string message)
+        {
+            try
+            {
+                VibranceGUI.Log(message);
+            }
+            catch (Exception)
+            {
+                // Logging must never be the reason a foreground event handler throws.
+            }
         }
     }
 }
