@@ -25,8 +25,7 @@ namespace vibrance.GUI.common
         private readonly IVibranceProxy _v;
         private IRegistryController _registryController;
         private const string AppName = "vibranceGUI";
-        private const string TwitterLink = "https://twitter.com/juvlarN";
-        private const string PaypalDonationLink = "https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=JDQFNKNNEW356";
+        private const string TwitterLink = "https://x.com/swatx18";
 
         private bool _allowVisible;
         private List<ApplicationSetting> _applicationSettings;
@@ -144,7 +143,6 @@ namespace vibrance.GUI.common
             if (this.WindowState == FormWindowState.Minimized)
             {
                 //this.notifyIcon.Visible = true;
-                //this.notifyIcon.BalloonTipText = "Running minimized... Like the program? Consider donating!";
                 //this.notifyIcon.ShowBalloonTip(250);
                 this.Hide();
             }
@@ -666,11 +664,6 @@ namespace vibrance.GUI.common
                 contrastWindowsLevel.ToString(),
                 gammaWindowsLevel.ToString()
             );
-        }
-
-        private void buttonPaypal_Click(object sender, EventArgs e)
-        {
-            Process.Start(PaypalDonationLink);
         }
 
         private void buttonAddProgram_Click(object sender, EventArgs e)

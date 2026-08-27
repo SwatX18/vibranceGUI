@@ -23,7 +23,7 @@ Every contribution is greatly appreciated. Do not hesitate to submit every issue
 
 ## Contact
 
-NVIDIA support: https://twitter.com/juvlarN
+NVIDIA support: https://x.com/swatx18
 
 AMD support: https://twitter.com/juRiiir3
 
