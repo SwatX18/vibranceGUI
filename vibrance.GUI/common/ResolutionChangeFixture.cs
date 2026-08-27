@@ -54,6 +54,7 @@ namespace vibrance.GUI.common
             CheckAdoptedForeignModeSelfHealsOnceItIsGone(checklist);
             CheckDetachedDeviceKeepsItsCapturedModeAcrossAReattach(checklist);
             CheckReattachedDeviceReenumeratesItsSupportedModes(checklist);
+            CheckStickyEmptySupportedListHealsOnNextSuccessfulEnumeration(checklist);
 
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
@@ -882,12 +883,15 @@ namespace vibrance.GUI.common
         }
 
         // R5. _supportedResolutionList (VibranceGUI.cs) is captured ONCE, in the constructor, and
-        // is readonly - so the List<ResolutionModeWrapper> instance a caller captures for Item2 has
-        // to stay the exact same instance across every later refresh, any flag, or that field goes
-        // silently stale. Also pins that a device already in the dictionary is never re-enumerated.
+        // is readonly - so, for a device that stays attached, the List<ResolutionModeWrapper>
+        // instance a caller captures for Item2 has to stay the exact same instance across every
+        // later refresh, any flag, or that field goes silently stale. Also pins that a device
+        // already in the dictionary is never re-enumerated. (A device that DETACHES and
+        // reattaches is the deliberate exception - see R8, which documents Item2 being
+        // re-enumerated from scratch in exactly that case.)
         private static void CheckSupportedResolutionListStaysTheInstanceTheFormCaptured(Checklist checklist)
         {
-            checklist.Lines.Add("Item2 stays the SAME List<ResolutionModeWrapper> instance across repeated refreshes with mixed preserveCapturedMode flags, and is never re-enumerated once a device has an entry (regression test for _supportedResolutionList - captured once, readonly - silently going stale):");
+            checklist.Lines.Add("Item2 stays the SAME List<ResolutionModeWrapper> instance across repeated refreshes with mixed preserveCapturedMode flags, for a device that stays attached, and is never re-enumerated once a device has an entry (regression test for _supportedResolutionList - captured once, readonly - silently going stale):");
             ResolutionHelper.ResetForTests();
 
             const string deviceName = "FAKE-REFRESH-R5";
@@ -1119,7 +1123,16 @@ namespace vibrance.GUI.common
         // which, with the game's own resolution change still applied to this very device, reads
         // the GAME's mode, not the desktop's - exactly the danger
         // WindowsResolutionRefresher.Refresh's own comment describes, just reached through a
-        // detach/reattach instead of the simpler "no previous entry at all" case R1 covers.
+        // detach/reattach instead of the simpler "no previous entry at all" case R1 covers. Also
+        // makes device A momentarily unreadable right at the reattach refresh, to reach the state
+        // that is genuinely new here: attached + live-read-fails + absent from the dictionary +
+        // present in lastKnownWindowsModes + preserveCapturedMode true. R6 case 4's unreadable
+        // device always has hasExisting true (an existing Item1 to reuse, live read never even
+        // attempted for a different reason); this is the only check that reaches the fallback
+        // branch itself with a live read that would have failed. The behaviour here is a strict
+        // improvement over pre-seam code: that device previously got no entry at all in this
+        // situation, so the proxies' ContainsKey guard blocked the revert outright and the desktop
+        // stayed at the game's resolution with no self-heal; now the revert can run.
         private static void CheckDetachedDeviceKeepsItsCapturedModeAcrossAReattach(Checklist checklist)
         {
             checklist.Lines.Add("A device that drops out of attachedDeviceNames while a real apply is live, then reattaches, keeps its desktop Item1 via the last-known-mode fallback - even though it spent an intervening refresh completely absent from the dictionary - and a revert through it still restores the desktop; the detached device has zero entry, and zero leakage, while it is gone (regression test for a monitor cable bounce or GPU hot-plug losing the desktop mode of a device a game's resolution change is still applied to):");
@@ -1156,12 +1169,26 @@ namespace vibrance.GUI.common
                 "device A has no entry at all while detached - retention must never leak a detached device into the proxies' own view of windowsResolutionSettings");
 
             // Device A reattaches - still not through ChangeResolutionEx, so this exercises the
-            // refresher's own retention, not anything ChangeResolutionEx tracks.
-            RunRefresh(checklist, device, "the refresh with A reattached never touches the driver",
+            // refresher's own retention, not anything ChangeResolutionEx tracks. Also made
+            // unreadable right up to the moment of this refresh - the genuinely new reachable state
+            // this fallback introduces is attached + live-read-fails + absent from the dictionary +
+            // present in lastKnownWindowsModes + preserveCapturedMode true, which nothing else in
+            // this fixture (R6 case 4 has hasExisting true; every other unreadable-device case has
+            // no retained mode to fall back to) reaches. Restored to readable immediately after the
+            // refresh - this fixture models the live read failing at the moment of THIS refresh, not
+            // the device staying broken forever, and the revert below still needs a readable device.
+            Devmode currentModeBeforeUnreadable = device.GetCurrentMode(deviceA);
+            device.SetUnreadable(deviceA);
+
+            RunRefresh(checklist, device, "the refresh with A reattached (and momentarily unreadable) never touches the driver",
                 dict, lastKnown, new List<string> { deviceA, deviceB }, true, true, onUnreadable);
 
+            device.SetCurrentMode(deviceA, currentModeBeforeUnreadable);
+
             checklist.Check(dict.ContainsKey(deviceA) && dict[deviceA].Item1.Equals(desktopA),
-                "device A's Item1 is still the desktop mode after reattaching - NOT the game's mode it is actually showing right now");
+                "device A's Item1 is still the desktop mode after reattaching - NOT the game's mode it is actually showing right now, and retained even though a live read at that exact moment would have failed");
+            checklist.Check(unreadable.Count == 0,
+                "the retained mode satisfies capturedMode before a live read is ever attempted, so the unreadable-device callback never fires for this refresh either");
             checklist.Check(ResolutionHelper.IsResolutionChangeNeeded(device, deviceA, dict[deviceA].Item1),
                 "IsResolutionChangeNeeded against the retained Item1 is still true - the game's mode is still live on device A");
 
@@ -1234,6 +1261,80 @@ namespace vibrance.GUI.common
                 "with preserveCapturedMode false, the reattached device's Item1 is read fresh from the live device, not pulled from the retained last-known mode");
 
             checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired across any refresh");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // Regression test for a review finding on this seam (N5): a device whose CURRENT MODE is
+        // perfectly readable but whose SUPPORTED-MODE enumeration happens to return nothing on one
+        // refresh - EnumDisplaySettings failing partway through, or simply not yet ready - gets an
+        // entry with a correct Item1 and an EMPTY Item2. Because Item2 is then reused unconditionally
+        // for any device the dictionary already has an entry for, that empty list would otherwise
+        // stick for the rest of the session: every later refresh keeps reusing the SAME empty
+        // instance, and both proxies gate a resolution apply on Item2.Contains(target)
+        // (NvidiaDynamicVibranceProxy.cs, AmdDynamicVibranceProxy.cs), so resolution switching for
+        // that device silently stops working until the process restarts or the device detaches and
+        // reattaches (R8). The revert path is unaffected - it only reads Item1 - so this fails safe,
+        // never stranding the desktop; it's an apply-side regression, not a revert-side one.
+        private static void CheckStickyEmptySupportedListHealsOnNextSuccessfulEnumeration(Checklist checklist)
+        {
+            checklist.Lines.Add("A device whose supported-mode enumeration comes back empty on one refresh - its current mode was still perfectly readable - heals the moment a later refresh's enumeration succeeds, rather than reusing that empty Item2 for the rest of the session (regression test for N5 - an empty Item2 silently and permanently disabling resolution switching for an otherwise-healthy device):");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-REFRESH-N5";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode live = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceName, live);
+            // Deliberately never calls SetSupportedModes before the first refresh -
+            // TryEnumerateMode returns false on its very first call, exactly like
+            // EnumDisplaySettings failing for this device's mode enumeration at that moment (its
+            // CURRENT mode, set above, is unaffected - a real EnumDisplaySettings(deviceName, -1, ...)
+            // and EnumDisplaySettings(deviceName, 0, ...) can fail independently of each other).
+            // EnumerateSupportedResolutionModes returns an empty list for this.
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the initial refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+            checklist.Check(dict.ContainsKey(deviceName) && dict[deviceName].Item2.Count == 0,
+                "the initial refresh's Item2 is empty - the enumeration genuinely returned nothing this one time, setting up the scenario");
+
+            // The device recovers - a later EnumDisplaySettings-style enumeration would succeed now.
+            List<Devmode> table = new List<Devmode> { live, BuildDevmode(2560, 1440, 32, 144, 0) };
+            device.SetSupportedModes(deviceName, table);
+
+            RunRefresh(checklist, device, "the second refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+
+            checklist.Check(dict.ContainsKey(deviceName) && dict[deviceName].Item2.Count == table.Count,
+                string.Format("Item2 heals to the newly-enumerated, non-empty table once the device recovers, got {0} entries, expected {1} - an empty Item2 must never stick for the rest of the session",
+                    dict.ContainsKey(deviceName) ? dict[deviceName].Item2.Count : -1, table.Count));
+
+            int enumerateCallsAfterHealing;
+            device.EnumerateCallCounts.TryGetValue(deviceName, out enumerateCallsAfterHealing);
+
+            // A third refresh, with the table now non-empty, must go back to reusing the SAME
+            // instance rather than re-enumerating forever - the empty-Item2 exception is not a
+            // general "always re-enumerate" regression of its own.
+            RunRefresh(checklist, device, "the third refresh never touches the driver",
+                dict, lastKnown, attached, true, true, onUnreadable);
+
+            List<ResolutionModeWrapper> healedList = dict[deviceName].Item2;
+            int enumerateCallsAfterThirdRefresh;
+            device.EnumerateCallCounts.TryGetValue(deviceName, out enumerateCallsAfterThirdRefresh);
+            checklist.Check(enumerateCallsAfterThirdRefresh == enumerateCallsAfterHealing,
+                string.Format("once Item2 is non-empty, a later refresh goes back to reusing it rather than re-enumerating - had {0} calls right after healing, {1} after one more refresh",
+                    enumerateCallsAfterHealing, enumerateCallsAfterThirdRefresh));
+            checklist.Check(ReferenceEquals(dict[deviceName].Item2, healedList),
+                "the healed, non-empty Item2 is then reused as the SAME instance, exactly like any other non-empty Item2 (R5)");
+
+            checklist.Check(unreadable.Count == 0,
+                "no unreadable-device callback fired across any refresh - the device's CURRENT MODE was always readable; only its supported-mode enumeration was ever empty");
 
             checklist.Lines.Add(string.Empty);
         }

@@ -778,15 +778,15 @@ before accepting that outcome.
 the constructor and never touched again — if the user changed their desktop resolution by hand, or
 plugged in a monitor, the cached "Windows resolution" the revert path compares against went stale,
 and every API call involved still reported success (see former defect **D58** below). The
-constructor now calls `RebuildWindowsResolutionSettings(true)` (`VibranceGUI.cs:69`), which projects
+constructor now calls `RebuildWindowsResolutionSettings(true)` (`VibranceGUI.cs:77`), which projects
 `Screen.AllScreens` into a device-name list and delegates the actual refresh to
 `WindowsResolutionRefresher.Refresh` (`WindowsResolutionRefresher.cs`) — extracted out of
 `VibranceGUI.cs` so `ResolutionChangeFixture` can drive it through a fake `IDisplayModeDevice`, with
 no `Screen`, no `Form` and no real display anywhere in the call stack. `SystemEvents.DisplaySettingsChanged`
-(`Microsoft.Win32`, already referenced via `System.dll`) is subscribed in the constructor (`:95`) and
-**must** be unsubscribed in `CleanUp()` (`:433`) — it holds a strong reference to the handler on its
+(`Microsoft.Win32`, already referenced via `System.dll`) is subscribed in the constructor (`:103`) and
+**must** be unsubscribed in `CleanUp()` (`:441`) — it holds a strong reference to the handler on its
 own dedicated thread, so a leaked subscription leaks the form and can fault at shutdown. The handler
-(`OnDisplaySettingsChanged`, `:515-548`) guards `IsDisposed`/`!IsHandleCreated` and marshals onto the
+(`OnDisplaySettingsChanged`, `:493-526`) guards `IsDisposed`/`!IsHandleCreated` and marshals onto the
 UI thread with `BeginInvoke` (see above) before calling `RebuildWindowsResolutionSettings(false)` —
 `false` so a hot-plug or resolution change never pops the constructor's own failure dialog from
 inside an arbitrary system event, which would be exactly the D2-shaped mistake this whole fix
@@ -796,12 +796,13 @@ is true (a game's own resolution change is currently live), a refresh must **not
 already-captured "Windows resolution" (`Item1`) for any known device — a live read at that moment
 would return the *game's* mode, not the desktop's, and silently adopting it would strand the desktop
 at the game's resolution forever, since the revert path compares against exactly that value
-(`WindowsResolutionRefresher.Refresh`, `WindowsResolutionRefresher.cs:34-137`). Only `Item2` (the
-supported-mode list) refreshes in that case; a screen with no prior entry still gets both, since it
-cannot be the screen the game is running on. `Item2` is also reused — the same
-`List<ResolutionModeWrapper>` instance, not a fresh copy — for any device already in the dictionary
-regardless of that flag, since it is a property of the device rather than of whichever mode is
-currently active; re-enumerating it on every refresh would cost several hundred `EnumDisplaySettings`
+(`WindowsResolutionRefresher.Refresh`, `WindowsResolutionRefresher.cs:34-137`). `Item2` (the
+supported-mode list) is carried over unchanged in that case — the same `List<ResolutionModeWrapper>`
+instance, never re-enumerated; a screen with no prior entry still gets both captured fresh, since it
+cannot be the screen the game is running on. That same instance is reused — never a fresh copy — for
+any device already in the dictionary regardless of that flag, since it is a property of the device
+rather than of whichever mode is currently active; re-enumerating it on every refresh would cost
+several hundred `EnumDisplaySettings`
 P/Invokes per screen on the UI thread, twice per alt-tab cycle (vibranceGUI's own resolution changes
 fire `DisplaySettingsChanged` too), and reusing the identical instance is also what keeps
 `_supportedResolutionList` — captured once, in the constructor, and `readonly` — from silently going

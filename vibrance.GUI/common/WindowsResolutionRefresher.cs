@@ -50,11 +50,12 @@ namespace vibrance.GUI.common
             // fires DisplaySettingsChanged, so this is not a rare interleaving to guard against.
             //
             // While a resolution change is applied, every screen this dictionary already has an
-            // entry for keeps its previously captured Item1 untouched, and only Item2 (the
-            // device's supported-mode list, a property of the device rather than of whichever mode
-            // happens to be active right now) is refreshed. A screen with no previous entry still
-            // needs one captured fresh - it cannot be the screen the game is running on, since that
-            // one is already recorded.
+            // entry for keeps its previously captured Item1 untouched, and Item2 (the device's
+            // supported-mode list, a property of the device rather than of whichever mode happens
+            // to be active right now) is carried over unchanged - the same List instance, never
+            // re-enumerated (see below for why). A screen with no previous entry still needs both
+            // captured fresh - it cannot be the screen the game is running on, since that one is
+            // already recorded.
             Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> previous =
                 new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>(windowsResolutionSettings);
 
@@ -75,7 +76,20 @@ namespace vibrance.GUI.common
                 // the identical instance (not a fresh copy) is what keeps _supportedResolutionList -
                 // captured once, in the constructor, and readonly - from silently going stale after
                 // a refresh, since it then still points at the very list being kept up to date here.
-                List<ResolutionModeWrapper> availableResolutions = hasExisting
+                //
+                // The existing.Item2.Count > 0 guard below is the one exception to "always reuse":
+                // an EMPTY Item2 means an earlier refresh's EnumerateSupportedResolutionModes call
+                // returned nothing at all - the device's EnumDisplaySettings was failing at that
+                // moment - and reusing that empty list here would make it stick for the rest of the
+                // session, since every later refresh would keep reusing that SAME empty instance.
+                // That silently disables resolution switching for this device even after it
+                // recovers, since both proxies gate the apply on Item2.Contains(target). An empty
+                // Item2 is never the steady state for a healthy device, so re-enumerating instead
+                // costs nothing on the normal (non-empty) path and heals the device the moment its
+                // next EnumDisplaySettings call succeeds. See
+                // CheckStickyEmptySupportedListHealsOnNextSuccessfulEnumeration
+                // (ResolutionChangeFixture.cs) for the scenario this closes.
+                List<ResolutionModeWrapper> availableResolutions = hasExisting && existing.Item2.Count > 0
                     ? existing.Item2
                     : ResolutionHelper.EnumerateSupportedResolutionModes(device, deviceName);
 

@@ -38,6 +38,11 @@ namespace vibrance.GUI.common
         // during a later one while a game's resolution change is still applied. Deliberately holds only
         // the mode (five uints), never the supported-mode list, so a device this never forgets costs a
         // single small object; the OS's own \\.\DISPLAYn namespace bounds how many there can ever be.
+        // Note: \\.\DISPLAYn identifies a PORT, not a monitor's identity, so unplugging the monitor
+        // that was there and plugging a different one into the same port while preserveCapturedMode
+        // is true can hand the new monitor the old one's retained mode - harm bounded, since a
+        // revert only ever targets _gameScreen's own device and CDS_TEST would reject a mode the new
+        // monitor cannot actually support.
         private readonly Dictionary<string, ResolutionModeWrapper> _lastKnownWindowsModes =
             new Dictionary<string, ResolutionModeWrapper>();
 

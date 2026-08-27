@@ -259,11 +259,14 @@ namespace vibrance.GUI.common
 
             int bound = isRevert ? RevertFailureBound : ApplyFailureBound;
 
-            // Nothing recorded anywhere means nothing to suppress - the steady state on a healthy machine,
-            // since ClearFailureState empties this dictionary on every success. Checked before building a
-            // key at all: BuildFailureKey formats five uints and concatenates three strings, and the two
-            // hottest paths through this method (AlreadyMatching, and a suppressed device on every single
-            // foreground event) had to pay for it before this guard existed.
+            // Nothing recorded anywhere means nothing to suppress - the steady state on a healthy
+            // machine, since ClearFailureState removes only the succeeding device's own keys (never
+            // the whole dictionary - see below), and a device that has never failed never adds any
+            // to begin with. Checked before building a key at all: BuildFailureKey formats five
+            // uints and concatenates three strings, and the hottest path through this method
+            // (AlreadyMatching, on a healthy machine with nothing recorded at all) had to pay for it
+            // before this guard existed. A device already mid-streak still pays that cost on every
+            // attempt, suppressed or not - this only short-circuits when the dictionary is empty.
             if (_consecutiveFailures.Count > 0)
             {
                 int priorFailures;
