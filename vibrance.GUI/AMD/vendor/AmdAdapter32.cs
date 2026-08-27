@@ -124,21 +124,48 @@ namespace vibrance.GUI.AMD.vendor
             this.SetSaturationOnDisplay(vibranceLevel, null);
         }
 
-        public void SetSaturationOnDisplay(int vibranceLevel, string displayName)
+        public bool SetSaturationOnDisplay(int vibranceLevel, string displayName)
         {
+            // matchedAny/allSucceeded are closed over by the handler below, the same way the
+            // pre-existing lambda already closes over vibranceLevel/displayName - SetSaturation
+            // itself stays a void-returning Action, only what its handler does with the result
+            // changes. "No display matched" (matchedAny stays false) must report false, not the
+            // vacuous "true" an empty loop would otherwise imply - see IAmdAdapter's own comment.
+            bool matchedAny = false;
+            bool allSucceeded = true;
             SetSaturation((adlDisplayInfo, adlAdapterInfo, adapterIndex) =>
             {
                 int infoValue = adlDisplayInfo.DisplayID.DisplayLogicalIndex;
                 bool adapterIsAssociatedWithDisplay = adapterIndex == adlDisplayInfo.DisplayID.DisplayLogicalAdapterIndex;
                 if (adapterIsAssociatedWithDisplay && (adlAdapterInfo.DisplayName == displayName || displayName == null))
                 {
-                    Adl.AdlDisplayColorSet(
+                    matchedAny = true;
+
+                    // Adl.AdlDisplayColorSet can be null - IsFunctionValid (ADLCheckLibrary.cs)
+                    // failed to resolve "ADL_Display_Color_Set" from the driver's DLL. The
+                    // pre-existing call below was unguarded against that (a latent NRE); guarded
+                    // here since this line is already being touched for the status-code fix.
+                    if (Adl.AdlDisplayColorSet == null)
+                    {
+                        allSucceeded = false;
+                        return;
+                    }
+
+                    // AdlSuccess (= 0) is ADL_OK - reusing the constant this file already defines
+                    // and already checks every other ADL return code against, rather than adding
+                    // a second name for the same value.
+                    int adlStatus = Adl.AdlDisplayColorSet(
                         adapterIndex,
                         infoValue,
                         Adl.AdlDisplayColorSaturation,
                         vibranceLevel);
+                    if (adlStatus != Adl.AdlSuccess)
+                    {
+                        allSucceeded = false;
+                    }
                 }
             });
+            return matchedAny && allSucceeded;
         }
 
         private void SetSaturation(Action<AdlDisplayInfo, AdlAdapterInfo, int> handle)

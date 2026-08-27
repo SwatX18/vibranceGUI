@@ -271,6 +271,22 @@ namespace vibrance.GUI.NVIDIA
 
             if (applicationSetting != null)
             {
+                if (ProfileToggleHelper.IsSuppressed(applicationSetting.Name))
+                {
+                    // Toggled off by hotkey (upstream #143). Ignore this foreground event for
+                    // this game entirely - deliberately NOT a fall-through to the restore branch
+                    // below: the toggle itself already restored this display
+                    // (ToggleForegroundProfile), and re-running the work-list restore on every
+                    // alt-tab into a suppressed game would reach displays this game never even
+                    // touched (VibranceRestoreHelper.ComposeRestoreTargets is scoped to the
+                    // whole work-list, not to this one game).
+                    //
+                    // Returns BEFORE "_gameScreen = screen" below: a suppressed game applies
+                    // nothing here, so it must not become the screen a later resolution revert
+                    // reasons about.
+                    return;
+                }
+
                 Screen screen = Screen.FromHandle(e.Handle);
                 _gameScreen = screen;
 
@@ -536,33 +552,84 @@ namespace vibrance.GUI.NVIDIA
             return true;
         }
 
-        private static void RestoreOneDisplay(INvidiaVibranceDevice device, string deviceName, int windowsLevel)
+        /// <summary>
+        /// Restores deviceName to windowsLevel, exactly as before - returns true only once the
+        /// level is CONFIRMED landed (already there, or a write just succeeded), false when it is
+        /// still owed (unresolvable handle, or a failed write). The pre-existing foreach call
+        /// site in RestoreWindowsVibranceLevel ignores this return value, so that path's own
+        /// behaviour is unchanged; ToggleForegroundProfile is the new caller that actually reads
+        /// it, to decide whether the toggle's suppression flip is safe to make.
+        /// </summary>
+        private static bool RestoreOneDisplay(INvidiaVibranceDevice device, string deviceName, int windowsLevel)
         {
             int displayHandle = device.TryResolveDisplayHandle(deviceName);
             if (displayHandle == -1 || displayHandle == 0)
             {
                 LogDisplayFailureOnce(deviceName, string.Format(
                     "Could not resolve an NVIDIA display handle for screen {0}, its Windows vibrance level restore will retry on the next foreground change", deviceName));
-                return; // stays on the work-list - see the class-level comment above.
+                return false; // stays on the work-list - see the class-level comment above.
             }
 
             if (device.IsAtLevel(displayHandle, windowsLevel))
             {
                 VibranceRestoreHelper.ClearGameLevelRecord(deviceName);
                 ClearDisplayFailureLog(deviceName);
-                return;
+                return true;
             }
 
             if (device.SetLevel(displayHandle, windowsLevel))
             {
                 VibranceRestoreHelper.ClearGameLevelRecord(deviceName);
                 ClearDisplayFailureLog(deviceName);
+                return true;
             }
-            else
+
+            LogDisplayFailureOnce(deviceName, string.Format(
+                "Failed to restore the Windows vibrance level for screen {0}, it will retry on the next foreground change", deviceName));
+            return false;
+        }
+
+        /// <summary>
+        /// See IVibranceProxy.ToggleForegroundProfile for the full contract. Decide (pure) picks
+        /// the direction from our own recorded suppression state, never from a display read-back;
+        /// this method is only the write plus the flip. The restore direction goes through
+        /// RestoreOneDisplay - never RestoreWindowsVibranceLevel, which would also walk the whole
+        /// work-list plus the primary and restore displays this one game never touched.
+        /// </summary>
+        public ProfileToggleResult ToggleForegroundProfile(IntPtr foregroundWindow, string processName, string processImagePath)
+        {
+            ProfileToggleDecision decision = ProfileToggleHelper.Decide(
+                _applicationSettings, processName, processImagePath, _vibranceInfo.isWindowsLevelKnown);
+
+            if (decision.Action == ProfileToggleAction.None)
             {
-                LogDisplayFailureOnce(deviceName, string.Format(
-                    "Failed to restore the Windows vibrance level for screen {0}, it will retry on the next foreground change", deviceName));
+                return ProfileToggleResult.NoConfiguredGameInForeground;
             }
+            if (decision.Action == ProfileToggleAction.EngineNotReady)
+            {
+                return ProfileToggleResult.EngineNotReady;
+            }
+
+            string deviceName = Screen.FromHandle(foregroundWindow).DeviceName;
+            string name = decision.Setting.Name;
+
+            if (decision.Action == ProfileToggleAction.ApplyGameLevel)
+            {
+                if (!ApplyGameVibranceLevel(_device, deviceName, decision.Setting.IngameLevel))
+                {
+                    return ProfileToggleResult.WriteFailed;
+                }
+                VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+                ProfileToggleHelper.SetSuppressed(name, false);
+                return ProfileToggleResult.ToggledOn;
+            }
+
+            if (!RestoreOneDisplay(_device, deviceName, _vibranceInfo.userVibranceSettingDefault))
+            {
+                return ProfileToggleResult.WriteFailed;
+            }
+            ProfileToggleHelper.SetSuppressed(name, true);
+            return ProfileToggleResult.ToggledOff;
         }
 
         private static void LogDisplayFailureOnce(string deviceName, string message)
@@ -593,6 +660,10 @@ namespace vibrance.GUI.NVIDIA
             _gameScreen = null;
             _loggedDisplayFailures.Clear();
             VibranceRestoreHelper.ResetForTests();
+            // The toggle hotkey's own suppression state (upstream #143) - reset here too so a
+            // fixture check that only calls ResetForTests, without separately remembering to
+            // call ProfileToggleHelper.ResetForTests() itself, still starts from a clean slate.
+            ProfileToggleHelper.ResetForTests();
         }
 
         // The production INvidiaVibranceDevice: the four native calls below against the real

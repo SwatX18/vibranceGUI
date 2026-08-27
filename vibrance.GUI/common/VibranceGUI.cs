@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Media;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -54,6 +55,44 @@ namespace vibrance.GUI.common
 
         private const string ToolTipExecutableUnconfirmed =
             "Not detected yet. vibranceGUI has not seen this executable in the foreground, so this may be the wrong file. Double-click to change the executable.";
+
+        // WM_HOTKEY (winuser.h) - WndProc below dispatches on this with wParam ==
+        // HotkeyRegistration.HotkeyId, the toggle hotkey's own fixed registration id.
+        private const int WmHotkey = 0x0312;
+
+        // RegisterHotKey/WndProc, never a low-level keyboard hook - see HotkeyRegistration's own
+        // header comment for why. Constructed with the real registrar; ProfileToggleFixture
+        // drives HotkeyRegistration directly against a fake instead of through this form at all.
+        private readonly HotkeyRegistration _hotkeyRegistration = new HotkeyRegistration(new RealHotkeyRegistrar());
+        private readonly IForegroundWindowReader _foregroundWindowReader = new RealForegroundWindowReader();
+        private HotkeyBinding _toggleBinding = HotkeyBinding.None;
+
+        // The checkbox's own state - the binding's presence is deliberately NOT the enable flag
+        // here (unlike the discarded global-pause design): a per-game toggle is significant
+        // enough, and a mis-hit hotkey costly enough (it suppresses a specific game's profile),
+        // that turning it on is its own explicit step. ApplyToggleHotkey only ever registers a
+        // real binding when this is true AND _toggleBinding.IsSet.
+        private bool _toggleHotkeyEnabled;
+
+        // Guards the one-time balloon ApplyToggleHotkey raises for a registration failure that
+        // was not caused by an interactive user action (i.e. the settings-read registration
+        // point) - without this, a binding that keeps failing (another application owns it) would
+        // re-balloon on every settings reload.
+        private bool _hasShownHotkeyFailureBalloon;
+
+        // Set around the ReadVibranceSettings-time "checkBoxToggleHotkeyEnabled.Checked = ..."
+        // assignment (below) so its own CheckedChanged handler - when the stored value happens to
+        // differ from the designer default and the setter actually raises the event - does not
+        // re-persist the exact value it was just given. Not needed for correctness (writing the
+        // same value back is harmless), only to avoid an INI write on every single startup.
+        private bool _isLoadingToggleHotkeyEnabled;
+
+        // Same one-set-per-key dedup convention as NvidiaDynamicVibranceProxy's own
+        // _loggedDisplayFailures/LogDisplayFailureOnce - a no-op toggle press (no configured game
+        // in the foreground, or the engine is not ready yet) logs once per distinct process name,
+        // not once per press, so leaning on the key (even with MOD_NOREPEAT, which only throttles
+        // WM_HOTKEY's own repeat rate, not repeated presses) cannot spam vibranceGUI.log.
+        private readonly HashSet<string> _loggedNoOpTogglePresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         public VibranceGUI(
             Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy,
@@ -131,6 +170,92 @@ namespace vibrance.GUI.common
         public void SetAllowVisible(bool value)
         {
             _allowVisible = value;
+        }
+
+        /// <summary>
+        /// The first of the toggle hotkey's four registration points - see HotkeyRegistration's
+        /// own header comment and ApplyToggleHotkey below for the rest. The handle exists here
+        /// even under "-minimized" (SetVisibleCore above calls CreateHandle() when !_allowVisible),
+        /// but the binding itself is never set yet at this point (ReadVibranceSettings has not run)
+        /// - this call always returns NotConfigured without ever reaching RegisterHotKey.
+        /// </summary>
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ApplyToggleHotkey(false);
+        }
+
+        /// <summary>
+        /// One of the three layers that guarantee the toggle hotkey is unregistered - see
+        /// HotkeyRegistration's own header comment. Runs before the handle is actually destroyed,
+        /// which is what lets Release() unregister against the still-valid handle it cached at
+        /// registration time (see Release's own comment on why it never reads a fresh one).
+        /// </summary>
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            _hotkeyRegistration.Release();
+            base.OnHandleDestroyed(e);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WmHotkey && m.WParam == (IntPtr)HotkeyRegistration.HotkeyId)
+            {
+                OnToggleHotkeyPressed();
+            }
+            base.WndProc(ref m);
+        }
+
+        /// <summary>
+        /// Closes the real gap textBoxToggleHotkey's own Enter/Leave pair leaves open, measured
+        /// directly rather than assumed: Leave does NOT fire when another window takes activation
+        /// while the textbox still has focus, nor on Hide() (the minimise-to-tray path), nor on
+        /// WindowState = Minimized, nor on Close() with the textbox focused - only a focus change
+        /// to a SIBLING control raises it. Concretely: open settings, click the capture box to
+        /// look at the current binding (Enter releases it), then alt-tab away or minimise to tray
+        /// - without this override the hotkey stays unregistered for the rest of the session,
+        /// silently, while labelToggleHotkeyStatus keeps claiming "Hotkey registered.".
+        /// ApplyToggleHotkey(false), not (true): a deactivating form must not write the inline
+        /// status label - showInline is for a live edit, and this form is not being edited when
+        /// something else takes activation out from under it.
+        /// </summary>
+        protected override void OnDeactivate(EventArgs e)
+        {
+            if (ShouldReleaseHotkeyOnFocusTransition(this.ActiveControl, this.textBoxToggleHotkey))
+            {
+                ApplyToggleHotkey(false);
+            }
+            base.OnDeactivate(e);
+        }
+
+        /// <summary>
+        /// The other half of OnDeactivate above - also measured directly: after deactivate then
+        /// reactivate (or Hide() then Show()), textBoxToggleHotkey.Enter does NOT fire again,
+        /// because ActiveControl never actually changed. Re-applying on deactivation without
+        /// re-releasing here on activation would leave the hotkey live while the capture box has
+        /// focus, reopening the exact rebinding defect (PR #153's third one) the Enter/Leave pair
+        /// exists to fix in the first place.
+        /// </summary>
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            if (ShouldReleaseHotkeyOnFocusTransition(this.ActiveControl, this.textBoxToggleHotkey))
+            {
+                _hotkeyRegistration.Release();
+            }
+        }
+
+        /// <summary>
+        /// The condition both OnDeactivate and OnActivated above share, pulled out so
+        /// ProfileToggleFixture can call it directly (same assembly, internal) rather than
+        /// reflecting into a live Form - which this codebase deliberately never constructs in a
+        /// self test (VibranceGUI's own constructor calls getProxy(...), touching a real vendor
+        /// proxy). Pure: no WinForms focus system involved, just the one comparison both
+        /// overrides need to agree on.
+        /// </summary>
+        internal static bool ShouldReleaseHotkeyOnFocusTransition(Control activeControl, Control toggleHotkeyTextBox)
+        {
+            return activeControl == toggleHotkeyTextBox;
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -415,7 +540,344 @@ namespace vibrance.GUI.common
                 this.buttonRemoveProgram.Enabled = flag;
                 this.checkBoxNeverChangeResolutions.Enabled = flag;
                 this.checkBoxNeverChangeColorSettings.Enabled = flag;
+                this.checkBoxToggleHotkeyEnabled.Enabled = flag;
+                // AND'd with the checkbox's own state, not just flag alone - otherwise this
+                // would force the capture controls back on even while the user has left the
+                // checkbox unchecked (see checkBoxToggleHotkeyEnabled_CheckedChanged).
+                this.textBoxToggleHotkey.Enabled = flag && _toggleHotkeyEnabled;
+                this.buttonClearToggleHotkey.Enabled = flag && _toggleHotkeyEnabled;
             });
+        }
+
+        // ------------------------------------------------------------------
+        // Toggle hotkey (upstream #143) - a global RegisterHotKey binding that flips the
+        // foreground game's profile between its game level and the Windows level. See
+        // HotkeyRegistration/HotkeyBinding/IHotkeyRegistrar for the seams this wiring drives, and
+        // ProfileToggleFixture for their regression coverage.
+        // ------------------------------------------------------------------
+
+        [DllImport("user32.dll")]
+        private static extern short GetKeyState(int nVirtKey);
+
+        private const int VkLWin = 0x5B;
+        private const int VkRWin = 0x5C;
+
+        // KeyEventArgs exposes Control/Alt/Shift directly (e.Control/e.Alt/e.Shift) but has no
+        // equivalent for the Windows key - Control.ModifierKeys does not cover it either. This is
+        // the same "high bit of GetKeyState" read Windows itself uses to answer "is this key down
+        // right now", scoped to just the two Win virtual-key codes.
+        private static bool IsWinKeyDown()
+        {
+            return (GetKeyState(VkLWin) & 0x8000) != 0 || (GetKeyState(VkRWin) & 0x8000) != 0;
+        }
+
+        /// <summary>
+        /// Applies _toggleBinding against the form's own handle - see the class-level comment
+        /// above for the four points this is called from, and HotkeyRegistration.Apply for the
+        /// release-then-register contract underneath it. showInline routes a non-Registered
+        /// result to the settings-window status label (a live edit) instead of a one-time tray
+        /// balloon (an unattended registration point, e.g. the settings-read call site).
+        /// </summary>
+        private HotkeyRegistrationResult ApplyToggleHotkey(bool showInline)
+        {
+            // _v.GetVibranceInfo().isInitialized settles once, during the proxy's own
+            // constructor, and never flips back - a proxy that failed to initialize (bad driver,
+            // etc.) never will. Registering a hotkey the engine can never act on would still
+            // intercept that key combination system-wide, stealing it from a game that might
+            // legitimately want it, for a feature that can only ever no-op (see
+            // OnToggleHotkeyPressed's own guard) - not worth it just because a binding happens to
+            // be configured.
+            if (this.IsDisposed || !this.IsHandleCreated || _v == null || !_v.GetVibranceInfo().isInitialized)
+            {
+                return HotkeyRegistrationResult.NotConfigured;
+            }
+
+            // The checkbox gates registration, not just the presence of a saved binding - a
+            // binding can be fully configured (and shown in the textbox) while the checkbox is
+            // still unchecked, and must register nothing until the user turns it on.
+            // HotkeyRegistration.EffectiveBinding is the real gate, called from here rather than
+            // inlined, so a fixture that cannot instantiate this Form still reaches the actual
+            // expression production code runs, not a copy of it.
+            HotkeyBinding effective = HotkeyRegistration.EffectiveBinding(_toggleHotkeyEnabled, _toggleBinding);
+            HotkeyRegistrationResult result = _hotkeyRegistration.Apply(this.Handle, effective);
+
+            if (showInline)
+            {
+                ApplyToggleHotkeyStatusLabel(result);
+            }
+            else if ((result == HotkeyRegistrationResult.AlreadyOwnedByAnotherApplication ||
+                result == HotkeyRegistrationResult.Failed) && !_hasShownHotkeyFailureBalloon)
+            {
+                _hasShownHotkeyFailureBalloon = true;
+                this.notifyIcon.BalloonTipIcon = ToolTipIcon.Warning;
+                this.notifyIcon.BalloonTipText = result == HotkeyRegistrationResult.AlreadyOwnedByAnotherApplication
+                    ? string.Format("Could not register the toggle hotkey ({0}) - it is already in use by another application.", HotkeyBindingParser.Format(_toggleBinding))
+                    : string.Format("Could not register the toggle hotkey ({0}).", HotkeyBindingParser.Format(_toggleBinding));
+                this.notifyIcon.ShowBalloonTip(250);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// The inline, synchronous feedback ApplyToggleHotkey(showInline: true) shows next to the
+        /// textbox. A successfully registered binding with no real modifier bit set (only
+        /// MOD_NOREPEAT, which is never user-visible - see HotkeyBindingParser) still shows a
+        /// warning instead of the plain success text: it is a legal binding, but one that steals
+        /// the key from the game system-wide the moment it is bound.
+        /// </summary>
+        private void ApplyToggleHotkeyStatusLabel(HotkeyRegistrationResult result)
+        {
+            switch (result)
+            {
+                case HotkeyRegistrationResult.NotConfigured:
+                    this.labelToggleHotkeyStatus.ForeColor = SystemColors.ControlText;
+                    this.labelToggleHotkeyStatus.Text = string.Empty;
+                    return;
+                case HotkeyRegistrationResult.AlreadyOwnedByAnotherApplication:
+                    this.labelToggleHotkeyStatus.ForeColor = Color.Red;
+                    this.labelToggleHotkeyStatus.Text = "Already in use by another application.";
+                    return;
+                case HotkeyRegistrationResult.Failed:
+                    this.labelToggleHotkeyStatus.ForeColor = Color.Red;
+                    this.labelToggleHotkeyStatus.Text = "Could not register this hotkey.";
+                    return;
+            }
+
+            if ((_toggleBinding.Modifiers & ~HotkeyBindingParser.ModNoRepeat) == 0)
+            {
+                this.labelToggleHotkeyStatus.ForeColor = Color.DarkOrange;
+                this.labelToggleHotkeyStatus.Text = "No modifier: steals the key from the game.";
+                return;
+            }
+
+            this.labelToggleHotkeyStatus.ForeColor = Color.Green;
+            this.labelToggleHotkeyStatus.Text = "Hotkey registered.";
+        }
+
+        /// <summary>
+        /// Persists _toggleBinding's canonical text on its own, single-key write - deliberately
+        /// not routed through ForceSaveVibranceSettings/SaveVibranceSettings' debounced,
+        /// 8-parameter round trip, which this feature has nothing to do with.
+        /// </summary>
+        private void SaveToggleHotkeySetting()
+        {
+            try
+            {
+                new SettingsController().SetToggleHotkey(HotkeyBindingParser.Format(_toggleBinding));
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
+            }
+        }
+
+        /// <summary>
+        /// Persists the checkbox's own checked state - the same single-key write shape as
+        /// SaveToggleHotkeySetting beside it, and for the same reason not routed through
+        /// ForceSaveVibranceSettings/SaveVibranceSettings.
+        /// </summary>
+        private void SaveToggleHotkeyEnabledSetting()
+        {
+            try
+            {
+                new SettingsController().SetToggleHotkeyEnabled(_toggleHotkeyEnabled);
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
+            }
+        }
+
+        /// <summary>
+        /// Disables (never hides) the capture controls when unchecked - PR #153 hides them
+        /// instead, which makes the layout jump and conceals the parked key combination from a
+        /// user who might just want to glance at what is currently bound.
+        /// </summary>
+        private void checkBoxToggleHotkeyEnabled_CheckedChanged(object sender, EventArgs e)
+        {
+            _toggleHotkeyEnabled = this.checkBoxToggleHotkeyEnabled.Checked;
+            this.textBoxToggleHotkey.Enabled = _toggleHotkeyEnabled;
+            this.buttonClearToggleHotkey.Enabled = _toggleHotkeyEnabled;
+
+            if (_isLoadingToggleHotkeyEnabled)
+            {
+                // ReadVibranceSettings' own explicit ApplyToggleHotkey(false) call is what applies
+                // this on load - see its comment. Saving here too would just write back the exact
+                // value this handler was given, on every single startup.
+                return;
+            }
+
+            SaveToggleHotkeyEnabledSetting();
+            ApplyToggleHotkey(true);
+        }
+
+        // Releases the live registration the moment the textbox gains focus, so the CURRENT
+        // binding stops intercepting keystrokes meant for this field - closes PR #153's third
+        // defect (you could not rebind to anything containing the key combination already bound,
+        // because pressing it fired WM_HOTKEY - and toggled the engine - instead of the textbox's
+        // own KeyDown).
+        private void textBoxToggleHotkey_Enter(object sender, EventArgs e)
+        {
+            _hotkeyRegistration.Release();
+        }
+
+        // The other half of the same fix: re-applies _toggleBinding on the way out, whether or
+        // not KeyDown below ever actually changed it - if the user just clicked in and back out
+        // again with no key pressed, Enter's Release() above would otherwise leave the ORIGINAL
+        // binding unregistered with nothing left to restore it.
+        private void textBoxToggleHotkey_Leave(object sender, EventArgs e)
+        {
+            ApplyToggleHotkey(true);
+        }
+
+        private void textBoxToggleHotkey_KeyDown(object sender, KeyEventArgs e)
+        {
+            e.SuppressKeyPress = true;
+            e.Handled = true;
+
+            Keys keyCode = e.KeyCode;
+            // A bare modifier press (Ctrl/Alt/Shift/Win alone, before the real key follows) is
+            // not a complete binding yet - wait for the key that follows it instead of parsing
+            // "Ctrl" on its own.
+            if (keyCode == Keys.ControlKey || keyCode == Keys.Menu || keyCode == Keys.ShiftKey ||
+                keyCode == Keys.LWin || keyCode == Keys.RWin)
+            {
+                return;
+            }
+
+            List<string> parts = new List<string>();
+            if (e.Control) parts.Add("Ctrl");
+            if (e.Alt) parts.Add("Alt");
+            if (e.Shift) parts.Add("Shift");
+            if (IsWinKeyDown()) parts.Add("Win");
+            parts.Add(keyCode.ToString());
+
+            HotkeyBinding parsedBinding;
+            if (!HotkeyBindingParser.TryParse(string.Join("+", parts.ToArray()), out parsedBinding))
+            {
+                // A token this handler itself just built (a real Keys.KeyCode name) should never
+                // fail to parse - defensive only. Leaves the field showing whatever was bound
+                // before, rather than clearing a working binding over a key this widget cannot
+                // recognise.
+                return;
+            }
+
+            _toggleBinding = parsedBinding;
+            this.textBoxToggleHotkey.Text = HotkeyBindingParser.Format(_toggleBinding);
+            SaveToggleHotkeySetting();
+            ApplyToggleHotkey(true);
+        }
+
+        private void buttonClearToggleHotkey_Click(object sender, EventArgs e)
+        {
+            _toggleBinding = HotkeyBinding.None;
+            this.textBoxToggleHotkey.Text = string.Empty;
+            SaveToggleHotkeySetting();
+            ApplyToggleHotkey(true);
+        }
+
+        /// <summary>
+        /// The WM_HOTKEY handler WndProc dispatches to. Guarded the same way the trackbar/checkbox
+        /// handlers above are (see e.g. checkBoxPrimaryMonitorOnly_CheckedChanged): _v can be null,
+        /// or not yet initialized, for the whole span between the handle existing and
+        /// backgroundWorker_DoWork actually finishing - a hotkey press in that window is a no-op,
+        /// not a null-reference crash. A failed foreground read (_foregroundWindowReader) is the
+        /// same kind of no-op - nothing to name in a log line, so nothing is logged for it either.
+        /// </summary>
+        private void OnToggleHotkeyPressed()
+        {
+            if (_v == null || !_v.GetVibranceInfo().isInitialized)
+            {
+                return;
+            }
+
+            IntPtr hWnd;
+            string processName;
+            string processImagePath;
+            if (!_foregroundWindowReader.TryGetForeground(out hWnd, out processName, out processImagePath))
+            {
+                return;
+            }
+
+            ProfileToggleResult result = _v.ToggleForegroundProfile(hWnd, processName, processImagePath);
+            ApplyProfileToggleFeedback(result, processName, hWnd);
+        }
+
+        /// <summary>
+        /// Everything ToggleForegroundProfile's single return value drives, in one place - the
+        /// tray presentation derives from this one function, not a second .ico that does not
+        /// exist. A no-op result (no configured game in the foreground, or the engine is not
+        /// ready yet) is deliberately silent - no balloon, no sound - so a hotkey pressed while
+        /// browsing the desktop does not interrupt anything; it is still logged once per distinct
+        /// process name, so "why didn't my hotkey do anything" is answerable from the log without
+        /// needing a UI signal that would otherwise fire on every ordinary alt-tab. foregroundWindow
+        /// is resolved to a device name only in the WriteFailed case, which is the only one that
+        /// needs it - Screen.FromHandle is a real Win32 call, not worth paying on every no-op
+        /// press (by far the most common outcome: everything that is not a configured game).
+        /// </summary>
+        private void ApplyProfileToggleFeedback(ProfileToggleResult result, string processName, IntPtr foregroundWindow)
+        {
+            switch (result)
+            {
+                case ProfileToggleResult.NoConfiguredGameInForeground:
+                    LogNoOpToggleOnce(processName, string.Format(
+                        "Toggle hotkey pressed while \"{0}\" was in the foreground, which has no configured profile - ignored.", processName));
+                    return;
+                case ProfileToggleResult.EngineNotReady:
+                    LogNoOpToggleOnce(processName, string.Format(
+                        "Toggle hotkey pressed while \"{0}\" was in the foreground, but vibranceGUI has not finished starting up yet - ignored.", processName));
+                    return;
+                case ProfileToggleResult.WriteFailed:
+                    string deviceName = Screen.FromHandle(foregroundWindow).DeviceName;
+                    this.notifyIcon.BalloonTipIcon = ToolTipIcon.Warning;
+                    this.notifyIcon.BalloonTipText = string.Format("Could not toggle \"{0}\"'s profile on display {1}.", processName, deviceName);
+                    this.notifyIcon.ShowBalloonTip(250);
+                    return;
+            }
+
+            bool toggledOn = result == ProfileToggleResult.ToggledOn;
+
+            // Deliberately does NOT write notifyIcon.Text: a per-game "vibranceGUI - X OFF" tray
+            // tooltip has nothing that ever resets it, so it would keep asserting X's state long
+            // after X exits (or after a different game takes the foreground). The balloon below
+            // is the right place for "X just toggled" - it is transient by nature, so it cannot
+            // go stale the way a durable tray tooltip would.
+            this.notifyIcon.BalloonTipIcon = ToolTipIcon.Info;
+            this.notifyIcon.BalloonTipText = toggledOn
+                ? string.Format("\"{0}\"'s profile is running again.", processName)
+                : string.Format("\"{0}\"'s profile is suppressed - back at your Windows level until toggled again.", processName);
+            this.notifyIcon.ShowBalloonTip(250);
+
+            // Ship it, on, no setting - SystemSounds respects whatever sound scheme (including
+            // "No Sounds") the user already has picked in Windows, so the opt-out already exists
+            // at OS level. Plays asynchronously, never blocks WndProc.
+            //
+            // NOT Exclamation/Asterisk: checked against this machine's actual sound scheme via
+            // the registry (HKCU\AppEvents\Schemes\Apps\.Default\<Event>\.Current) rather than
+            // assumed, and SystemAsterisk and SystemExclamation both resolve to the exact same
+            // file ("Windows Background.wav") there - two "distinct" sounds that would actually
+            // be identical, exactly the failure mode to check for before shipping this. Hand
+            // resolves to a different file ("Windows Foreground.wav") on the same machine, so
+            // Hand/Asterisk is the pair actually used here. Re-verify on the machine this ships
+            // to if the two ever sound the same again - schemes vary.
+            if (toggledOn)
+            {
+                SystemSounds.Asterisk.Play();
+            }
+            else
+            {
+                SystemSounds.Hand.Play();
+            }
+        }
+
+        private void LogNoOpToggleOnce(string processName, string message)
+        {
+            string key = processName ?? string.Empty;
+            if (_loggedNoOpTogglePresses.Add(key))
+            {
+                Program.LogSafely(message);
+            }
         }
 
         private void CleanUp()
@@ -443,6 +905,10 @@ namespace vibrance.GUI.common
                 // comment for why leaving it subscribed leaks this form and can fault at shutdown.
                 SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
                 ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed;
+                // One of the three layers that guarantee the toggle hotkey is unregistered - see
+                // HotkeyRegistration's own header comment. Idempotent: OnHandleDestroyed (below,
+                // via the form's own Dispose chain) may already have done this.
+                _hotkeyRegistration.Release();
             }
         }
 
@@ -622,6 +1088,33 @@ namespace vibrance.GUI.common
                 checkBoxPrimaryMonitorOnly.Checked = affectPrimaryMonitorOnly;
                 checkBoxNeverChangeResolutions.Checked = neverSwitchResolution;
                 checkBoxNeverChangeColorSettings.Checked = neverChangeColorSettings;
+
+                // The real registration point for the toggle hotkey - OnHandleCreated's own call
+                // always finds _toggleBinding still at HotkeyBinding.None (this is the first time
+                // it is ever read from disk). backgroundWorker_DoWork busy-waits on
+                // "!IsHandleCreated" and only tests InvokeRequired afterward (see its own comment),
+                // so the handle is guaranteed to already exist on every path that reaches here -
+                // the InvokeRequired-without-a-handle trap this.IsHandleCreated guards elsewhere in
+                // this class cannot bite in this block.
+                HotkeyBinding parsedToggleBinding;
+                _toggleBinding = HotkeyBindingParser.TryParse(settingsController.ReadToggleHotkey(), out parsedToggleBinding)
+                    ? parsedToggleBinding
+                    : HotkeyBinding.None;
+                textBoxToggleHotkey.Text = HotkeyBindingParser.Format(_toggleBinding);
+
+                _toggleHotkeyEnabled = settingsController.ReadToggleHotkeyEnabled();
+                // Setting Checked to a value equal to its current (designer-default, unchecked)
+                // value does not raise CheckedChanged at all - the explicit ApplyToggleHotkey(false)
+                // call below is what actually applies it on that common path, not this line. When
+                // the stored value IS true, the setter does raise it - _isLoadingToggleHotkeyEnabled
+                // is what keeps that from writing the same value straight back to the INI.
+                _isLoadingToggleHotkeyEnabled = true;
+                checkBoxToggleHotkeyEnabled.Checked = _toggleHotkeyEnabled;
+                _isLoadingToggleHotkeyEnabled = false;
+                textBoxToggleHotkey.Enabled = _toggleHotkeyEnabled;
+                buttonClearToggleHotkey.Enabled = _toggleHotkeyEnabled;
+                ApplyToggleHotkey(false);
+
                 foreach (ApplicationSetting application in _applicationSettings.ToList())
                 {
                     if (!File.Exists(application.FileName))
@@ -997,6 +1490,11 @@ namespace vibrance.GUI.common
                 if (result == DialogResult.OK)
                 {
                     ApplicationSetting newSetting = settingsWindow.GetApplicationSetting();
+                    // "Change executable..." (or any edit that changes Name - Name is
+                    // Path.GetFileNameWithoutExtension of the executable, VibranceSettings.
+                    // resolveApplicationName) moves this profile off the Name the toggle hotkey's
+                    // suppression set is keyed by.
+                    ClearSuppressionIfNameChanged(actualSetting, newSetting.Name);
                     RemoveSettingByFileName(originalFileName);
                     RemoveSettingByFileName(newSetting.FileName);
                     _applicationSettings.Add(newSetting);
@@ -1046,11 +1544,34 @@ namespace vibrance.GUI.common
                     listApplications.Items[i].ImageIndex--;
 
                 removeApplicationListItem(eachItem);
-                _applicationSettings.Remove(_applicationSettings.FirstOrDefault(x => x.FileName.Equals(eachItem.Tag.ToString())));
+                ApplicationSetting removedSetting = _applicationSettings.FirstOrDefault(x => x.FileName.Equals(eachItem.Tag.ToString()));
+                if (removedSetting != null)
+                {
+                    ClearSuppressionIfNameChanged(removedSetting, null);
+                    _applicationSettings.Remove(removedSetting);
+                }
             }
 
             RefreshUnconfirmedCache();
             ForceSaveVibranceSettings();
+        }
+
+        /// <summary>
+        /// Clears any toggle-hotkey suppression recorded under oldSetting's own Name whenever
+        /// this profile is removed outright (newName: null) or edited such that Name no longer
+        /// matches (e.g. "Change executable..."). Without this, a stale suppression under the OLD
+        /// Name would silently apply to whatever unrelated profile happens to get that Name later
+        /// (e.g. two different games both shipping a "launcher.exe") - with no action from that
+        /// user and nothing in the UI explaining why it starts at the Windows level instead of
+        /// its own. Extracted so ProfileToggleFixture can call it directly (same assembly,
+        /// internal) instead of reflecting into either private UI handler.
+        /// </summary>
+        internal static void ClearSuppressionIfNameChanged(ApplicationSetting oldSetting, string newName)
+        {
+            if (oldSetting != null && !string.Equals(oldSetting.Name, newName, StringComparison.OrdinalIgnoreCase))
+            {
+                ProfileToggleHelper.SetSuppressed(oldSetting.Name, false);
+            }
         }
 
         private void removeApplicationListItem(ListViewItem item)

@@ -66,6 +66,11 @@
             this.groupBox10 = new System.Windows.Forms.GroupBox();
             this.labelBrightness = new System.Windows.Forms.Label();
             this.trackBarBrightness = new System.Windows.Forms.TrackBar();
+            this.checkBoxToggleHotkeyEnabled = new System.Windows.Forms.CheckBox();
+            this.labelToggleHotkey = new System.Windows.Forms.Label();
+            this.textBoxToggleHotkey = new System.Windows.Forms.TextBox();
+            this.buttonClearToggleHotkey = new System.Windows.Forms.Button();
+            this.labelToggleHotkeyStatus = new System.Windows.Forms.Label();
             this.contextMenuStrip.SuspendLayout();
             this.groupBoxSettings.SuspendLayout();
             this.groupBox3.SuspendLayout();
@@ -143,6 +148,11 @@
             this.groupBoxSettings.Controls.Add(this.checkBoxPrimaryMonitorOnly);
             this.groupBoxSettings.Controls.Add(this.groupBox3);
             this.groupBoxSettings.Controls.Add(this.checkBoxAutostart);
+            this.groupBoxSettings.Controls.Add(this.checkBoxToggleHotkeyEnabled);
+            this.groupBoxSettings.Controls.Add(this.labelToggleHotkey);
+            this.groupBoxSettings.Controls.Add(this.textBoxToggleHotkey);
+            this.groupBoxSettings.Controls.Add(this.buttonClearToggleHotkey);
+            this.groupBoxSettings.Controls.Add(this.labelToggleHotkeyStatus);
             this.groupBoxSettings.Location = new System.Drawing.Point(15, 47);
             this.groupBoxSettings.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxSettings.Name = "groupBoxSettings";
@@ -213,7 +223,73 @@
             this.trackBarWindowsLevel.Size = new System.Drawing.Size(196, 69);
             this.trackBarWindowsLevel.TabIndex = 0;
             this.trackBarWindowsLevel.Scroll += new System.EventHandler(this.trackBarWindowsLevel_Scroll);
-            // 
+            //
+            // checkBoxToggleHotkeyEnabled
+            //
+            this.checkBoxToggleHotkeyEnabled.AutoSize = true;
+            this.checkBoxToggleHotkeyEnabled.Location = new System.Drawing.Point(300, 32);
+            this.checkBoxToggleHotkeyEnabled.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxToggleHotkeyEnabled.Name = "checkBoxToggleHotkeyEnabled";
+            this.checkBoxToggleHotkeyEnabled.Size = new System.Drawing.Size(248, 24);
+            this.checkBoxToggleHotkeyEnabled.TabIndex = 20;
+            this.checkBoxToggleHotkeyEnabled.Text = "Toggle game profile by hotkey";
+            this.toolTip.SetToolTip(this.checkBoxToggleHotkeyEnabled, "When checked, the key combination below toggles the foreground game\'s profile b" +
+        "etween its game level and your Windows level.");
+            this.checkBoxToggleHotkeyEnabled.UseVisualStyleBackColor = true;
+            this.checkBoxToggleHotkeyEnabled.CheckedChanged += new System.EventHandler(this.checkBoxToggleHotkeyEnabled_CheckedChanged);
+            //
+            // labelToggleHotkey
+            //
+            this.labelToggleHotkey.AutoSize = true;
+            this.labelToggleHotkey.Location = new System.Drawing.Point(300, 60);
+            this.labelToggleHotkey.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.labelToggleHotkey.Name = "labelToggleHotkey";
+            this.labelToggleHotkey.Size = new System.Drawing.Size(153, 20);
+            this.labelToggleHotkey.TabIndex = 21;
+            this.labelToggleHotkey.Text = "Toggle profile hotkey:";
+            //
+            // textBoxToggleHotkey
+            //
+            this.textBoxToggleHotkey.Location = new System.Drawing.Point(300, 86);
+            this.textBoxToggleHotkey.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.textBoxToggleHotkey.Name = "textBoxToggleHotkey";
+            this.textBoxToggleHotkey.ReadOnly = true;
+            this.textBoxToggleHotkey.Size = new System.Drawing.Size(240, 26);
+            this.textBoxToggleHotkey.TabIndex = 22;
+            this.toolTip.SetToolTip(this.textBoxToggleHotkey, "Click here, then press a key combination to bind a global hotkey that toggles t" +
+        "he foreground game\'s profile between its game level and your Windows level. A b" +
+        "are key with no modifier is legal but steals it from the game system-wide.");
+            this.textBoxToggleHotkey.Enter += new System.EventHandler(this.textBoxToggleHotkey_Enter);
+            this.textBoxToggleHotkey.KeyDown += new System.Windows.Forms.KeyEventHandler(this.textBoxToggleHotkey_KeyDown);
+            this.textBoxToggleHotkey.Leave += new System.EventHandler(this.textBoxToggleHotkey_Leave);
+            //
+            // buttonClearToggleHotkey
+            //
+            this.buttonClearToggleHotkey.Location = new System.Drawing.Point(548, 85);
+            this.buttonClearToggleHotkey.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.buttonClearToggleHotkey.Name = "buttonClearToggleHotkey";
+            this.buttonClearToggleHotkey.Size = new System.Drawing.Size(44, 28);
+            this.buttonClearToggleHotkey.TabIndex = 23;
+            this.buttonClearToggleHotkey.Text = "X";
+            this.toolTip.SetToolTip(this.buttonClearToggleHotkey, "Clears the toggle hotkey binding.");
+            this.buttonClearToggleHotkey.UseVisualStyleBackColor = true;
+            this.buttonClearToggleHotkey.Click += new System.EventHandler(this.buttonClearToggleHotkey_Click);
+            //
+            // labelToggleHotkeyStatus
+            //
+            this.labelToggleHotkeyStatus.AutoSize = true;
+            this.labelToggleHotkeyStatus.Location = new System.Drawing.Point(300, 118);
+            this.labelToggleHotkeyStatus.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            // A non-zero MaximumSize.Width makes an AutoSize label WRAP instead of growing past
+            // it - defense against the longest status string ("No modifier: steals the key from
+            // the game.") clipping past groupBoxSettings' own right edge (this label starts at
+            // x=300 in a 600-wide box, leaving 292px before the border).
+            this.labelToggleHotkeyStatus.MaximumSize = new System.Drawing.Size(288, 0);
+            this.labelToggleHotkeyStatus.Name = "labelToggleHotkeyStatus";
+            this.labelToggleHotkeyStatus.Size = new System.Drawing.Size(0, 20);
+            this.labelToggleHotkeyStatus.TabIndex = 24;
+            this.labelToggleHotkeyStatus.Text = "";
+            //
             // statusLabel
             // 
             this.statusLabel.AutoSize = true;
@@ -576,6 +652,11 @@
         private System.Windows.Forms.GroupBox groupBox10;
         private System.Windows.Forms.Label labelBrightness;
         private System.Windows.Forms.TrackBar trackBarBrightness;
+        private System.Windows.Forms.CheckBox checkBoxToggleHotkeyEnabled;
+        private System.Windows.Forms.Label labelToggleHotkey;
+        private System.Windows.Forms.TextBox textBoxToggleHotkey;
+        private System.Windows.Forms.Button buttonClearToggleHotkey;
+        private System.Windows.Forms.Label labelToggleHotkeyStatus;
     }
 }
 

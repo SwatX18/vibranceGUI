@@ -238,11 +238,14 @@ namespace vibrance.GUI.common
                 LastSetSaturationOnAllDisplaysLevel = vibranceLevel;
             }
 
-            public void SetSaturationOnDisplay(int vibranceLevel, string displayName)
+            // Always reports success (upstream #143 gave the real interface a bool return) -
+            // none of this file's own checks need a failure path, so behaviour here is unchanged.
+            public bool SetSaturationOnDisplay(int vibranceLevel, string displayName)
             {
                 SetSaturationOnDisplayCallCount++;
                 LastSetSaturationOnDisplayLevel = vibranceLevel;
                 LastSetSaturationOnDisplayName = displayName;
+                return true;
             }
 
             public bool IsAvailable()

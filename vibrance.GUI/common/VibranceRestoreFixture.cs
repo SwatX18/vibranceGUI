@@ -1015,10 +1015,14 @@ namespace vibrance.GUI.common
                 LastSetSaturationOnAllDisplaysLevel = vibranceLevel;
             }
 
-            public void SetSaturationOnDisplay(int vibranceLevel, string displayName)
+            // Always reports success (upstream #143 gave the real interface a bool return) - none
+            // of this file's own checks need a failure path (ProfileToggleFixture has its own,
+            // separate fake for that), so behaviour here is unchanged.
+            public bool SetSaturationOnDisplay(int vibranceLevel, string displayName)
             {
                 SetSaturationOnDisplayLevels.Add(vibranceLevel);
                 SetSaturationOnDisplayNames.Add(displayName);
+                return true;
             }
 
             public bool IsAvailable()

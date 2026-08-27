@@ -19,6 +19,11 @@ namespace vibrance.GUI.common
         public int userVibranceSettingDefault;
         public int userVibranceSettingActive;
         public String szGpuName;
+        // Written by SetShouldRun but never read back anywhere in this codebase - dead plumbing,
+        // not the toggle hotkey's per-game suppression state. That state is a per-profile set
+        // (ProfileToggleHelper._suppressedProfileNames, keyed by ApplicationSetting.Name), not a
+        // single global bool - a whole-engine pause was considered and rejected in favour of a
+        // per-game toggle, which this single field could never represent correctly.
         public bool shouldRun;
         public int sleepInterval;
         public List<int> displayHandles;

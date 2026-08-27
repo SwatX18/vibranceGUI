@@ -31,6 +31,7 @@ namespace vibrance.GUI
         private const string GammaDisplaySelfTestMessageBoxCaption = "vibranceGUI gamma restore hardware self test";
         private const string ResolutionSelfTestMessageBoxCaption = "vibranceGUI resolution change self test";
         private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
+        private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
@@ -131,6 +132,19 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, VibranceRestoreFixture.Run().ToArray()),
                     VibranceSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: ProfileToggleFixture only ever drives HotkeyRegistration
+            // through a fake IHotkeyRegistrar, and the suppression-gate/toggle-write checks
+            // through the vendor proxies' own ResetForTests seams and fake devices - so, like
+            // --selftest-resolution and --selftest-vibrance, there is deliberately no hardware
+            // variant of this one, and there must never be one. See that fixture's own header
+            // comment.
+            if (args.Contains("--selftest-profiletoggle"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, ProfileToggleFixture.Run().ToArray()),
+                    HotkeySelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

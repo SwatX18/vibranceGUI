@@ -38,10 +38,25 @@ namespace vibrance.GUI.common
         const string SzKeyNameContrastWindowsLevel = "contrastWindowsLevel";
         const string SzKeyNameGammaWindowsLevel = "gammaWindowsLevel";
         const string SzKeyNameGraphicsAdapter = "graphicsAdapter";
+        const string SzKeyNameToggleHotkey = "toggleHotkey";
+        const string SzKeyNameToggleHotkeyEnabled = "toggleHotkeyEnabled";
 
 
         private string _fileName = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData).ToString() + "\\vibranceGUI\\vibranceGUI.ini";
         private string _fileNameApplicationSettings = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData).ToString() + "\\vibranceGUI\\applicationData.xml";
+
+        public SettingsController()
+        {
+        }
+
+        // Lets ProfileToggleFixture round-trip SetToggleHotkey/ReadToggleHotkey against a temp
+        // INI, never the user's real "%APPDATA%\vibranceGUI\vibranceGUI.ini" - see that fixture's
+        // own header comment.
+        internal SettingsController(string fileName, string applicationSettingsFileName)
+        {
+            _fileName = fileName;
+            _fileNameApplicationSettings = applicationSettingsFileName;
+        }
 
 
         public bool SetVibranceSettings(string windowsLevel, string affectPrimaryMonitorOnly, string neverSwitchResolution, string neverChangeColorSettings, List<ApplicationSetting> applicationSettings, 
@@ -136,6 +151,76 @@ namespace vibrance.GUI.common
             }
 
             return SetVibranceSetting(SzKeyNameGraphicsAdapter, graphicsAdapter.ToString());
+        }
+
+        /// <summary>
+        /// The toggle hotkey's canonical text (HotkeyBindingParser.Format's own output, e.g.
+        /// "Ctrl+Alt+F9"), or "" when the INI holds no binding - which is what every existing
+        /// installation looks like. Modelled exactly on ReadGraphicsAdapterPreference: read on
+        /// its own, not folded into ReadVibranceSettings' 8-parameter signature, since that
+        /// signature is shared by every existing call site and this feature has nothing to do
+        /// with vibrance levels.
+        /// </summary>
+        public string ReadToggleHotkey()
+        {
+            if (!IsFileExisting(_fileName))
+            {
+                return string.Empty;
+            }
+
+            StringBuilder szValueToggleHotkey = new StringBuilder(1024);
+            GetPrivateProfileString(SzSectionName,
+                SzKeyNameToggleHotkey,
+                "",
+                szValueToggleHotkey,
+                Convert.ToUInt32(szValueToggleHotkey.Capacity),
+                _fileName);
+
+            return szValueToggleHotkey.ToString().Trim();
+        }
+
+        /// <summary>
+        /// Stores the toggle hotkey's canonical text. SetVibranceSetting is already a single-key
+        /// writer, so this is a thin, named wrapper over it - the same shape as
+        /// SetGraphicsAdapterPreference.
+        /// </summary>
+        public bool SetToggleHotkey(string canonicalText)
+        {
+            return SetVibranceSetting(SzKeyNameToggleHotkey, canonicalText ?? string.Empty);
+        }
+
+        /// <summary>
+        /// Whether the toggle hotkey checkbox was checked, or false when the INI holds no
+        /// preference - which is what every existing installation looks like. A missing/corrupt
+        /// value defaults to false (disabled), the safer of the two: an unexpectedly-active
+        /// global hotkey is a worse first impression than one the user has to turn on themselves.
+        /// </summary>
+        public bool ReadToggleHotkeyEnabled()
+        {
+            if (!IsFileExisting(_fileName))
+            {
+                return false;
+            }
+
+            StringBuilder szValueToggleHotkeyEnabled = new StringBuilder(1024);
+            GetPrivateProfileString(SzSectionName,
+                SzKeyNameToggleHotkeyEnabled,
+                "False",
+                szValueToggleHotkeyEnabled,
+                Convert.ToUInt32(szValueToggleHotkeyEnabled.Capacity),
+                _fileName);
+
+            bool enabled;
+            return bool.TryParse(szValueToggleHotkeyEnabled.ToString().Trim(), out enabled) && enabled;
+        }
+
+        /// <summary>
+        /// Stores whether the toggle hotkey checkbox was checked - the same single-key writer
+        /// shape as SetToggleHotkey beside it.
+        /// </summary>
+        public bool SetToggleHotkeyEnabled(bool enabled)
+        {
+            return SetVibranceSetting(SzKeyNameToggleHotkeyEnabled, enabled.ToString());
         }
 
         private bool PrepareFile()

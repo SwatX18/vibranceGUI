@@ -154,6 +154,21 @@ namespace vibrance.GUI.AMD
 
             if (applicationSetting != null)
             {
+                if (ProfileToggleHelper.IsSuppressed(applicationSetting.Name))
+                {
+                    // Toggled off by hotkey (upstream #143). Ignore this foreground event for
+                    // this game entirely - deliberately NOT a fall-through to the restore branch
+                    // below: the toggle itself already restored this display
+                    // (ToggleForegroundProfile), and re-running the work-list restore on every
+                    // alt-tab into a suppressed game would reach displays this game never even
+                    // touched.
+                    //
+                    // Returns BEFORE "_gameScreen = screen" below: a suppressed game applies
+                    // nothing here, so it must not become the screen a later resolution revert
+                    // reasons about.
+                    return;
+                }
+
                 Screen screen = Screen.FromHandle(e.Handle);
                 _gameScreen = screen;
 
@@ -263,17 +278,110 @@ namespace vibrance.GUI.AMD
                 return;
             }
 
-            // IAmdAdapter has no read-back to confirm a write landed, unlike NVIDIA's
+            // This restore path still has no read-back to confirm a write landed, unlike NVIDIA's
             // equalsDVCLevel/setDVCLevel pair - so, unlike NvidiaDynamicVibranceProxy's
-            // RestoreOneDisplay, every target is written unconditionally and cleared
+            // RestoreOneDisplay, every target here is written unconditionally and cleared
             // unconditionally, unable to tell "already correct" from "just fixed" or to retry a
-            // failure that has no way to be observed here.
+            // failure that has no way to be observed here. That is no longer true of
+            // IAmdAdapter.SetSaturationOnDisplay itself (upstream #143 gave it a real ADL_OK-based
+            // bool return) - it is just that THIS call site, deliberately, still ignores it: doing
+            // otherwise would make this drain conditionally, changing behaviour the pre-existing
+            // A1-A6 checks in VibranceRestoreFixture pin. ToggleForegroundProfile below is the one
+            // call site that actually reads the new return value.
             List<string> targets = VibranceRestoreHelper.ComposeRestoreTargets(true, VibranceRestoreHelper.GetPrimaryDeviceName());
             foreach (string deviceName in targets)
             {
                 _amdAdapter.SetSaturationOnDisplay(_vibranceInfo.userVibranceSettingDefault, deviceName);
                 VibranceRestoreHelper.ClearGameLevelRecord(deviceName);
             }
+        }
+
+        /// <summary>
+        /// See IVibranceProxy.ToggleForegroundProfile for the full contract. Decide (pure) picks
+        /// the direction from our own recorded suppression state, never from a display read-back;
+        /// this method is only the write plus the flip. Unlike RestoreWindowsVibranceLevel above,
+        /// this DOES read IAmdAdapter.SetSaturationOnDisplay's new bool return - the toggle path
+        /// is the one place a false success genuinely matters, since flipping suppression on a
+        /// write that never landed would strand the game at whatever level it was already at
+        /// while telling the engine (and the user) the opposite.
+        ///
+        /// Branches on affectPrimaryMonitorOnly, mirroring OnWinEventHook's own apply branch
+        /// above - unlike NVIDIA, the AMD apply is NOT single-display with the flag off (the
+        /// DEFAULT): it writes every attached screen via SetSaturationOnAllDisplays and records
+        /// all of them. A toggle that only ever touched deviceName would write one display back
+        /// to the Windows level while every other monitor stayed at the game's saturation - with
+        /// the balloon claiming the profile was restored - for as long as the user stays in the
+        /// suppressed game, since the suppression gate returns early on every later event.
+        /// </summary>
+        public ProfileToggleResult ToggleForegroundProfile(IntPtr foregroundWindow, string processName, string processImagePath)
+        {
+            ProfileToggleDecision decision = ProfileToggleHelper.Decide(
+                _applicationSettings, processName, processImagePath, _vibranceInfo.isWindowsLevelKnown);
+
+            if (decision.Action == ProfileToggleAction.None)
+            {
+                return ProfileToggleResult.NoConfiguredGameInForeground;
+            }
+            if (decision.Action == ProfileToggleAction.EngineNotReady)
+            {
+                return ProfileToggleResult.EngineNotReady;
+            }
+
+            string deviceName = Screen.FromHandle(foregroundWindow).DeviceName;
+            string name = decision.Setting.Name;
+
+            if (decision.Action == ProfileToggleAction.ApplyGameLevel)
+            {
+                if (_vibranceInfo.affectPrimaryMonitorOnly)
+                {
+                    if (!_amdAdapter.SetSaturationOnDisplay(decision.Setting.IngameLevel, deviceName))
+                    {
+                        return ProfileToggleResult.WriteFailed;
+                    }
+                    // Only the game's own screen was written - that is the only display owing a
+                    // restore.
+                    VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+                }
+                else
+                {
+                    // The identical write SetSaturationOnAllDisplays makes internally
+                    // (AmdAdapter32/64.cs: "SetSaturationOnDisplay(vibranceLevel, null)"), but
+                    // through the named-display overload so the new ADL_OK-based bool return
+                    // survives for this method to actually check - see its own header comment.
+                    if (!_amdAdapter.SetSaturationOnDisplay(decision.Setting.IngameLevel, null))
+                    {
+                        return ProfileToggleResult.WriteFailed;
+                    }
+                    // This really did write every attached display, not just the game's own -
+                    // every one of them is recorded as owing a restore, mirroring the automatic
+                    // apply branch above.
+                    foreach (Screen attachedScreen in Screen.AllScreens)
+                    {
+                        VibranceRestoreHelper.RecordGameLevelApplied(attachedScreen.DeviceName);
+                    }
+                }
+                ProfileToggleHelper.SetSuppressed(name, false);
+                return ProfileToggleResult.ToggledOn;
+            }
+
+            if (_vibranceInfo.affectPrimaryMonitorOnly)
+            {
+                if (!_amdAdapter.SetSaturationOnDisplay(_vibranceInfo.userVibranceSettingDefault, deviceName))
+                {
+                    return ProfileToggleResult.WriteFailed;
+                }
+                VibranceRestoreHelper.ClearGameLevelRecord(deviceName);
+            }
+            else
+            {
+                if (!_amdAdapter.SetSaturationOnDisplay(_vibranceInfo.userVibranceSettingDefault, null))
+                {
+                    return ProfileToggleResult.WriteFailed;
+                }
+                VibranceRestoreHelper.ClearAllGameLevelRecords();
+            }
+            ProfileToggleHelper.SetSuppressed(name, true);
+            return ProfileToggleResult.ToggledOff;
         }
 
         private void RestoreWindowsColorSettings()
