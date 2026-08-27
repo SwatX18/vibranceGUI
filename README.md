@@ -23,8 +23,6 @@ Every contribution is greatly appreciated. Do not hesitate to submit every issue
 
 ## Contact
 
-NVIDIA support: https://x.com/swatx18
+Support: https://x.com/swatx18
 
-AMD support: https://twitter.com/juRiiir3
-
-`Please do not add either of us at Steam to ask questions about vibranceGUI. Thank you.`
+`Please do not add me at Steam to ask questions about vibranceGUI. Thank you.`
