@@ -9,6 +9,36 @@ using vibrance.GUI.common;
 
 namespace vibrance.GUI.NVIDIA
 {
+    // The seam between the vibrance apply/restore logic below and the actual NVIDIA driver, in the
+    // same spirit as common\DeviceGammaRampHelper.cs's IGammaDevice. RealNvidiaVibranceDevice
+    // (nested at the bottom of NvidiaDynamicVibranceProxy) is the only production implementation;
+    // VibranceRestoreFixture supplies a fake that records every (handle, level) it is asked to
+    // write, so the apply/restore logic - the part that carried issues #60/#36 (a second monitor
+    // reset on every launch), #144 (vibrance surviving the game closing) and #95 (vibrance
+    // surviving an alt-tab to another monitor) - can be driven through real cycles, including
+    // forced failures, without a GPU.
+    internal interface INvidiaVibranceDevice
+    {
+        // hWnd is ref, matching isWindowActive's own HWND* signature, not IntPtr-by-value: the
+        // pre-existing call site ("IntPtr processHandle = e.Handle; ... isWindowActive(ref
+        // processHandle); ... Screen.FromHandle(processHandle)") already relies on whatever this
+        // native call may write back into the handle it was given determining which screen the
+        // rest of that branch resolves to. Taking hWnd by value here would silently drop that and
+        // risk changing which screen a restore reasons about - exactly the kind of behaviour this
+        // fix is not supposed to touch.
+        bool IsWindowActive(ref IntPtr hWnd);
+
+        // getAssociatedNvidiaDisplayHandle. -1 when NvAPI cannot name deviceName's display; never
+        // called with a null or empty deviceName.
+        int TryResolveDisplayHandle(string deviceName);
+
+        // equalsDVCLevel.
+        bool IsAtLevel(int displayHandle, int level);
+
+        // setDVCLevel.
+        bool SetLevel(int displayHandle, int level);
+    }
+
     class NvidiaDynamicVibranceProxy : IVibranceProxy
     {
         #region DllImports
@@ -138,6 +168,20 @@ namespace vibrance.GUI.NVIDIA
         private WinEventHook _hook;
         private static Screen _gameScreen;
 
+        // The only production INvidiaVibranceDevice. Not readonly - ResetForTests below swaps it
+        // for a fake so VibranceRestoreFixture can drive ApplyGameVibranceLevel/
+        // RestoreWindowsVibranceLevel (and, through them, OnWinEventHook itself, which is private
+        // static and so reachable by reflection with no instance at all) without ever calling
+        // initializeLibrary() or touching a real GPU.
+        private static INvidiaVibranceDevice _device = new RealNvidiaVibranceDevice();
+
+        // Suppresses repeat log calls for a display that is failing to resolve or failing to
+        // write, on either the apply or the restore path - shares the same one-set-per-device,
+        // clear-on-any-success convention as DeviceGammaRampHelper._loggedDeviceFailures, for the
+        // same reason: a foreground-change storm against a broken display must not redo a
+        // synchronous log write on the UI thread on every single event.
+        private static readonly HashSet<string> _loggedDisplayFailures = new HashSet<string>();
+
         public NvidiaDynamicVibranceProxy(List<ApplicationSetting> savedApplicationSettings, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> currentWindowsResolutionSettings)
         {
             try
@@ -196,17 +240,23 @@ namespace vibrance.GUI.NVIDIA
             char[] sz = new char[64];
             getGpuName(gpuHandles, buffer);
             _vibranceInfo.szGpuName = buffer.ToString();
-            _vibranceInfo.defaultHandle = enumerateNvidiaDisplayHandle(0);
 
-            NvDisplayDvcInfo info = new NvDisplayDvcInfo();
-            if (getDVCInfo(ref info, _vibranceInfo.defaultHandle))
-            {
-                if (info.currentLevel != _vibranceInfo.userVibranceSettingDefault)
-                {
-                    setDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault);
-                }
-            }
-
+            // No DVC write here anymore (issue #60/#36). This used to do
+            // "enumerateNvidiaDisplayHandle(0)" - an arbitrary display, not necessarily the primary
+            // and not the one affectPrimaryMonitorOnly's flag was ever consulted for - then write
+            // _vibranceInfo.userVibranceSettingDefault to it via getDVCInfo/setDVCLevel. But
+            // SetVibranceWindowsLevel(...) has not been called yet at this point in startup (it
+            // runs later, from VibranceGUI.cs's backgroundWorker_DoWork, after that method's own
+            // "while (!this.IsHandleCreated) Thread.Sleep(500);" wait), so userVibranceSettingDefault
+            // was still VibranceInfo's struct default of 0 - every launch stamped 0 onto whatever
+            // display handle 0 happened to name, resetting a second monitor's level even though it
+            // was never a game's screen and affectPrimaryMonitorOnly was never asked about it.
+            // A foreground event CAN still land on the hook before SetVibranceWindowsLevel runs
+            // (the app's own window appearing is one) - RestoreWindowsVibranceLevel's
+            // isWindowsLevelKnown guard (see VibranceInfo) makes that a no-op instead of writing
+            // the still-unknown level, rather than trying to make it unreachable. The desktop scope
+            // then receives the real, saved Windows level on the first non-game foreground event
+            // after SetVibranceWindowsLevel has actually run.
             _vibranceInfo.isInitialized = true;
         }
 
@@ -220,21 +270,25 @@ namespace vibrance.GUI.NVIDIA
                 : null;
 
             if (applicationSetting != null)
-            {                  
-                int displayHandle = GetApplicationDisplayHandle(e.Handle);
-                if (displayHandle == -1) 
-                {
-                    return;
-                }
-
+            {
                 Screen screen = Screen.FromHandle(e.Handle);
                 _gameScreen = screen;
 
-                //test if digital vibrance change is needed
-                if (!equalsDVCLevel(displayHandle, applicationSetting.IngameLevel))
+                // A display NvAPI cannot name for this screen no longer aborts resolution and
+                // gamma work below - it used to, through an early return here that had nothing to
+                // do with either of those features. ApplyGameVibranceLevel resolves the handle
+                // itself and simply skips the vibrance write when it can't; only a landed write is
+                // ever recorded as owing a restore.
+                //
+                // affectPrimaryMonitorOnly is deliberately NOT consulted here - the ingame level
+                // always targets the screen the game itself is on, never every attached display.
+                // The flag only ever scopes the WINDOWS level's restore, in the "else" branch
+                // below; today that is documented solely in the checkbox's tooltip, worth stating
+                // here too so a later reader does not "fix" this branch to match the restore
+                // branch's flag check.
+                if (ApplyGameVibranceLevel(_device, screen.DeviceName, applicationSetting.IngameLevel))
                 {
-                    _vibranceInfo.defaultHandle = displayHandle;
-                    setDVCLevel(_vibranceInfo.defaultHandle, applicationSetting.IngameLevel);
+                    VibranceRestoreHelper.RecordGameLevelApplied(screen.DeviceName);
                 }
 
                 //test if a resolution change is needed
@@ -269,22 +323,23 @@ namespace vibrance.GUI.NVIDIA
             {
                 IntPtr processHandle = e.Handle;
 
-                if (!isWindowActive(ref processHandle))
+                if (!_device.IsWindowActive(ref processHandle))
                     return;
-                
+
                 //test if a resolution change is needed
                 Screen currentScreen = Screen.FromHandle(processHandle);
 
-                //test if changing the vibrance value is needed
-                if (_vibranceInfo.affectPrimaryMonitorOnly && !equalsDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault) &&
-                    (_gameScreen == null || _gameScreen.DeviceName.Equals(currentScreen.DeviceName)))
-                {
-                    setDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault);
-                }
-                else if (!_vibranceInfo.affectPrimaryMonitorOnly && !_vibranceInfo.displayHandles.TrueForAll(handle => equalsDVCLevel(handle, _vibranceInfo.userVibranceSettingDefault)))
-                {
-                    _vibranceInfo.displayHandles.ForEach(handle => setDVCLevel(handle, _vibranceInfo.userVibranceSettingDefault));
-                }
+                // Deliberately does NOT scope this to currentScreen (issues #95, #144): restoring
+                // only "the screen that currently has focus" left a game's monitor saturated after
+                // an alt-tab to another monitor while the game was still open, and left it
+                // saturated forever after the game exited, if the desktop's foreground never
+                // happened to land back on that same screen first. RestoreWindowsVibranceLevel
+                // instead restores every display this application actually holds a game level on,
+                // plus the primary (see VibranceRestoreHelper.ComposeRestoreTargets), regardless of
+                // where the foreground currently is.
+                RestoreWindowsVibranceLevel(_device, _vibranceInfo.affectPrimaryMonitorOnly,
+                    VibranceRestoreHelper.GetPrimaryDeviceName(), _vibranceInfo.displayHandles,
+                    _vibranceInfo.userVibranceSettingDefault, _vibranceInfo.isWindowsLevelKnown);
 
                 if (_vibranceInfo.neverChangeResolution == false && _vibranceInfo.isResolutionChangeApplied == true &&
                     _gameScreen != null && _gameScreen.Equals(currentScreen) &&
@@ -368,22 +423,211 @@ namespace vibrance.GUI.NVIDIA
             return displayHandles;
         }
 
-        private static int GetApplicationDisplayHandle(IntPtr hWnd)
+        /// <summary>
+        /// Writes ingameLevel to gameDeviceName's NVIDIA display, unless it is already there.
+        /// Returns true only when the write actually landed - only then may the caller record the
+        /// display as owing a restore, the same rule ApplyGameGammaRamp already follows for the
+        /// gamma ramp. Returns true without writing anything when the display is already at
+        /// ingameLevel. Does not throw on a resolve failure or a failed write - both are logged
+        /// once and simply skipped. The underlying P/Invokes themselves are not guarded here and
+        /// can still throw, exactly as they could before this seam existed.
+        /// </summary>
+        internal static bool ApplyGameVibranceLevel(INvidiaVibranceDevice device, string gameDeviceName, int ingameLevel)
         {
-            if (hWnd != IntPtr.Zero)
+            int displayHandle = device.TryResolveDisplayHandle(gameDeviceName);
+            if (displayHandle == -1 || displayHandle == 0)
             {
-                Screen primaryScreen = System.Windows.Forms.Screen.FromHandle(hWnd);
-                if (primaryScreen != null)
-                {
-                    string deviceName = primaryScreen.DeviceName;
-                    GCHandle handle = GCHandle.Alloc(deviceName, GCHandleType.Pinned);
-                    int id = getAssociatedNvidiaDisplayHandle(deviceName, deviceName.Length);
-                    handle.Free();
+                // 0 is a null NvDisplayHandle - InitializeProxy already treats 0 the same way for
+                // GPU handles above. Never fall back to enumerateNvidiaDisplayHandle(0): that
+                // arbitrary-display fallback is exactly what issue #60/#36 was.
+                LogDisplayFailureOnce(gameDeviceName, string.Format(
+                    "Could not resolve an NVIDIA display handle for screen {0}, skipping its ingame vibrance apply", gameDeviceName));
+                return false;
+            }
 
-                    return id;
+            if (device.IsAtLevel(displayHandle, ingameLevel))
+            {
+                ClearDisplayFailureLog(gameDeviceName);
+                return true;
+            }
+
+            if (device.SetLevel(displayHandle, ingameLevel))
+            {
+                ClearDisplayFailureLog(gameDeviceName);
+                return true;
+            }
+
+            LogDisplayFailureOnce(gameDeviceName, string.Format(
+                "Failed to set the ingame vibrance level for screen {0}", gameDeviceName));
+            return false;
+        }
+
+        /// <summary>
+        /// Writes windowsLevel to every display owing a restore (VibranceRestoreHelper's
+        /// work-list), plus the display the Windows Vibrance Level itself owns, and nothing else -
+        /// deliberately not scoped to whichever screen currently has focus (see the call site in
+        /// OnWinEventHook for why: issues #95 and #144). A no-op while isWindowsLevelKnown is
+        /// false (see VibranceInfo) - windowsLevel is meaningless before SetVibranceWindowsLevel
+        /// has actually run once, and writing it anyway would re-introduce the arbitrary-0 write
+        /// InitializeProxy used to make (issue #60/#36) at one remove. allDisplayHandles is
+        /// consulted only when affectPrimaryMonitorOnly is false, in which case this preserves the
+        /// pre-existing all-displays behaviour exactly (skipping any -1/0 entry EnumerateDisplayHandles
+        /// could still hand back - issue #138's bound only caps the list's length, it does not
+        /// filter its contents) and then drops the whole work-list - that branch never wrote
+        /// through it in the first place.
+        ///
+        /// Per display in the affectPrimaryMonitorOnly branch: unresolvable (-1 or 0) leaves the
+        /// display on the work-list for a single P/Invoke (TryResolveDisplayHandle) so the next
+        /// foreground event retries it. A display that resolves but fails to write costs three
+        /// P/Invokes on that same retry - resolve, the IsAtLevel read-back, then SetLevel - not
+        /// one; IsAtLevel only saves a call for a display that turns out to already be correct, not
+        /// for one that is genuinely failing to write. A display already at windowsLevel is drained
+        /// without ever calling SetLevel - a deliberate difference from RestoreCapturedGammaRamps,
+        /// which drains its work-list unconditionally: gamma has no cheap way to ask "is this
+        /// already correct" before writing, DVC does.
+        /// </summary>
+        internal static void RestoreWindowsVibranceLevel(INvidiaVibranceDevice device, bool affectPrimaryMonitorOnly,
+            string primaryDeviceName, IList<int> allDisplayHandles, int windowsLevel, bool isWindowsLevelKnown)
+        {
+            if (!isWindowsLevelKnown)
+            {
+                return;
+            }
+
+            if (!affectPrimaryMonitorOnly)
+            {
+                if (allDisplayHandles != null && !AllDisplaysAtLevel(device, allDisplayHandles, windowsLevel))
+                {
+                    for (int i = 0; i < allDisplayHandles.Count; i++)
+                    {
+                        int handle = allDisplayHandles[i];
+                        if (handle == -1 || handle == 0)
+                        {
+                            continue;
+                        }
+                        device.SetLevel(handle, windowsLevel);
+                    }
+                }
+                VibranceRestoreHelper.ClearAllGameLevelRecords();
+                return;
+            }
+
+            List<string> targets = VibranceRestoreHelper.ComposeRestoreTargets(true, primaryDeviceName);
+            foreach (string deviceName in targets)
+            {
+                RestoreOneDisplay(device, deviceName, windowsLevel);
+            }
+        }
+
+        private static bool AllDisplaysAtLevel(INvidiaVibranceDevice device, IList<int> displayHandles, int level)
+        {
+            for (int i = 0; i < displayHandles.Count; i++)
+            {
+                int handle = displayHandles[i];
+                if (handle == -1 || handle == 0)
+                {
+                    continue;
+                }
+                if (!device.IsAtLevel(handle, level))
+                {
+                    return false;
                 }
             }
-            return -1;
+            return true;
+        }
+
+        private static void RestoreOneDisplay(INvidiaVibranceDevice device, string deviceName, int windowsLevel)
+        {
+            int displayHandle = device.TryResolveDisplayHandle(deviceName);
+            if (displayHandle == -1 || displayHandle == 0)
+            {
+                LogDisplayFailureOnce(deviceName, string.Format(
+                    "Could not resolve an NVIDIA display handle for screen {0}, its Windows vibrance level restore will retry on the next foreground change", deviceName));
+                return; // stays on the work-list - see the class-level comment above.
+            }
+
+            if (device.IsAtLevel(displayHandle, windowsLevel))
+            {
+                VibranceRestoreHelper.ClearGameLevelRecord(deviceName);
+                ClearDisplayFailureLog(deviceName);
+                return;
+            }
+
+            if (device.SetLevel(displayHandle, windowsLevel))
+            {
+                VibranceRestoreHelper.ClearGameLevelRecord(deviceName);
+                ClearDisplayFailureLog(deviceName);
+            }
+            else
+            {
+                LogDisplayFailureOnce(deviceName, string.Format(
+                    "Failed to restore the Windows vibrance level for screen {0}, it will retry on the next foreground change", deviceName));
+            }
+        }
+
+        private static void LogDisplayFailureOnce(string deviceName, string message)
+        {
+            if (_loggedDisplayFailures.Add(deviceName))
+            {
+                Program.LogSafely(message);
+            }
+        }
+
+        private static void ClearDisplayFailureLog(string deviceName)
+        {
+            _loggedDisplayFailures.Remove(deviceName);
+        }
+
+        // Exists for VibranceRestoreFixture only - swaps out every static field OnWinEventHook and
+        // the apply/restore methods above depend on, so a check can run the real, private static
+        // OnWinEventHook (reflection is the only seam into it; it takes no instance) or the
+        // Apply/RestoreWindowsVibranceLevel overloads directly, entirely against a fake device and
+        // fake settings, with no call to the constructor and so no initializeLibrary() and no real
+        // GPU touched. Mirrors DeviceGammaRampHelper.ResetForTests / VibranceRestoreHelper.ResetForTests.
+        internal static void ResetForTests(INvidiaVibranceDevice device, VibranceInfo vibranceInfo,
+            List<ApplicationSetting> applicationSettings)
+        {
+            _device = device ?? new RealNvidiaVibranceDevice();
+            _vibranceInfo = vibranceInfo;
+            _applicationSettings = applicationSettings ?? new List<ApplicationSetting>();
+            _gameScreen = null;
+            _loggedDisplayFailures.Clear();
+            VibranceRestoreHelper.ResetForTests();
+        }
+
+        // The production INvidiaVibranceDevice: the four native calls below against the real
+        // vibranceDLL.dll, exactly as OnWinEventHook/GetApplicationDisplayHandle called them
+        // directly before this seam existed.
+        private class RealNvidiaVibranceDevice : INvidiaVibranceDevice
+        {
+            public bool IsWindowActive(ref IntPtr hWnd)
+            {
+                return isWindowActive(ref hWnd);
+            }
+
+            public int TryResolveDisplayHandle(string deviceName)
+            {
+                if (string.IsNullOrEmpty(deviceName))
+                {
+                    return -1;
+                }
+                // The marshaller (CharSet.Ansi on the DllImport above) copies deviceName into its
+                // own native ANSI buffer for the duration of this one call and frees it afterward -
+                // there is nothing here for a caller-side GCHandle to protect. The pin this replaces
+                // (GCHandle.Alloc(deviceName, GCHandleType.Pinned)) pinned a managed string that the
+                // marshaller was never going to touch directly in the first place.
+                return getAssociatedNvidiaDisplayHandle(deviceName, deviceName.Length);
+            }
+
+            public bool IsAtLevel(int displayHandle, int level)
+            {
+                return equalsDVCLevel(displayHandle, level);
+            }
+
+            public bool SetLevel(int displayHandle, int level)
+            {
+                return setDVCLevel(displayHandle, level);
+            }
         }
 
         public void SetApplicationSettings(List<ApplicationSetting> refApplicationSettings)
@@ -430,6 +674,7 @@ namespace vibrance.GUI.NVIDIA
         public void SetVibranceWindowsLevel(int vibranceWindowsLevel)
         {
             _vibranceInfo.userVibranceSettingDefault = vibranceWindowsLevel;
+            _vibranceInfo.isWindowsLevelKnown = true;
         }
 
         public void SetVibranceIngameLevel(int vibranceIngameLevel)
@@ -473,12 +718,14 @@ namespace vibrance.GUI.NVIDIA
                 RestoreWindowsColorSettings();
             }
 
-            if (_vibranceInfo.affectPrimaryMonitorOnly)
-            {
-                setDVCLevel(_vibranceInfo.defaultHandle, _vibranceInfo.userVibranceSettingDefault);
-            }
-            else if (!_vibranceInfo.displayHandles.TrueForAll(handle => equalsDVCLevel(handle, _vibranceInfo.userVibranceSettingDefault)))
-                _vibranceInfo.displayHandles.ForEach(handle => setDVCLevel(handle, _vibranceInfo.userVibranceSettingDefault));
+            // Same restore RestoreWindowsVibranceLevel already does on every non-game foreground
+            // event (issue #144: vibrance used to survive the game closing because this used to
+            // write only through the hijacked _vibranceInfo.defaultHandle - the game's own display,
+            // if the apply branch had ever run - instead of every display actually holding a game
+            // level).
+            RestoreWindowsVibranceLevel(_device, _vibranceInfo.affectPrimaryMonitorOnly,
+                VibranceRestoreHelper.GetPrimaryDeviceName(), _vibranceInfo.displayHandles,
+                _vibranceInfo.userVibranceSettingDefault, _vibranceInfo.isWindowsLevelKnown);
         }
     }
 }
