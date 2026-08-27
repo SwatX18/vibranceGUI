@@ -10,6 +10,10 @@ namespace vibrance.GUI.common
         bool SetVibranceSetting(string szKeyName, string value);
         GraphicsAdapter ReadGraphicsAdapterPreference();
         bool SetGraphicsAdapterPreference(GraphicsAdapter graphicsAdapter);
+        string ReadToggleHotkey();
+        bool SetToggleHotkey(string canonicalText);
+        bool ReadToggleHotkeyEnabled();
+        bool SetToggleHotkeyEnabled(bool enabled);
         void ReadVibranceSettings(GraphicsAdapter graphicsAdapter, out int vibranceWindowsLevel, out bool affectPrimaryMonitorOnly, out bool neverSwitchResolution,
             out bool neverChangeColorSettings, out List<ApplicationSetting> applicationSettings, out int brightnessWindowsLevel, out int contrastWindowsLevel, out int gammaWindowsLevel);
     }
