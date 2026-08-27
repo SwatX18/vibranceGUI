@@ -33,6 +33,19 @@ namespace vibrance.GUI.common
         private readonly List<ResolutionModeWrapper> _supportedResolutionList;
         private readonly Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> _windowsResolutionSettings;
 
+        // Last captured Windows mode per device, INCLUDING devices no longer attached - the fallback
+        // WindowsResolutionRefresher needs when a monitor that vanished during one refresh comes back
+        // during a later one while a game's resolution change is still applied. Deliberately holds only
+        // the mode (five uints), never the supported-mode list, so a device this never forgets costs a
+        // single small object; the OS's own \\.\DISPLAYn namespace bounds how many there can ever be.
+        // Note: \\.\DISPLAYn identifies a PORT, not a monitor's identity, so unplugging the monitor
+        // that was there and plugging a different one into the same port while preserveCapturedMode
+        // is true can hand the new monitor the old one's retained mode - harm bounded, since a
+        // revert only ever targets _gameScreen's own device and CDS_TEST would reject a mode the new
+        // monitor cannot actually support.
+        private readonly Dictionary<string, ResolutionModeWrapper> _lastKnownWindowsModes =
+            new Dictionary<string, ResolutionModeWrapper>();
+
         private readonly bool _isForcedExecution;
 
         // Kept in sync with _applicationSettings by RefreshUnconfirmedCache. The foreground handler runs on
@@ -436,74 +449,44 @@ namespace vibrance.GUI.common
         }
 
         /// <summary>
-        /// (Re)populates _windowsResolutionSettings from the currently attached screens, mutating
-        /// the existing Dictionary instance in place (Clear() then re-add) rather than replacing
-        /// it - both proxies hold a reference to this very instance (NVIDIA's is static), so only
-        /// in-place mutation is visible to them. Shared by the constructor (showFailureDialog:
-        /// true) and OnDisplaySettingsChanged below (showFailureDialog: false) - see that method
-        /// for why the dialog must never fire from the refresh path.
+        /// (Re)populates _windowsResolutionSettings from the currently attached screens by
+        /// delegating to WindowsResolutionRefresher.Refresh, which mutates the existing Dictionary
+        /// instance in place (Clear() then re-add) rather than replacing it - both proxies hold a
+        /// reference to this very instance (NVIDIA's is static), so only in-place mutation is
+        /// visible to them. See WindowsResolutionRefresher.cs for the full extraction, including
+        /// the single most dangerous line in the resolution-change fix (preserving Item1 while a
+        /// game's own resolution change is applied) and the retained-last-known-mode fallback for
+        /// a device that reattaches after dropping out of a refresh. Shared by the constructor
+        /// (showFailureDialog: true) and OnDisplaySettingsChanged below (showFailureDialog: false)
+        /// - see that method for why the dialog must never fire from the refresh path.
         /// </summary>
         private void RebuildWindowsResolutionSettings(bool showFailureDialog)
         {
-            // This is the single most dangerous line in the resolution-change fix: if a refresh
-            // runs while a game's resolution change is currently applied, a live read of "the
-            // current mode" for the game's own screen returns the GAME's mode, not the desktop's.
-            // Overwriting the captured "Windows resolution" (Item1) with that would strand the
-            // desktop at the game's resolution forever - the revert path compares against Item1, so
-            // once it has silently become the game's own mode, "reverting" turns into a no-op that
-            // still reports success. A game going fullscreen is exactly the kind of change that
-            // fires DisplaySettingsChanged, so this is not a rare interleaving to guard against.
-            //
-            // While a resolution change is applied, every screen this dictionary already has an
-            // entry for keeps its previously captured Item1 untouched, and only Item2 (the
-            // device's supported-mode list, a property of the device rather than of whichever mode
-            // happens to be active right now) is refreshed. A screen with no previous entry still
-            // needs one captured fresh - it cannot be the screen the game is running on, since that
-            // one is already recorded.
             bool preserveCapturedMode = _v != null && _v.GetVibranceInfo().isResolutionChangeApplied;
 
-            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> previous =
-                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>(_windowsResolutionSettings);
-
-            _windowsResolutionSettings.Clear();
+            List<string> attachedDeviceNames = new List<string>();
             foreach (Screen screen in Screen.AllScreens)
             {
-                Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>> existing;
-                bool hasExisting = previous.TryGetValue(screen.DeviceName, out existing);
-
-                // Item2 is a property of the device's capability, not of whichever mode happens to
-                // be active right now (the comment above already relies on that to justify reusing
-                // it while a game's own change is applied) - so a device this dictionary already
-                // has an entry for reuses that SAME List<ResolutionModeWrapper> instance rather than
-                // re-enumerating. Two reasons this matters beyond the obvious P/Invoke cost (up to
-                // several hundred EnumDisplaySettings calls per screen, on the UI thread): first,
-                // vibranceGUI's OWN resolution changes also fire DisplaySettingsChanged, so an
-                // unconditional re-enumerate here would run twice per alt-tab cycle; second, reusing
-                // the identical instance (not a fresh copy) is what keeps _supportedResolutionList -
-                // captured once, in the constructor, and readonly - from silently going stale after
-                // a refresh, since it then still points at the very list being kept up to date here.
-                List<ResolutionModeWrapper> availableResolutions = hasExisting
-                    ? existing.Item2
-                    : ResolutionHelper.EnumerateSupportedResolutionModes(screen.DeviceName);
-
-                if (preserveCapturedMode && hasExisting)
-                {
-                    _windowsResolutionSettings.Add(screen.DeviceName,
-                        new Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>(existing.Item1, availableResolutions));
-                    continue;
-                }
-
-                Devmode currentResolutionMode;
-                if (ResolutionHelper.GetCurrentResolutionSettings(out currentResolutionMode, screen.DeviceName))
-                {
-                    _windowsResolutionSettings.Add(screen.DeviceName,
-                        new Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>(new ResolutionModeWrapper(currentResolutionMode), availableResolutions));
-                }
-                else if (showFailureDialog)
-                {
-                    MessageBox.Show("Current resolution mode could not be determined. Switching back to your Windows resolution will not work.");
-                }
+                attachedDeviceNames.Add(screen.DeviceName);
             }
+
+            WindowsResolutionRefresher.Refresh(
+                _windowsResolutionSettings,
+                _lastKnownWindowsModes,
+                attachedDeviceNames,
+                preserveCapturedMode,
+                showFailureDialog,
+                ShowResolutionReadFailureDialog);
+        }
+
+        // The text is unchanged from the inline MessageBox.Show call this replaces - the
+        // deviceName parameter is deliberately unused in the message itself. It exists so
+        // WindowsResolutionRefresher (and ResolutionChangeFixture, which drives it with no
+        // MessageBox anywhere in the process) can assert *which* device's unreadable current mode
+        // triggered the callback, without this dialog starting to name devices it never has before.
+        private static void ShowResolutionReadFailureDialog(string deviceName)
+        {
+            MessageBox.Show("Current resolution mode could not be determined. Switching back to your Windows resolution will not work.");
         }
 
         /// <summary>

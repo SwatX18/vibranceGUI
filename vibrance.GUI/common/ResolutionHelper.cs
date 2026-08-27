@@ -114,6 +114,12 @@ namespace vibrance.GUI.common
         // overloads with its own fake instead.
         private static readonly IDisplayModeDevice _realDevice = new RealDisplayModeDevice();
 
+        // The seam WindowsResolutionRefresher's public overload delegates through, mirroring how
+        // ChangeResolutionEx/IsResolutionChangeNeeded already expose _realDevice to their own
+        // internal overloads - so the refresher's fixture-facing overload is the only one that
+        // ever needs to know a fake exists.
+        internal static IDisplayModeDevice RealDevice { get { return _realDevice; } }
+
         public static event EventHandler<ResolutionFailureEventArgs> ResolutionChangeFailed;
 
         // Consecutive-failure counts, keyed by device + target + direction (BuildFailureKey below)
@@ -157,10 +163,17 @@ namespace vibrance.GUI.common
 
         public static List<ResolutionModeWrapper> EnumerateSupportedResolutionModes(string deviceName)
         {
+            return EnumerateSupportedResolutionModes(_realDevice, deviceName);
+        }
+
+        // The seam ResolutionChangeFixture/WindowsResolutionRefresher drive directly - see
+        // EnumerateSupportedResolutionModes's public overload above for why.
+        internal static List<ResolutionModeWrapper> EnumerateSupportedResolutionModes(IDisplayModeDevice device, string deviceName)
+        {
             List<ResolutionModeWrapper> resolutionList = new List<ResolutionModeWrapper>();
             Devmode mode;
             int index = 0;
-            while (_realDevice.TryEnumerateMode(deviceName, index++, out mode))
+            while (device.TryEnumerateMode(deviceName, index++, out mode))
             {
                 resolutionList.Add(new ResolutionModeWrapper(mode));
             }
@@ -245,20 +258,31 @@ namespace vibrance.GUI.common
             }
 
             int bound = isRevert ? RevertFailureBound : ApplyFailureBound;
-            string failureKey = BuildFailureKey(deviceName, target, isRevert);
 
-            int priorFailures;
-            if (_consecutiveFailures.TryGetValue(failureKey, out priorFailures) && priorFailures >= bound)
+            // Nothing recorded anywhere means nothing to suppress - the steady state on a healthy
+            // machine, since ClearFailureState removes only the succeeding device's own keys (never
+            // the whole dictionary - see below), and a device that has never failed never adds any
+            // to begin with. Checked before building a key at all: BuildFailureKey formats five
+            // uints and concatenates three strings, and the hottest path through this method
+            // (AlreadyMatching, on a healthy machine with nothing recorded at all) had to pay for it
+            // before this guard existed. A device already mid-streak still pays that cost on every
+            // attempt, suppressed or not - this only short-circuits when the dictionary is empty.
+            if (_consecutiveFailures.Count > 0)
             {
-                // Already given up on this exact (device, target, direction) - do not touch the
-                // driver again until something clears it. In practice that means a success on a
-                // DIFFERENT target/direction for the same device (ClearFailureState clears the
-                // whole device, see below) - once THIS key is suppressed, the driver is never
-                // called for it again through the normal path above, so it can no longer produce a
-                // success of its own; the only other way out is ResetForTests(). This is what keeps
-                // a persistently failing revert from re-running the same doomed mode set on every
-                // single foreground event forever.
-                return ResolutionChangeResult.Suppressed;
+                int priorFailures;
+                if (_consecutiveFailures.TryGetValue(BuildFailureKey(deviceName, target, isRevert), out priorFailures) &&
+                    priorFailures >= bound)
+                {
+                    // Already given up on this exact (device, target, direction) - do not touch the
+                    // driver again until something clears it. In practice that means a success on a
+                    // DIFFERENT target/direction for the same device (ClearFailureState clears the
+                    // whole device, see below) - once THIS key is suppressed, the driver is never
+                    // called for it again through the normal path above, so it can no longer produce a
+                    // success of its own; the only other way out is ResetForTests(). This is what keeps
+                    // a persistently failing revert from re-running the same doomed mode set on every
+                    // single foreground event forever.
+                    return ResolutionChangeResult.Suppressed;
+                }
             }
 
             // Step 1.
