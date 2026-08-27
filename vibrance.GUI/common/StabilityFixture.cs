@@ -101,6 +101,12 @@ namespace vibrance.GUI.common
 
             AmdDynamicVibranceProxy proxy = new AmdDynamicVibranceProxy(adapter, emptySettings, windowsResolutionSettings);
 
+            // Restore is a no-op until SetVibranceWindowsLevel has actually run once (see
+            // VibranceInfo.isWindowsLevelKnown) - a fresh proxy has never had it called, so this
+            // stands in for VibranceGUI.cs's backgroundWorker_DoWork reaching it before the
+            // restore branch this test drives is ever exercised for real.
+            proxy.SetVibranceWindowsLevel(AmdDynamicVibranceProxy.AmdDefaultLevel);
+
             // OnWinEventHook is private - there is no other seam into it, and adding one is out of
             // scope for this fix. FakeAmdAdapter.IsAvailable() returning false (below) kept the
             // constructor from installing a real, process-lifetime SetWinEventHook, so this

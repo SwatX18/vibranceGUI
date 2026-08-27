@@ -30,6 +30,7 @@ namespace vibrance.GUI
         private const string GammaSelfTestMessageBoxCaption = "vibranceGUI gamma restore self test";
         private const string GammaDisplaySelfTestMessageBoxCaption = "vibranceGUI gamma restore hardware self test";
         private const string ResolutionSelfTestMessageBoxCaption = "vibranceGUI resolution change self test";
+        private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
@@ -114,6 +115,22 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, ResolutionChangeFixture.Run().ToArray()),
                     ResolutionSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: VibranceRestoreFixture only ever drives the NVIDIA/AMD apply
+            // and restore logic through INvidiaVibranceDevice/IAmdAdapter fakes, so - like
+            // --selftest-resolution and unlike --selftest-gamma - there is deliberately no hardware
+            // variant of this one, and there must never be one. A gamma ramp has a guaranteed undo
+            // (RestoreOriginal in GammaRestoreFixture) that makes a real hardware round trip safe to
+            // offer as an opt-in; digital vibrance has no such thing here, and these four issues
+            // (#60, #36, #144, #95) are themselves about a real display's vibrance being changed
+            // when it should not have been - a fixture that could do that to a reviewer's own
+            // monitor would be the exact bug this exists to catch.
+            if (args.Contains("--selftest-vibrance"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, VibranceRestoreFixture.Run().ToArray()),
+                    VibranceSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

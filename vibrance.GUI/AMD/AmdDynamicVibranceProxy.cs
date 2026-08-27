@@ -102,6 +102,7 @@ namespace vibrance.GUI.AMD
         public void SetVibranceWindowsLevel(int vibranceWindowsLevel)
         {
             _vibranceInfo.userVibranceSettingDefault = vibranceWindowsLevel;
+            _vibranceInfo.isWindowsLevelKnown = true;
         }
 
         public void SetVibranceIngameLevel(int vibranceIngameLevel)
@@ -124,7 +125,7 @@ namespace vibrance.GUI.AMD
                 RestoreWindowsColorSettings();
             }
 
-            _amdAdapter.SetSaturationOnAllDisplays(_vibranceInfo.userVibranceSettingDefault);
+            RestoreWindowsVibranceLevel();
         }
 
         public void SetAffectPrimaryMonitorOnly(bool affectPrimaryMonitorOnly)
@@ -162,10 +163,21 @@ namespace vibrance.GUI.AMD
                     if (_vibranceInfo.affectPrimaryMonitorOnly)
                     {
                         _amdAdapter.SetSaturationOnDisplay(applicationSetting.IngameLevel, screen.DeviceName);
+                        // Only the game's own screen was written - that is the only display owing
+                        // a restore.
+                        VibranceRestoreHelper.RecordGameLevelApplied(screen.DeviceName);
                     }
                     else
                     {
                         _amdAdapter.SetSaturationOnAllDisplays(applicationSetting.IngameLevel);
+                        // This branch really did write every attached display, not just the game's
+                        // own - unlike NVIDIA's equivalent, IAmdAdapter has no per-display read-back
+                        // to confirm any of them individually, so every currently attached display
+                        // is recorded as owing a restore.
+                        foreach (Screen attachedScreen in Screen.AllScreens)
+                        {
+                            VibranceRestoreHelper.RecordGameLevelApplied(attachedScreen.DeviceName);
+                        }
                     }
                 }
 
@@ -202,7 +214,7 @@ namespace vibrance.GUI.AMD
                     return;
 
                 //apply Windows saturation
-                _amdAdapter.SetSaturationOnAllDisplays(_vibranceInfo.userVibranceSettingDefault);
+                RestoreWindowsVibranceLevel();
 
                 //test if a resolution change is needed
                 Screen currentScreen = Screen.FromHandle(processHandle);
@@ -227,6 +239,40 @@ namespace vibrance.GUI.AMD
                 {
                     RestoreWindowsColorSettings();
                 }
+            }
+        }
+
+        // Same restore this proxy now runs from both its OnWinEventHook restore branch and
+        // HandleDvcExit, in place of the old unconditional SetSaturationOnAllDisplays(...) both
+        // used to call regardless of affectPrimaryMonitorOnly (issue #60/#36 on AMD: the flag was
+        // never consulted here, so a second monitor's level was stomped on every restore and every
+        // exit even with the checkbox on).
+        private void RestoreWindowsVibranceLevel()
+        {
+            // A no-op before SetVibranceWindowsLevel has actually run once - see VibranceInfo's
+            // isWindowsLevelKnown comment and NvidiaDynamicVibranceProxy's matching guard.
+            if (!_vibranceInfo.isWindowsLevelKnown)
+            {
+                return;
+            }
+
+            if (!_vibranceInfo.affectPrimaryMonitorOnly)
+            {
+                _amdAdapter.SetSaturationOnAllDisplays(_vibranceInfo.userVibranceSettingDefault);
+                VibranceRestoreHelper.ClearAllGameLevelRecords();
+                return;
+            }
+
+            // IAmdAdapter has no read-back to confirm a write landed, unlike NVIDIA's
+            // equalsDVCLevel/setDVCLevel pair - so, unlike NvidiaDynamicVibranceProxy's
+            // RestoreOneDisplay, every target is written unconditionally and cleared
+            // unconditionally, unable to tell "already correct" from "just fixed" or to retry a
+            // failure that has no way to be observed here.
+            List<string> targets = VibranceRestoreHelper.ComposeRestoreTargets(true, VibranceRestoreHelper.GetPrimaryDeviceName());
+            foreach (string deviceName in targets)
+            {
+                _amdAdapter.SetSaturationOnDisplay(_vibranceInfo.userVibranceSettingDefault, deviceName);
+                VibranceRestoreHelper.ClearGameLevelRecord(deviceName);
             }
         }
 
