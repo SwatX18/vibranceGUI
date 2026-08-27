@@ -47,8 +47,6 @@
             this.labelTwitter = new System.Windows.Forms.Label();
             this.linkLabelTwitter = new System.Windows.Forms.LinkLabel();
             this.settingsBackgroundWorker = new System.ComponentModel.BackgroundWorker();
-            this.buttonPaypal = new System.Windows.Forms.Button();
-            this.labelPaypal = new System.Windows.Forms.Label();
             this.toolTip = new System.Windows.Forms.ToolTip(this.components);
             this.checkBoxNeverChangeColorSettings = new System.Windows.Forms.CheckBox();
             this.groupBox5 = new System.Windows.Forms.GroupBox();
@@ -85,7 +83,7 @@
             // notifyIcon
             // 
             this.notifyIcon.BalloonTipIcon = System.Windows.Forms.ToolTipIcon.Info;
-            this.notifyIcon.BalloonTipText = "Running minimized... Like the program? Consider donating!";
+            this.notifyIcon.BalloonTipText = "Running minimized...";
             this.notifyIcon.BalloonTipTitle = "vibranceGUI";
             this.notifyIcon.ContextMenuStrip = this.contextMenuStrip;
             this.notifyIcon.Icon = ((System.Drawing.Icon)(resources.GetObject("notifyIcon.Icon")));
@@ -110,7 +108,7 @@
             this.twitterToolStripTextBox.Image = ((System.Drawing.Image)(resources.GetObject("twitterToolStripTextBox.Image")));
             this.twitterToolStripTextBox.Name = "twitterToolStripTextBox";
             this.twitterToolStripTextBox.Size = new System.Drawing.Size(302, 32);
-            this.twitterToolStripTextBox.Text = "https://twitter.com/juvlarN";
+            this.twitterToolStripTextBox.Text = "https://x.com/swatx18";
             this.twitterToolStripTextBox.Click += new System.EventHandler(this.twitterToolStripTextBox_Click);
             // 
             // exitToolStripMenuItem
@@ -145,7 +143,7 @@
             this.groupBoxSettings.Controls.Add(this.checkBoxPrimaryMonitorOnly);
             this.groupBoxSettings.Controls.Add(this.groupBox3);
             this.groupBoxSettings.Controls.Add(this.checkBoxAutostart);
-            this.groupBoxSettings.Location = new System.Drawing.Point(15, 137);
+            this.groupBoxSettings.Location = new System.Drawing.Point(15, 47);
             this.groupBoxSettings.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxSettings.Name = "groupBoxSettings";
             this.groupBoxSettings.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -219,7 +217,7 @@
             // statusLabel
             // 
             this.statusLabel.AutoSize = true;
-            this.statusLabel.Location = new System.Drawing.Point(152, 1136);
+            this.statusLabel.Location = new System.Drawing.Point(152, 1046);
             this.statusLabel.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.statusLabel.Name = "statusLabel";
             this.statusLabel.Size = new System.Drawing.Size(90, 20);
@@ -229,7 +227,7 @@
             // observerStatusLabel
             // 
             this.observerStatusLabel.AutoSize = true;
-            this.observerStatusLabel.Location = new System.Drawing.Point(11, 1136);
+            this.observerStatusLabel.Location = new System.Drawing.Point(11, 1046);
             this.observerStatusLabel.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.observerStatusLabel.Name = "observerStatusLabel";
             this.observerStatusLabel.Size = new System.Drawing.Size(129, 20);
@@ -238,54 +236,32 @@
             // 
             // labelTwitter
             // 
+            // NOTE: field kept as labelTwitter for minimal diff (resx + handlers reference it);
+            // it now reads the fork owner's X (formerly Twitter) link instead.
             this.labelTwitter.AutoSize = true;
             this.labelTwitter.Location = new System.Drawing.Point(15, 17);
             this.labelTwitter.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelTwitter.Name = "labelTwitter";
-            this.labelTwitter.Size = new System.Drawing.Size(283, 20);
+            this.labelTwitter.Size = new System.Drawing.Size(254, 20);
             this.labelTwitter.TabIndex = 11;
-            this.labelTwitter.Text = "Follow @juvlarN on twitter for updates: ";
+            this.labelTwitter.Text = "Follow @swatx18 on X for updates: ";
             // 
             // linkLabelTwitter
             // 
             this.linkLabelTwitter.AutoSize = true;
-            this.linkLabelTwitter.Location = new System.Drawing.Point(312, 17);
+            this.linkLabelTwitter.Location = new System.Drawing.Point(283, 17);
             this.linkLabelTwitter.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.linkLabelTwitter.Name = "linkLabelTwitter";
-            this.linkLabelTwitter.Size = new System.Drawing.Size(185, 20);
+            this.linkLabelTwitter.Size = new System.Drawing.Size(154, 20);
             this.linkLabelTwitter.TabIndex = 10;
             this.linkLabelTwitter.TabStop = true;
-            this.linkLabelTwitter.Text = "https://twitter.com/juvlarN";
+            this.linkLabelTwitter.Text = "https://x.com/swatx18";
             this.linkLabelTwitter.LinkClicked += new System.Windows.Forms.LinkLabelLinkClickedEventHandler(this.linkLabelTwitter_LinkClicked);
             // 
             // settingsBackgroundWorker
             // 
             this.settingsBackgroundWorker.DoWork += new System.ComponentModel.DoWorkEventHandler(this.settingsBackgroundWorker_DoWork);
             this.settingsBackgroundWorker.RunWorkerCompleted += new System.ComponentModel.RunWorkerCompletedEventHandler(this.settingsBackgroundWorker_RunWorkerCompleted);
-            // 
-            // buttonPaypal
-            // 
-            this.buttonPaypal.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.buttonPaypal.BackColor = System.Drawing.Color.Transparent;
-            this.buttonPaypal.Image = ((System.Drawing.Image)(resources.GetObject("buttonPaypal.Image")));
-            this.buttonPaypal.Location = new System.Drawing.Point(316, 42);
-            this.buttonPaypal.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.buttonPaypal.Name = "buttonPaypal";
-            this.buttonPaypal.Size = new System.Drawing.Size(135, 85);
-            this.buttonPaypal.TabIndex = 16;
-            this.toolTip.SetToolTip(this.buttonPaypal, "Click here to donate to vibranceGUI through Paypal");
-            this.buttonPaypal.UseVisualStyleBackColor = false;
-            this.buttonPaypal.Click += new System.EventHandler(this.buttonPaypal_Click);
-            // 
-            // labelPaypal
-            // 
-            this.labelPaypal.AutoSize = true;
-            this.labelPaypal.Location = new System.Drawing.Point(15, 74);
-            this.labelPaypal.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
-            this.labelPaypal.Name = "labelPaypal";
-            this.labelPaypal.Size = new System.Drawing.Size(274, 20);
-            this.labelPaypal.TabIndex = 17;
-            this.labelPaypal.Text = "Like the program? Consider donating:";
             // 
             // toolTip
             // 
@@ -317,7 +293,7 @@
             this.groupBox5.Controls.Add(this.buttonRemoveProgram);
             this.groupBox5.Controls.Add(this.listApplications);
             this.groupBox5.Controls.Add(this.buttonAddProgram);
-            this.groupBox5.Location = new System.Drawing.Point(15, 757);
+            this.groupBox5.Location = new System.Drawing.Point(15, 667);
             this.groupBox5.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBox5.Name = "groupBox5";
             this.groupBox5.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -388,7 +364,7 @@
             // 
             this.labelFindGamesStatus.AutoSize = true;
             this.labelFindGamesStatus.ForeColor = System.Drawing.Color.Green;
-            this.labelFindGamesStatus.Location = new System.Drawing.Point(15, 1110);
+            this.labelFindGamesStatus.Location = new System.Drawing.Point(15, 1020);
             this.labelFindGamesStatus.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelFindGamesStatus.Name = "labelFindGamesStatus";
             this.labelFindGamesStatus.Size = new System.Drawing.Size(0, 20);
@@ -401,7 +377,7 @@
             this.groupBoxColorSettings.Controls.Add(this.groupBox9);
             this.groupBoxColorSettings.Controls.Add(this.groupBox10);
             this.groupBoxColorSettings.Controls.Add(this.checkBoxNeverChangeColorSettings);
-            this.groupBoxColorSettings.Location = new System.Drawing.Point(15, 397);
+            this.groupBoxColorSettings.Location = new System.Drawing.Point(15, 307);
             this.groupBoxColorSettings.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxColorSettings.Name = "groupBoxColorSettings";
             this.groupBoxColorSettings.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -520,12 +496,10 @@
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(144F, 144F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
-            this.ClientSize = new System.Drawing.Size(628, 1161);
+            this.ClientSize = new System.Drawing.Size(628, 1071);
             this.Controls.Add(this.groupBoxColorSettings);
             this.Controls.Add(this.groupBox5);
             this.Controls.Add(this.labelFindGamesStatus);
-            this.Controls.Add(this.labelPaypal);
-            this.Controls.Add(this.buttonPaypal);
             this.Controls.Add(this.groupBoxSettings);
             this.Controls.Add(this.statusLabel);
             this.Controls.Add(this.observerStatusLabel);
@@ -581,8 +555,6 @@
         private System.Windows.Forms.Label labelTwitter;
         private System.Windows.Forms.LinkLabel linkLabelTwitter;
         private System.ComponentModel.BackgroundWorker settingsBackgroundWorker;
-        private System.Windows.Forms.Button buttonPaypal;
-        private System.Windows.Forms.Label labelPaypal;
         private System.Windows.Forms.ToolTip toolTip;
         private System.Windows.Forms.CheckBox checkBoxPrimaryMonitorOnly;
         private System.Windows.Forms.GroupBox groupBox5;

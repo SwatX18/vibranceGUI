@@ -582,7 +582,7 @@ Step by step, with the details that matter:
    freed.
 4. **Error branches quit the process.** `Unknown` (`Program.cs:71-80`) shows the "failed to determine
    your graphics adapter" text plus `new Win32Exception(Marshal.GetLastWin32Error()).Message`, and
-   "Yes" opens `https://twitter.com/juvlarN`. `Ambiguous` (`:81-89`) shows the "uninstall your old
+   "Yes" opens `https://x.com/swatx18`. `Ambiguous` (`:81-89`) shows the "uninstall your old
    drivers with DDU" text, and "Yes" opens the Guru3D DDU download page. **Both branches `return`
    after opening the browser** — "Yes" also quits. No window is ever shown.
 5. **NVIDIA native bootstrap** (`Program.cs:55-61`): extract the embedded DLL
