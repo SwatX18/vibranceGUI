@@ -778,29 +778,64 @@ before accepting that outcome.
 the constructor and never touched again — if the user changed their desktop resolution by hand, or
 plugged in a monitor, the cached "Windows resolution" the revert path compares against went stale,
 and every API call involved still reported success (see former defect **D58** below). The
-constructor now calls `RebuildWindowsResolutionSettings(true)` (`VibranceGUI.cs:69`), and
-`SystemEvents.DisplaySettingsChanged` (`Microsoft.Win32`, already referenced via `System.dll`) is
-subscribed in the constructor (`:95`) and **must** be unsubscribed in `CleanUp()` (`:433`) — it holds
-a strong reference to the handler on its own dedicated thread, so a leaked subscription leaks the
-form and can fault at shutdown. The handler (`OnDisplaySettingsChanged`, `:515-548`) guards
-`IsDisposed`/`!IsHandleCreated` and marshals onto the UI thread with `BeginInvoke` (see above) before
-calling `RebuildWindowsResolutionSettings(false)` — `false` so a hot-plug or resolution change never
-pops the constructor's own failure dialog from inside an arbitrary system event, which would be
-exactly the D2-shaped mistake this whole fix removes.
+constructor now calls `RebuildWindowsResolutionSettings(true)` (`VibranceGUI.cs:69`), which projects
+`Screen.AllScreens` into a device-name list and delegates the actual refresh to
+`WindowsResolutionRefresher.Refresh` (`WindowsResolutionRefresher.cs`) — extracted out of
+`VibranceGUI.cs` so `ResolutionChangeFixture` can drive it through a fake `IDisplayModeDevice`, with
+no `Screen`, no `Form` and no real display anywhere in the call stack. `SystemEvents.DisplaySettingsChanged`
+(`Microsoft.Win32`, already referenced via `System.dll`) is subscribed in the constructor (`:95`) and
+**must** be unsubscribed in `CleanUp()` (`:433`) — it holds a strong reference to the handler on its
+own dedicated thread, so a leaked subscription leaks the form and can fault at shutdown. The handler
+(`OnDisplaySettingsChanged`, `:515-548`) guards `IsDisposed`/`!IsHandleCreated` and marshals onto the
+UI thread with `BeginInvoke` (see above) before calling `RebuildWindowsResolutionSettings(false)` —
+`false` so a hot-plug or resolution change never pops the constructor's own failure dialog from
+inside an arbitrary system event, which would be exactly the D2-shaped mistake this whole fix
+removes.
 **The single most dangerous line in the fix:** while `_v.GetVibranceInfo().isResolutionChangeApplied`
 is true (a game's own resolution change is currently live), a refresh must **not** overwrite the
 already-captured "Windows resolution" (`Item1`) for any known device — a live read at that moment
 would return the *game's* mode, not the desktop's, and silently adopting it would strand the desktop
 at the game's resolution forever, since the revert path compares against exactly that value
-(`RebuildWindowsResolutionSettings`, `VibranceGUI.cs:446-507`). Only `Item2` (the supported-mode
-list) refreshes in that case; a screen with no prior entry still gets both, since it cannot be the
-screen the game is running on. `Item2` is also reused — the same `List<ResolutionModeWrapper>`
-instance, not a fresh copy — for any device already in the dictionary regardless of that flag, since
-it is a property of the device rather than of whichever mode is currently active; re-enumerating it
-on every refresh would cost several hundred `EnumDisplaySettings` P/Invokes per screen on the UI
-thread, twice per alt-tab cycle (vibranceGUI's own resolution changes fire `DisplaySettingsChanged`
-too), and reusing the identical instance is also what keeps `_supportedResolutionList` — captured
-once, in the constructor, and `readonly` — from silently going stale after a refresh.
+(`WindowsResolutionRefresher.Refresh`, `WindowsResolutionRefresher.cs:34-137`). Only `Item2` (the
+supported-mode list) refreshes in that case; a screen with no prior entry still gets both, since it
+cannot be the screen the game is running on. `Item2` is also reused — the same
+`List<ResolutionModeWrapper>` instance, not a fresh copy — for any device already in the dictionary
+regardless of that flag, since it is a property of the device rather than of whichever mode is
+currently active; re-enumerating it on every refresh would cost several hundred `EnumDisplaySettings`
+P/Invokes per screen on the UI thread, twice per alt-tab cycle (vibranceGUI's own resolution changes
+fire `DisplaySettingsChanged` too), and reusing the identical instance is also what keeps
+`_supportedResolutionList` — captured once, in the constructor, and `readonly` — from silently going
+stale after a refresh.
+
+**A device that drops out and later reattaches keeps its desktop mode.** `_lastKnownWindowsModes`
+(`VibranceGUI.cs`) records every device's last-captured mode, INCLUDING one no longer attached, so
+that when `Refresh` sees a device with `preserveCapturedMode` true but no existing dictionary entry —
+because it dropped out of `attachedDeviceNames` during an earlier refresh, e.g. a cable bounce or a
+docking-station reattach while a game's own resolution change is still applied to it — it falls back
+to that retained mode instead of a live read that would otherwise capture the game's own mode, the
+same danger the paragraph above describes (`WindowsResolutionRefresher.cs:89-103`). The map is never
+pruned once a device drops out, but that is safe to leave unbounded in practice: it is bounded by the
+OS's own `\\.\DISPLAYn` device-name namespace, not by anything this program tracks. `Item2` is *not*
+carried across the gap — a detached device has no dictionary entry at all, so a reattach always
+re-enumerates its supported modes from scratch (`WindowsResolutionRefresher.cs:67-80`), picking up
+whatever a driver update or a different port reports now.
+
+**Known limitation: an adopted foreign mode never gets special-cased, on purpose.** With
+`preserveCapturedMode` false, `Refresh` adopts whatever mode is live as the new `Item1` — even one a
+game set without going through a profile-driven apply at all — and this is deliberate, not an
+oversight. A reviewer proposed skipping that re-capture whenever the live mode matches a configured
+`ApplicationSetting.ResolutionSettings` entry; it was rejected, because at refresh time "a game
+changed the resolution itself with no profile applied" and "the user's own genuine desktop mode
+happens to equal a configured entry" are observationally identical — both are a bare
+`DisplaySettingsChanged` plus a live mode that differs from the last capture, with no reliable field
+comparison available to tell them apart (`Equals` includes the driver-unreliable
+`DmDisplayFixedOutput`; `MatchesAchievedMode` widens the false-positive surface instead). Special-
+casing the match would make a user's *real* desktop mode permanently un-capturable the moment they
+configure a game at that same mode, and every future revert would drag them to a stale value while
+still reporting success — a strictly worse, non-self-healing failure than adopting a game's own
+foreign mode, which corrects itself the moment that mode goes away (see `ResolutionChangeFixture.cs`,
+`CheckAdoptedForeignModeSelfHealsOnceItIsGone`, for the full reasoning). The right future fix keys on
+*duration*, not value.
 
 **The fixed-output-loop fix.** `IsResolutionChangeNeeded`/`ChangeResolutionEx`'s "does this still
 need changing?" guard is `ResolutionModeWrapper.MatchesAchievedMode` (`ResolutionModeWrapper.cs`),
@@ -935,7 +970,7 @@ source; the ellipses mark text abbreviated for this table only.
 | "VibranceProxy failed to initialize! Press Ok to open the vibranceGUI Steam Guide in your browser. Scroll down to section \"Troubleshooting, Errors, Q&A\"." | `NvapiErrorInitFailed`, `NvidiaDynamicVibranceProxy.cs:123-124`; shown `:158` and **reused by AMD** at `AmdDynamicVibranceProxy.cs:48` | immediately after that dump. OK → `https://vibrancegui.com/vibrance/guide` (**D21**) |
 | "VibranceProxy failed to initialize! Graphics card system type (Desktop / Laptop) is unknown!" | `NvapiErrorSystypeUnknown`, `NvidiaDynamicVibranceProxy.cs:128`, shown `:180` | any enumerated GPU reports `NvSystemTypeUnknown`. Really means "the NvAPI call failed" (**D19**) |
 | "VibranceProxy detected that you are running a Laptop with integrated NVIDIA card. …" | `NvapiErrorSystypeUnsupported`, `NvidiaDynamicVibranceProxy.cs:125-127` | **never — dead constant** (**D20**) |
-| "Current resolution mode could not be determined. Switching back to your Windows resolution will not work." | `VibranceGUI.cs:489` (`RebuildWindowsResolutionSettings`, `showFailureDialog: true` path only) | `EnumDisplaySettings` failed for a monitor. Shown only from the constructor's own build — the `SystemEvents.DisplaySettingsChanged` refresh path (`showFailureDialog: false`) never shows it, deliberately: see [§6.4](#64-the-optional-resolution-switch) |
+| "Current resolution mode could not be determined. Switching back to your Windows resolution will not work." | `ShowResolutionReadFailureDialog` (`VibranceGUI.cs:482`), passed as the `onUnreadableDevice` callback to `WindowsResolutionRefresher.Refresh` only when `RebuildWindowsResolutionSettings`'s `showFailureDialog` is true | `EnumDisplaySettings` failed for a monitor. Shown only from the constructor's own build — the `SystemEvents.DisplaySettingsChanged` refresh path (`showFailureDialog: false`) never shows it, deliberately: see [§6.4](#64-the-optional-resolution-switch). The callback's `deviceName` parameter is unused in the message on purpose — it exists so `ResolutionChangeFixture` can assert *which* device reported, not to make this dialog start naming devices |
 | *(historical)* "Changing the resolution failed: DispChangeBadflags" (or any other `DispChange` member name) | **removed** — `ResolutionHelper.cs` has no `using System.Windows.Forms` and no `MessageBox` call site after `work/resolution-change` | was a staging `ChangeDisplaySettingsEx` failure, raised **inside the foreground-change callback**, repeating on every subsequent switch (**D2**, issues #114/#132 — see [§6.4](#64-the-optional-resolution-switch) for the replacement: a `notifyIcon` balloon tip via `ResolutionHelper.ResolutionChangeFailed`) |
 | Balloon tips: "Registered to Autostart!" / "Registering to Autostart failed!" / "Updated Autostart Path!" / "Updating Autostart Path failed!" / "Unregistered from Autostart!" / "Unregistering from Autostart failed!" | `VibranceGUI.cs:266-288` | the autostart checkbox — **including when it is set programmatically at startup** ([§9.5](#95-autostart)) |
 | Status label: "Initializing…" → "Running!" (green) → "Closing…" (red) | `VibranceGUI.Designer.cs:194`; `VibranceGUI.cs:205-206`; `:318-319` | "Running!" appears only if `isInitialized` was true (`:139-141`) — if it never turns green, the vendor layer failed silently (**D23**) |
@@ -1879,7 +1914,15 @@ rebuilding the dictionary in place (mutating the same `Dictionary` instance both
 reference to, NVIDIA's `static`ally) on every change — guarded so a refresh that lands while a game's
 own resolution change is currently applied does not adopt the game's mode as the new "Windows
 resolution" (see [§6.4](#64-the-optional-resolution-switch) for why that guard is the single most
-dangerous line in the whole fix).
+dangerous line in the whole fix). The refresh logic itself now lives in
+`WindowsResolutionRefresher.Refresh` (`WindowsResolutionRefresher.cs`), extracted out of
+`VibranceGUI.cs` so it can run under `ResolutionChangeFixture` against a fake `IDisplayModeDevice`;
+that fixture is also where the extraction's own follow-on gap got closed — a device that dropped out
+of the dictionary entirely (detached) and reattached later had no "existing" entry for the guard
+above to preserve, so it fell through to a live read exactly as if it were brand new, adopting the
+game's mode on reattach. Closed by `_lastKnownWindowsModes` (`VibranceGUI.cs`), a last-known-mode
+map that survives a device's absence and is checked as a fallback when no dictionary entry exists —
+see [§6.4](#64-the-optional-resolution-switch) for the full mechanism.
 
 **D59 — FIXED on `work/resolution-change`. The "does this still need changing?" guard included
 `DmDisplayFixedOutput`, which some drivers never honestly report back — fits #132's "it keeps on

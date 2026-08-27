@@ -41,6 +41,20 @@ namespace vibrance.GUI.common
             CheckClearFailureStateDoesNotStraddleDeviceNames(checklist);
             CheckUnreadableCurrentModeNeverCountsTowardGiveUp(checklist);
 
+            // WindowsResolutionRefresher.Refresh coverage - R1-R6/R-A below drive the extracted
+            // refresh logic directly through IDisplayModeDevice, exactly like every check above;
+            // R7/R8 are the ones that specifically exercise the last-known-mode retention fallback
+            // for a device that drops out of a refresh and reattaches later.
+            CheckRefreshPreservesCapturedModeWhileApplied(checklist);
+            CheckRefreshWithNoChangeAppliedRecapturesBoth(checklist);
+            CheckRefreshCapturesNewDeviceRegardlessOfFlag(checklist);
+            CheckRefreshMutatesTheCallersDictionaryInstance(checklist);
+            CheckSupportedResolutionListStaysTheInstanceTheFormCaptured(checklist);
+            CheckRefreshNeverReportsUnreadableDeviceOutsideTheInitialBuild(checklist);
+            CheckAdoptedForeignModeSelfHealsOnceItIsGone(checklist);
+            CheckDetachedDeviceKeepsItsCapturedModeAcrossAReattach(checklist);
+            CheckReattachedDeviceReenumeratesItsSupportedModes(checklist);
+
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
             return checklist.Lines;
@@ -673,6 +687,558 @@ namespace vibrance.GUI.common
         }
 
         // ------------------------------------------------------------------
+        // WindowsResolutionRefresher.Refresh coverage (R1-R8/R-A).
+        // ------------------------------------------------------------------
+
+        // Runs one Refresh call and folds the R-safety assertion into it: a refresh - any flag
+        // combination, any scenario - must never call ChangeMode, in either direction. Measured as
+        // a delta around this one call (not the whole check), so a check that also drives a real
+        // ChangeResolutionEx apply/revert directly (R1, R7) still gets a meaningful, narrow
+        // assertion instead of one that would trivially fail for an unrelated reason.
+        private static void RunRefresh(Checklist checklist, FakeDisplayModeDevice device, string safetyDescription,
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> windowsResolutionSettings,
+            Dictionary<string, ResolutionModeWrapper> lastKnownWindowsModes,
+            IList<string> attachedDeviceNames, bool preserveCapturedMode, bool reportUnreadableDevices, Action<string> onUnreadableDevice)
+        {
+            int callsBefore = device.CallLog.Count;
+            WindowsResolutionRefresher.Refresh(device, windowsResolutionSettings, lastKnownWindowsModes, attachedDeviceNames,
+                preserveCapturedMode, reportUnreadableDevices, onUnreadableDevice);
+            checklist.Check(device.CallLog.Count == callsBefore, safetyDescription);
+        }
+
+        // R1. The revert path compares against dict[deviceName].Item1, so this is the check that
+        // directly catches "the refresh captured the GAME's mode instead of the desktop's" - the
+        // exact danger WindowsResolutionRefresher.Refresh's own top-of-method comment describes. A
+        // REAL ChangeResolutionEx apply (not a hand-built Devmode) puts the game's mode live first,
+        // so this exercises the actual interleaving: a refresh landing while a resolution change
+        // is genuinely in effect.
+        private static void CheckRefreshPreservesCapturedModeWhileApplied(Checklist checklist)
+        {
+            checklist.Lines.Add("A refresh with preserveCapturedMode true leaves Item1 at the desktop mode while a real apply is live, IsResolutionChangeNeeded against it is still true, and a revert driven from it actually restores the desktop - not a no-op that still reports success (regression test for the single most dangerous line in the resolution-change fix):");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-REFRESH-R1";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode desktop = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceName, desktop);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the initial refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+            checklist.Check(dict.ContainsKey(deviceName) && dict[deviceName].Item1.Equals(desktop),
+                "the initial refresh captures the desktop mode into Item1");
+
+            ResolutionModeWrapper gameTarget = BuildTarget(2560, 1440, 32, 144, 0);
+            ResolutionHelper.ResolutionChangeResult applyResult = ResolutionHelper.ChangeResolutionEx(device, gameTarget, deviceName, false);
+            checklist.Check(applyResult == ResolutionHelper.ResolutionChangeResult.Applied,
+                string.Format("the real apply that puts the game's mode live returns Applied, got {0}", applyResult));
+
+            RunRefresh(checklist, device, "the refresh while the apply is live never touches the driver",
+                dict, lastKnown, attached, true, true, onUnreadable);
+
+            checklist.Check(dict[deviceName].Item1.Equals(desktop),
+                "Item1 is still the desktop mode after a refresh with preserveCapturedMode true - NOT the game's mode the device is actually showing");
+            checklist.Check(ResolutionHelper.IsResolutionChangeNeeded(device, deviceName, dict[deviceName].Item1),
+                "IsResolutionChangeNeeded against dict[deviceName].Item1 is still true - the game's mode is still live and differs from the captured desktop mode");
+
+            ResolutionHelper.ResolutionChangeResult revertResult = ResolutionHelper.ChangeResolutionEx(device, dict[deviceName].Item1, deviceName, true);
+            checklist.Check(revertResult == ResolutionHelper.ResolutionChangeResult.Applied,
+                string.Format("a revert driven from dict[deviceName].Item1 returns Applied, not a no-op success, got {0}", revertResult));
+            checklist.Check(dict[deviceName].Item1.MatchesAchievedMode(device.GetCurrentMode(deviceName)),
+                "the fake's current mode is genuinely back at the captured desktop mode after the revert - this is the assertion that catches a revert that silently became a no-op");
+
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired across either refresh");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R2. With preserveCapturedMode false (no game resolution change outstanding), a refresh
+        // re-captures Item1 from a live read every time - picking up a mode the user (or Windows
+        // itself) changed directly, outside of vibranceGUI, exactly as the constructor's own
+        // OnDisplaySettingsChanged-driven refreshes are meant to.
+        private static void CheckRefreshWithNoChangeAppliedRecapturesBoth(Checklist checklist)
+        {
+            checklist.Lines.Add("A refresh with preserveCapturedMode false re-captures Item1 from a live read, picking up a mode changed directly in Windows outside of vibranceGUI:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-REFRESH-R2";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode original = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceName, original);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the initial refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+            checklist.Check(dict[deviceName].Item1.Equals(original),
+                "the initial refresh captures the original mode into Item1");
+
+            Devmode changedByUser = BuildDevmode(3840, 2160, 32, 60, 0);
+            device.SetCurrentMode(deviceName, changedByUser);
+
+            RunRefresh(checklist, device, "the second refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+
+            checklist.Check(dict[deviceName].Item1.Equals(changedByUser),
+                "Item1 becomes the newly live mode after a refresh with preserveCapturedMode false");
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired across either refresh");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R3. A device absent from both windowsResolutionSettings AND lastKnownWindowsModes gets a
+        // fresh live Item1 and a fresh Item2 even when preserveCapturedMode is true - it cannot be
+        // the screen currently running the game, since that one is already recorded (see the
+        // extraction's own top-of-method comment).
+        private static void CheckRefreshCapturesNewDeviceRegardlessOfFlag(Checklist checklist)
+        {
+            checklist.Lines.Add("A device absent from both the dictionary and the last-known map still gets a fresh live Item1 and a fresh Item2 with preserveCapturedMode true - it cannot be the screen currently running the game, since that one is already recorded:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-REFRESH-R3";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode live = BuildDevmode(2560, 1440, 32, 144, 0);
+            device.SetCurrentMode(deviceName, live);
+            device.SetSupportedModes(deviceName, new List<Devmode> { live, BuildDevmode(1920, 1080, 32, 60, 0) });
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the refresh never touches the driver",
+                dict, lastKnown, attached, true, true, onUnreadable);
+
+            checklist.Check(dict.ContainsKey(deviceName) && dict[deviceName].Item1.Equals(live),
+                "a brand new device gets a live-read Item1 even though preserveCapturedMode is true");
+            checklist.Check(dict.ContainsKey(deviceName) && dict[deviceName].Item2.Count == 2,
+                string.Format("a brand new device gets a freshly enumerated Item2, got {0} entries",
+                    dict.ContainsKey(deviceName) ? dict[deviceName].Item2.Count : -1));
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R4. Regression test for the frozen-snapshot defect (D58) this whole seam exists to
+        // prevent: Refresh must mutate the CALLER'S Dictionary instance in place, not build and
+        // hand back a new one - a reference captured before the call (what NVIDIA's static field
+        // holds) has to see every later change through that SAME instance.
+        private static void CheckRefreshMutatesTheCallersDictionaryInstance(Checklist checklist)
+        {
+            checklist.Lines.Add("Refresh mutates the caller's Dictionary instance in place - a reference captured before the call (what NVIDIA's static field holds) sees the new Item1 after, and sees a device dropped from attachedDeviceNames disappear, both through that SAME instance (regression test for the frozen-snapshot defect, D58):");
+            ResolutionHelper.ResetForTests();
+
+            const string keptDevice = "FAKE-REFRESH-R4-KEPT";
+            const string removedDevice = "FAKE-REFRESH-R4-REMOVED";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(keptDevice, BuildDevmode(1920, 1080, 32, 60, 0));
+            device.SetCurrentMode(removedDevice, BuildDevmode(1280, 720, 32, 60, 0));
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the first refresh never touches the driver",
+                dict, lastKnown, new List<string> { keptDevice, removedDevice }, false, true, onUnreadable);
+
+            // The reference itself - not a copy - is what a real caller holds. Deliberately NOT
+            // asserted via ReferenceEquals(capturedReference, dict): that would be true here no
+            // matter what Refresh's body does, since windowsResolutionSettings is not a "ref"
+            // parameter - the language guarantees capturedReference and dict name the same object
+            // regardless of whether the method mutates it, replaces its contents, or does nothing
+            // at all. A check built on ReferenceEquals alone here is a check that cannot fail. The
+            // assertions below instead look for a VALUE only a real Clear()-then-re-add against the
+            // live instance could produce.
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> capturedReference = dict;
+
+            Devmode keptChanged = BuildDevmode(3840, 2160, 32, 60, 0);
+            device.SetCurrentMode(keptDevice, keptChanged);
+
+            RunRefresh(checklist, device, "the second refresh never touches the driver",
+                dict, lastKnown, new List<string> { keptDevice }, false, true, onUnreadable);
+
+            checklist.Check(capturedReference.ContainsKey(keptDevice) && capturedReference[keptDevice].Item1.Equals(keptChanged),
+                "the reference captured before the second refresh sees the new Item1 through the SAME instance");
+            checklist.Check(!capturedReference.ContainsKey(removedDevice),
+                "the reference captured before the second refresh sees the removed device disappear through the SAME instance");
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R5. _supportedResolutionList (VibranceGUI.cs) is captured ONCE, in the constructor, and
+        // is readonly - so the List<ResolutionModeWrapper> instance a caller captures for Item2 has
+        // to stay the exact same instance across every later refresh, any flag, or that field goes
+        // silently stale. Also pins that a device already in the dictionary is never re-enumerated.
+        private static void CheckSupportedResolutionListStaysTheInstanceTheFormCaptured(Checklist checklist)
+        {
+            checklist.Lines.Add("Item2 stays the SAME List<ResolutionModeWrapper> instance across repeated refreshes with mixed preserveCapturedMode flags, and is never re-enumerated once a device has an entry (regression test for _supportedResolutionList - captured once, readonly - silently going stale):");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-REFRESH-R5";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode live = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceName, live);
+            List<Devmode> table = new List<Devmode> { live, BuildDevmode(2560, 1440, 32, 144, 0) };
+            device.SetSupportedModes(deviceName, table);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the initial refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+
+            // Captured exactly the way VibranceGUI's constructor captures _supportedResolutionList:
+            // once, right after the initial build, held nowhere else.
+            List<ResolutionModeWrapper> capturedList = dict[deviceName].Item2;
+            int enumerateCallsAfterFirstRefresh;
+            device.EnumerateCallCounts.TryGetValue(deviceName, out enumerateCallsAfterFirstRefresh);
+
+            RunRefresh(checklist, device, "the second refresh (preserve=true) never touches the driver",
+                dict, lastKnown, attached, true, true, onUnreadable);
+            RunRefresh(checklist, device, "the third refresh (preserve=false) never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+            RunRefresh(checklist, device, "the fourth refresh (preserve=true) never touches the driver",
+                dict, lastKnown, attached, true, true, onUnreadable);
+
+            checklist.Check(ReferenceEquals(dict[deviceName].Item2, capturedList),
+                "Item2 is still the exact same List<ResolutionModeWrapper> instance after three more refreshes with mixed flags");
+            checklist.Check(capturedList.Count == 2,
+                string.Format("the captured list is non-empty, got {0} entries", capturedList.Count));
+
+            bool matchesFakeTable = capturedList.Count == table.Count;
+            for (int i = 0; matchesFakeTable && i < table.Count; i++)
+            {
+                matchesFakeTable = capturedList[i].Equals(table[i]);
+            }
+            checklist.Check(matchesFakeTable, "the captured list's contents equal the fake's supported-mode table");
+
+            int enumerateCallsAfterAll;
+            device.EnumerateCallCounts.TryGetValue(deviceName, out enumerateCallsAfterAll);
+            checklist.Check(enumerateCallsAfterAll == enumerateCallsAfterFirstRefresh,
+                string.Format("EnumerateCallCounts does not increase across the three later refreshes - had {0} calls after the first refresh, {1} after the fourth",
+                    enumerateCallsAfterFirstRefresh, enumerateCallsAfterAll));
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired across any refresh");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R6. The unreadable-device callback is the seam behind the constructor's one-time
+        // MessageBox (showFailureDialog: true) - it must never fire outside of an actually-attempted
+        // live read: not when reportUnreadableDevices is false, not for a readable device, and not
+        // for a device whose entry is retained via an existing dictionary entry without ever
+        // attempting a live read at all (preserveCapturedMode true, hasExisting true) - the OTHER
+        // half of the regression this whole fix targets: a hot-plug/resolution-change refresh must
+        // never pop the constructor's own dialog (see OnDisplaySettingsChanged, VibranceGUI.cs).
+        private static void CheckRefreshNeverReportsUnreadableDeviceOutsideTheInitialBuild(Checklist checklist)
+        {
+            checklist.Lines.Add("The unreadable-device callback fires only when reportUnreadableDevices is true AND a live read is actually attempted - never when an existing entry means the live read is skipped entirely (regression test for the constructor's one-time dialog leaking onto the SystemEvents refresh path):");
+            ResolutionHelper.ResetForTests();
+
+            // Case 1: unreadable device, reportUnreadableDevices false - zero callbacks, no entry.
+            {
+                const string deviceName = "FAKE-REFRESH-R6-CASE1";
+                FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+                // Deliberately never calls SetCurrentMode - TryGetCurrentMode fails for it.
+                Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                    new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+                Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+                List<string> unreadable = new List<string>();
+                Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+                RunRefresh(checklist, device, "case 1's refresh never touches the driver",
+                    dict, lastKnown, new List<string> { deviceName }, false, false, onUnreadable);
+
+                checklist.Check(unreadable.Count == 0, "case 1 (reportUnreadableDevices false): zero callbacks");
+                checklist.Check(!dict.ContainsKey(deviceName), "case 1: no entry is added for the unreadable device");
+            }
+
+            // Case 2: unreadable device, reportUnreadableDevices true - exactly one callback,
+            // naming the device.
+            {
+                const string deviceName = "FAKE-REFRESH-R6-CASE2";
+                FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+                Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                    new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+                Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+                List<string> unreadable = new List<string>();
+                Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+                RunRefresh(checklist, device, "case 2's refresh never touches the driver",
+                    dict, lastKnown, new List<string> { deviceName }, false, true, onUnreadable);
+
+                checklist.Check(unreadable.Count == 1 && unreadable[0] == deviceName,
+                    string.Format("case 2 (reportUnreadableDevices true): exactly one callback naming {0}, got [{1}]",
+                        deviceName, string.Join(",", unreadable.ToArray())));
+                checklist.Check(!dict.ContainsKey(deviceName), "case 2: still no entry for a device that could not be read");
+            }
+
+            // Case 3: readable device, reportUnreadableDevices true - zero callbacks.
+            {
+                const string deviceName = "FAKE-REFRESH-R6-CASE3";
+                FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+                device.SetCurrentMode(deviceName, BuildDevmode(1920, 1080, 32, 60, 0));
+                Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                    new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+                Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+                List<string> unreadable = new List<string>();
+                Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+                RunRefresh(checklist, device, "case 3's refresh never touches the driver",
+                    dict, lastKnown, new List<string> { deviceName }, false, true, onUnreadable);
+
+                checklist.Check(unreadable.Count == 0, "case 3 (a readable device): zero callbacks");
+                checklist.Check(dict.ContainsKey(deviceName), "case 3: a readable device still gets its entry");
+            }
+
+            // Case 4: a device that already has a dictionary entry, then goes unreadable live, then
+            // is refreshed again with preserveCapturedMode true - the existing Item1 is reused
+            // without ever attempting a live read, so the entry survives and the callback never
+            // fires, even though a live read would fail if it were ever attempted.
+            {
+                const string deviceName = "FAKE-REFRESH-R6-CASE4";
+                FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+                Devmode original = BuildDevmode(1920, 1080, 32, 60, 0);
+                device.SetCurrentMode(deviceName, original);
+                Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                    new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+                Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+                List<string> unreadable = new List<string>();
+                Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+                RunRefresh(checklist, device, "case 4's first refresh never touches the driver",
+                    dict, lastKnown, new List<string> { deviceName }, false, true, onUnreadable);
+
+                device.SetUnreadable(deviceName);
+
+                RunRefresh(checklist, device, "case 4's second refresh never touches the driver",
+                    dict, lastKnown, new List<string> { deviceName }, true, true, onUnreadable);
+
+                checklist.Check(dict.ContainsKey(deviceName) && dict[deviceName].Item1.Equals(original),
+                    "case 4: the entry survives with its original Item1, even though a live read would now fail");
+                checklist.Check(unreadable.Count == 0,
+                    "case 4: zero callbacks - preserveCapturedMode true with an existing entry never attempts the live read at all");
+            }
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R-A. Documents TODAY's behaviour on purpose, and carries the reasoning for why a
+        // reviewer-proposed "smarter" fix - skip re-capturing Item1 when the live mode matches a
+        // configured ApplicationSetting.ResolutionSettings entry - was REJECTED outright, not
+        // merely postponed:
+        //   1. A user can legitimately configure a game at the mode their desktop already runs at.
+        //      That fix would then make their OWN desktop mode permanently un-capturable, and
+        //      every future revert would drag them to a stale mode while still reporting success.
+        //   2. ResolutionSettings is populated on an ApplicationSetting regardless of whether the
+        //      resolution feature is even switched on for that entry, so the fix would also match
+        //      entries where it is off.
+        //   3. Neither available comparison actually works: Equals includes DmDisplayFixedOutput,
+        //      which drivers are free to silently pin away from what was requested on readback
+        //      (see ResolutionModeWrapper.MatchesAchievedMode's own comment) - and
+        //      MatchesAchievedMode widens the false-positive surface to every mode that merely
+        //      shares the four OTHER fields with a configured entry.
+        //   4. At refresh time, "a game changed the resolution itself with no profile applied" and
+        //      "the user's own genuine desktop mode happens to equal a configured entry" are
+        //      OBSERVATIONALLY IDENTICAL: both are a bare DisplaySettingsChanged plus a live mode
+        //      that differs from the last capture. Nothing available at refresh time can tell them
+        //      apart.
+        // Adopting a game's foreign mode self-heals the moment that mode goes away (this check);
+        // refusing to adopt a user's genuine desktop mode never heals, since nothing else in the
+        // program will ever re-capture it. The right future fix keys on DURATION, not value.
+        private static void CheckAdoptedForeignModeSelfHealsOnceItIsGone(Checklist checklist)
+        {
+            checklist.Lines.Add("With preserveCapturedMode false, a refresh adopts whatever mode is live - even a foreign one set with no profile applied - and self-heals back once that foreign mode is gone (today's stated, deliberate behaviour - see this check's own comment for why the 'match a configured ResolutionSettings entry' fix was rejected):");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-REFRESH-RA";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode desktop = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceName, desktop);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the initial refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+            checklist.Check(dict[deviceName].Item1.Equals(desktop), "the initial refresh captures the desktop mode");
+
+            // A game (or anything else) changed the live mode without going through
+            // ChangeResolutionEx at all - in reality SystemEvents would still fire
+            // DisplaySettingsChanged for this, driving a refresh with preserveCapturedMode false
+            // (isResolutionChangeApplied is only true while vibranceGUI's OWN apply is outstanding).
+            Devmode foreign = BuildDevmode(1280, 720, 32, 60, 0);
+            device.SetCurrentMode(deviceName, foreign);
+
+            RunRefresh(checklist, device, "the second refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+            checklist.Check(dict[deviceName].Item1.Equals(foreign),
+                "Item1 adopts the foreign mode - today's behaviour, deliberately not special-cased against configured ApplicationSetting.ResolutionSettings entries (see this check's own comment)");
+
+            device.SetCurrentMode(deviceName, desktop);
+
+            RunRefresh(checklist, device, "the third refresh never touches the driver",
+                dict, lastKnown, attached, false, true, onUnreadable);
+            checklist.Check(dict[deviceName].Item1.Equals(desktop),
+                "Item1 self-heals back to the desktop mode once the foreign mode is gone");
+
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired across any refresh");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R7 - Task 6, the point of this whole exercise. A device that drops out of
+        // attachedDeviceNames mid-apply (a real hot-unplug, a docking-station reattach, a driver
+        // resetting the adapter) and reattaches later must keep the desktop mode it had BEFORE it
+        // dropped out, even though it spent an intervening refresh completely absent from the
+        // dictionary and so has no "existing" entry for the reattach refresh to reuse Item1 from.
+        // Without the last-known-mode fallback, the reattach refresh falls through to a live read -
+        // which, with the game's own resolution change still applied to this very device, reads
+        // the GAME's mode, not the desktop's - exactly the danger
+        // WindowsResolutionRefresher.Refresh's own comment describes, just reached through a
+        // detach/reattach instead of the simpler "no previous entry at all" case R1 covers.
+        private static void CheckDetachedDeviceKeepsItsCapturedModeAcrossAReattach(Checklist checklist)
+        {
+            checklist.Lines.Add("A device that drops out of attachedDeviceNames while a real apply is live, then reattaches, keeps its desktop Item1 via the last-known-mode fallback - even though it spent an intervening refresh completely absent from the dictionary - and a revert through it still restores the desktop; the detached device has zero entry, and zero leakage, while it is gone (regression test for a monitor cable bounce or GPU hot-plug losing the desktop mode of a device a game's resolution change is still applied to):");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceA = "FAKE-REFRESH-R7-A";
+            const string deviceB = "FAKE-REFRESH-R7-B";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode desktopA = BuildDevmode(1920, 1080, 32, 60, 0);
+            Devmode desktopB = BuildDevmode(2560, 1440, 32, 144, 0);
+            device.SetCurrentMode(deviceA, desktopA);
+            device.SetCurrentMode(deviceB, desktopB);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the initial refresh never touches the driver",
+                dict, lastKnown, new List<string> { deviceA, deviceB }, false, true, onUnreadable);
+
+            ResolutionModeWrapper gameTarget = BuildTarget(3840, 2160, 32, 60, 0);
+            ResolutionHelper.ResolutionChangeResult applyResult = ResolutionHelper.ChangeResolutionEx(device, gameTarget, deviceA, false);
+            checklist.Check(applyResult == ResolutionHelper.ResolutionChangeResult.Applied,
+                string.Format("the real apply on device A returns Applied, got {0}", applyResult));
+
+            // Device A's link drops - a real hot-unplug/dock event, not the game exiting - so the
+            // next refresh's attachedDeviceNames omits it entirely, exactly the way
+            // Screen.AllScreens would after Windows stops reporting the monitor.
+            RunRefresh(checklist, device, "the refresh with A detached never touches the driver",
+                dict, lastKnown, new List<string> { deviceB }, true, true, onUnreadable);
+            checklist.Check(!dict.ContainsKey(deviceA),
+                "device A has no entry at all while detached - retention must never leak a detached device into the proxies' own view of windowsResolutionSettings");
+
+            // Device A reattaches - still not through ChangeResolutionEx, so this exercises the
+            // refresher's own retention, not anything ChangeResolutionEx tracks.
+            RunRefresh(checklist, device, "the refresh with A reattached never touches the driver",
+                dict, lastKnown, new List<string> { deviceA, deviceB }, true, true, onUnreadable);
+
+            checklist.Check(dict.ContainsKey(deviceA) && dict[deviceA].Item1.Equals(desktopA),
+                "device A's Item1 is still the desktop mode after reattaching - NOT the game's mode it is actually showing right now");
+            checklist.Check(ResolutionHelper.IsResolutionChangeNeeded(device, deviceA, dict[deviceA].Item1),
+                "IsResolutionChangeNeeded against the retained Item1 is still true - the game's mode is still live on device A");
+
+            ResolutionHelper.ResolutionChangeResult revertResult = ResolutionHelper.ChangeResolutionEx(device, dict[deviceA].Item1, deviceA, true);
+            checklist.Check(revertResult == ResolutionHelper.ResolutionChangeResult.Applied,
+                string.Format("a revert driven from the retained Item1 returns Applied, got {0}", revertResult));
+            checklist.Check(dict[deviceA].Item1.MatchesAchievedMode(device.GetCurrentMode(deviceA)),
+                "the fake is genuinely back at device A's desktop mode after the revert - this is the assertion that catches a revert that silently became a no-op");
+
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired across any refresh");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // R8 - Task 6. The retained mode is the ONLY thing carried across a detach/reattach cycle -
+        // the supported-mode list is not, and cannot be: a detached device has no dictionary entry
+        // at all (R7), so there is no old List<ResolutionModeWrapper> instance left for the
+        // reattach refresh to reuse, and Item2 has to be re-enumerated from scratch, picking up
+        // whatever the device reports now (a real reattach through a different port/adapter, or
+        // after a driver update, can genuinely offer a different mode list than before). Also pins
+        // that the fallback is gated strictly on preserveCapturedMode: with it false, a reattached
+        // device's Item1 is read fresh, never pulled from the retained last-known mode.
+        private static void CheckReattachedDeviceReenumeratesItsSupportedModes(Checklist checklist)
+        {
+            checklist.Lines.Add("A device that reattaches after detaching gets its Item2 re-enumerated from scratch, reflecting a changed supported-mode table, with EnumerateCallCounts increasing accordingly; with preserveCapturedMode false the reattached device's Item1 is read fresh, never pulled from the retained last-known mode:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceA = "FAKE-REFRESH-R8-A";
+            const string deviceB = "FAKE-REFRESH-R8-B";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode originalModeA = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceA, originalModeA);
+            device.SetCurrentMode(deviceB, BuildDevmode(2560, 1440, 32, 144, 0));
+            List<Devmode> originalTableA = new List<Devmode> { originalModeA };
+            device.SetSupportedModes(deviceA, originalTableA);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> unreadable = new List<string>();
+            Action<string> onUnreadable = delegate(string name) { unreadable.Add(name); };
+
+            RunRefresh(checklist, device, "the initial refresh never touches the driver",
+                dict, lastKnown, new List<string> { deviceA, deviceB }, false, true, onUnreadable);
+            int enumerateCallsBeforeDetach;
+            device.EnumerateCallCounts.TryGetValue(deviceA, out enumerateCallsBeforeDetach);
+
+            RunRefresh(checklist, device, "the refresh with A detached never touches the driver",
+                dict, lastKnown, new List<string> { deviceB }, true, true, onUnreadable);
+
+            // The driver's own supported-mode table AND live mode for A change while it is
+            // detached.
+            List<Devmode> newTableA = new List<Devmode> { originalModeA, BuildDevmode(3840, 2160, 32, 60, 0) };
+            device.SetSupportedModes(deviceA, newTableA);
+            Devmode liveModeAOnReattach = BuildDevmode(1280, 720, 32, 60, 0);
+            device.SetCurrentMode(deviceA, liveModeAOnReattach);
+
+            RunRefresh(checklist, device, "the refresh with A reattached (preserve=false) never touches the driver",
+                dict, lastKnown, new List<string> { deviceA, deviceB }, false, true, onUnreadable);
+
+            checklist.Check(dict.ContainsKey(deviceA) && dict[deviceA].Item2.Count == newTableA.Count,
+                string.Format("device A's Item2 reflects the new table after reattaching, got {0} entries, expected {1}",
+                    dict.ContainsKey(deviceA) ? dict[deviceA].Item2.Count : -1, newTableA.Count));
+            int enumerateCallsAfterReattach;
+            device.EnumerateCallCounts.TryGetValue(deviceA, out enumerateCallsAfterReattach);
+            checklist.Check(enumerateCallsAfterReattach > enumerateCallsBeforeDetach,
+                string.Format("EnumerateCallCounts[A] increased after reattaching - {0} calls before detaching, {1} after reattaching",
+                    enumerateCallsBeforeDetach, enumerateCallsAfterReattach));
+            checklist.Check(dict[deviceA].Item1.Equals(liveModeAOnReattach),
+                "with preserveCapturedMode false, the reattached device's Item1 is read fresh from the live device, not pulled from the retained last-known mode");
+
+            checklist.Check(unreadable.Count == 0, "no unreadable-device callback fired across any refresh");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // ------------------------------------------------------------------
         // Shared helpers.
         // ------------------------------------------------------------------
 
@@ -740,6 +1306,14 @@ namespace vibrance.GUI.common
 
             public readonly List<RecordedCall> CallLog = new List<RecordedCall>();
 
+            // Per-device count of TryEnumerateMode calls this fake has actually answered (whether
+            // or not a table was ever set for that name) - the seam CheckSupportedResolutionListStaysTheInstanceTheFormCaptured
+            // and CheckReattachedDeviceReenumeratesItsSupportedModes need to prove
+            // EnumerateSupportedResolutionModes was (or was not) re-invoked, since the returned
+            // List<ResolutionModeWrapper> alone cannot distinguish "reused the same instance" from
+            // "re-enumerated into contents that happen to be equal".
+            public readonly Dictionary<string, int> EnumerateCallCounts = new Dictionary<string, int>();
+
             public void SetCurrentMode(string deviceName, Devmode mode)
             {
                 _currentModes[deviceName] = mode;
@@ -748,6 +1322,23 @@ namespace vibrance.GUI.common
             public Devmode GetCurrentMode(string deviceName)
             {
                 return _currentModes[deviceName];
+            }
+
+            // Stands in for a device whose current mode has become unreadable - a monitor that
+            // just dropped, or a driver in a bad state. Named separately from SetCurrentMode's
+            // absence (never calling it at all) purely so a check can make the transition explicit
+            // for a device that WAS readable a moment ago.
+            public void SetUnreadable(string deviceName)
+            {
+                _currentModes.Remove(deviceName);
+            }
+
+            // The table TryEnumerateMode walks for deviceName - _modeTables was declared but never
+            // written before this fixture's own R1-R8, which is why every EnumerateSupportedResolutionModes
+            // call before them always returned an empty list without a single check noticing.
+            public void SetSupportedModes(string deviceName, List<Devmode> modes)
+            {
+                _modeTables[deviceName] = modes;
             }
 
             // Forces the NEXT ChangeMode call for (deviceName, flags) to return result instead of
@@ -796,6 +1387,10 @@ namespace vibrance.GUI.common
 
             public bool TryEnumerateMode(string deviceName, int modeNum, out Devmode mode)
             {
+                int count;
+                EnumerateCallCounts.TryGetValue(deviceName, out count);
+                EnumerateCallCounts[deviceName] = count + 1;
+
                 List<Devmode> table;
                 if (_modeTables.TryGetValue(deviceName, out table) && modeNum >= 0 && modeNum < table.Count)
                 {
