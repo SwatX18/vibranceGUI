@@ -195,24 +195,19 @@ Read this before basing work on `master` or trying to reproduce a user's bug rep
 | Platform target | **x86 in every configuration** (`csproj:33,44,65,74`); `Prefer32Bit=false` in the two AnyCPU groups only (`csproj:41,51`) |
 | Project style | pre-SDK MSBuild, `ToolsVersion 4.0`, every source file listed explicitly (`csproj:95-152`) |
 | Solution | `vibrance.GUI.sln`, format 12.00, "# Visual Studio 2012", one project |
-| NuGet packages | `Fody 1.26.4`, `Costura.Fody 1.3.3.0`, `CommonServiceLocator 1.3` (`vibrance.GUI/packages.config`) |
+| NuGet packages | none, as of v2.6.0 — `Fody`, `Costura.Fody`, and the unused `CommonServiceLocator` were all removed; the build requires no NuGet restore |
 | Native dependencies | `nvapi.dll` (NVIDIA, resolved dynamically inside the prebuilt DLL); `atiadlxy.dll` / `atiadlxx.dll` (AMD, static `DllImport`); plus `user32`, `kernel32`, `psapi`, `advapi32` |
 | Size | 64 tracked files in the repo; 58 items in the project; 48 `.cs` files, ~4,622 lines of C# |
-
-`CommonServiceLocator` is referenced (`csproj:79-81`) but **no source file uses it** — grepping the
-tree for `ServiceLocator`/`ServiceLocation` finds only that reference. It is dead weight.
 
 ### 3.2 Building
 
 ```bash
 # from the repository root
-nuget restore vibrance.GUI.sln
 msbuild vibrance.GUI.sln /p:Configuration=Release /p:Platform=x86
 ```
 
-Restore is not optional: `csproj:211` imports `..\packages\Fody.1.26.4\build\Fody.targets`, and
-`csproj:212-217` defines an `EnsureNuGetPackageBuildImports` target that **fails the build with a
-German-language error message** if that file is missing. The `packages/` directory is not checked in.
+No NuGet restore step is needed: as of v2.6.0 the project references no NuGet packages at all, so
+there is no `packages/` directory to populate and no restore-related build target to satisfy.
 
 Because the project targets `v4.0`, you need a toolchain that can still target .NET Framework 4.0 (the
 4.0 targeting / multi-targeting pack). Open PR #153 proposes moving to .NET 4.8.
@@ -280,13 +275,15 @@ The practical advice is unchanged — **select the `x86` solution platform** —
 
 ### 3.5 How the native NVIDIA DLL is deployed (not what you would guess)
 
-The project uses **Costura.Fody**, whose job is merging *managed* references into the output assembly,
-configured by an empty `<Costura/>` element in `vibrance.GUI/FodyWeavers.xml`. Given the reference list
-(`csproj:79-92`), the only copy-local managed reference it can merge is
-`Microsoft.Practices.ServiceLocation.dll` — the unused `CommonServiceLocator` package — so Costura is
-very nearly a no-op today, and removing that package would make it entirely one.
+As of v2.6.0 the project no longer uses Costura.Fody. It previously merged *managed* references into
+the output assembly, configured by an empty `<Costura/>` element in `vibrance.GUI/FodyWeavers.xml`;
+given the reference list the only copy-local managed reference it ever merged was
+`Microsoft.Practices.ServiceLocation.dll`, from the unused `CommonServiceLocator` package. That package
+was removed in the same release, so Costura had nothing left to do and was dropped alongside it — the
+build now references no NuGet packages at all (§3.2).
 
-**Costura does not embed `vibranceDLL.dll`.** That is plain MSBuild plus hand-written extraction:
+**The native DLL was never Costura's job.** `vibranceDLL.dll` is deployed via plain MSBuild plus
+hand-written extraction, untouched by the Costura removal:
 
 - `vibrance.GUI.csproj:189` — `<EmbeddedResource Include="NVIDIA\vibranceDLL.dll" />`, giving the
   manifest resource name `vibrance.GUI.NVIDIA.vibranceDLL.dll`;
@@ -338,8 +335,6 @@ vibranceGUI/
 └── vibrance.GUI/
     ├── Program.cs                 ENTRY POINT and the only composition root (§5.3)
     ├── App.config                 supportedRuntime v4.0
-    ├── FodyWeavers.xml            <Costura/> — merges MANAGED refs only (§3.5)
-    ├── packages.config            Fody, Costura.Fody, CommonServiceLocator (unused)
     ├── vibrance.GUI.csproj        pre-SDK project; add new files here by hand
     ├── setting.ico                application icon
     │
@@ -2202,7 +2197,7 @@ re-established in-process.
 | ADL: `AdlDisplayColorGet`, `ADL_Main_Memory_Free`, `AdlCheckLibrary.GetProcAddress`, and the unused constants (`AdlFail`, `AdlDriverOk`, `AdlMaxDisplays`, `AdlDisplayColorBrightness/Contrast/Hue/Temperature`, …) | `AMD/vendor/adl32/ADL.cs:44-59,69-75,189-203`; `ADLCheckLibrary.cs:45-53` |
 | `isActive` assigned and never read | `AMD/vendor/AmdAdapter32.cs:43,53` |
 | Native exports unreachable from C#: `handleDVC`, `test`, `getInterfaceVersionString`, both `printError` overloads | `vibranceDLL.dll` (VERIFIED binary) |
-| `CommonServiceLocator` reference and `using System.Management;` are unused | `vibrance.GUI.csproj:79-81,84`; `common/ProcessExplorer.cs:9` |
+| `using System.Management;` is unused | `vibrance.GUI.csproj:80`; `common/ProcessExplorer.cs:9` |
 | `Properties\Settings.settings` is empty and `Properties\Resources.resx` has no entries | — |
 
 ### 12.8 Structure and coupling
@@ -2414,10 +2409,8 @@ Merged from both archaeology passes, de-duplicated. These are genuinely unanswer
     `ChangeDisplaySettingsEx`'s `DispChange` return value already carries the failure code and the
     Win32 last-error is not documented as meaningful for this API; still the cheapest next
     diagnostic step if the `DispChange` code alone turns out not to be enough (**D2**).
-12. Is `CommonServiceLocator` retained for a planned DI refactor (compare the `Refactoring_to_WPF`
-    branch), or can it — and with it, effectively, Costura — be dropped?
-13. Was the Travis pipeline ever green, and is CI intended to be restored? A GitHub Actions job on
+12. Was the Travis pipeline ever green, and is CI intended to be restored? A GitHub Actions job on
     `windows-latest` would actually exercise this project, unlike the Linux/Mono one (**§3.7**).
-14. What is the plan for PR #140 (`feature/add-color-settings`, which carries the released `v2.5.0` tag)
+13. What is the plan for PR #140 (`feature/add-color-settings`, which carries the released `v2.5.0` tag)
     and PR #153 (.NET 4.8 + hotkeys)? `master` currently ships older behaviour than the published
     release (**§2.3**).
