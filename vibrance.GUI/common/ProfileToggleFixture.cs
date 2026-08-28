@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -42,6 +43,7 @@ namespace vibrance.GUI.common
             RunToggleEffectChecks(checklist);
             RunSuppressionGateChecks(checklist);
             RunSuppressionCleanupChecks(checklist);
+            RunListItemMarkerChecks(checklist);
             RunSettingsChecks(checklist);
 
             checklist.Lines.Add(string.Empty);
@@ -1106,6 +1108,209 @@ namespace vibrance.GUI.common
                 "Cleanup-3: clearing profile A's suppression on rename leaves a DIFFERENT profile B's own suppression untouched");
 
             ProfileToggleHelper.ResetForTests();
+        }
+
+        // ------------------------------------------------------------------
+        // Application list marker - VibranceGUI.DescribeListItem (the pure decision
+        // ApplyApplicationListItemAppearance turns into ListViewItem.Text/ForeColor/ToolTipText)
+        // and VibranceGUI.ShouldRefreshListItemForToggleResult (the gate
+        // RefreshToggledListItemAppearance opens on). Both are internal statics called directly -
+        // no reflection, no Form: ApplyApplicationListItemAppearance and
+        // RefreshToggledListItemAppearance themselves need a real ListView on a real Form
+        // (VibranceGUI's own constructor calls getProxy(...)), which is exactly why the decision
+        // each one makes is pulled out into something a fixture CAN reach - the real gate, not a
+        // hand-copied mirror of it.
+        // ------------------------------------------------------------------
+
+        private static void RunListItemMarkerChecks(Checklist checklist)
+        {
+            checklist.Lines.Add("Application list marker (VibranceGUI.DescribeListItem / ShouldRefreshListItemForToggleResult, real methods, no reflection):");
+
+            CheckDescribeListItemNeitherFlag(checklist);
+            CheckDescribeListItemUnconfirmedOnly(checklist);
+            CheckDescribeListItemSuppressedOnly(checklist);
+            CheckDescribeListItemBothFlagsComposeBothSuffixes(checklist);
+            CheckDescribeListItemBothFlagsSuppressionWinsTheColour(checklist);
+            CheckDescribeListItemBothFlagsComposeBothTooltipParagraphs(checklist);
+            CheckDescribeListItemSuppressedColourIsNotGrayTextOrWindowText(checklist);
+            CheckDescribeListItemNullNameDoesNotThrow(checklist);
+            CheckMarkerSuffixesAreDistinct(checklist);
+            CheckShouldRefreshOnlyOnConfirmedToggles(checklist);
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // M1. Mutation this guards: append a suffix (or change the colour/tooltip) even when
+        // neither flag is set.
+        private static void CheckDescribeListItemNeitherFlag(Checklist checklist)
+        {
+            string text;
+            Color foreColor;
+            string toolTip;
+            VibranceGUI.DescribeListItem("TestMarkerGame", false, false, out text, out foreColor, out toolTip);
+
+            checklist.Check(text == "TestMarkerGame" && foreColor == SystemColors.WindowText && toolTip == string.Empty,
+                string.Format("M1: neither flag set -> unchanged name, WindowText, empty tooltip, got text=\"{0}\" foreColor={1} toolTip=\"{2}\"",
+                    text, foreColor, toolTip));
+        }
+
+        // M2. Mutation this guards: drop the "(?)" suffix, use the wrong colour, or lose the
+        // unconfirmed tooltip - the pre-existing single-marker behaviour PR #14's own review left
+        // untouched.
+        private static void CheckDescribeListItemUnconfirmedOnly(Checklist checklist)
+        {
+            string text;
+            Color foreColor;
+            string toolTip;
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, false, out text, out foreColor, out toolTip);
+
+            bool ok = text == "TestMarkerGame" + VibranceGUI.UnconfirmedMarkerSuffix &&
+                      foreColor == SystemColors.GrayText &&
+                      toolTip == VibranceGUI.ToolTipExecutableUnconfirmed;
+            checklist.Check(ok,
+                string.Format("M2: unconfirmed only -> \"{0}\", GrayText, the unconfirmed tooltip verbatim, got text=\"{1}\" foreColor={2} toolTip=\"{3}\"",
+                    "TestMarkerGame" + VibranceGUI.UnconfirmedMarkerSuffix, text, foreColor, toolTip));
+        }
+
+        // M3. Mutation this guards: drop the suppressed suffix, reuse GrayText/WindowText instead
+        // of the dedicated colour, or lose the suppressed tooltip.
+        private static void CheckDescribeListItemSuppressedOnly(Checklist checklist)
+        {
+            string text;
+            Color foreColor;
+            string toolTip;
+            VibranceGUI.DescribeListItem("TestMarkerGame", false, true, out text, out foreColor, out toolTip);
+
+            bool ok = text == "TestMarkerGame" + VibranceGUI.SuppressedMarkerSuffix &&
+                      foreColor == VibranceGUI.SuppressedForeColor &&
+                      toolTip == VibranceGUI.ToolTipSuppressed;
+            checklist.Check(ok,
+                string.Format("M3: suppressed only -> \"{0}\", the dedicated suppressed colour, the suppressed tooltip verbatim, got text=\"{1}\" foreColor={2} toolTip=\"{3}\"",
+                    "TestMarkerGame" + VibranceGUI.SuppressedMarkerSuffix, text, foreColor, toolTip));
+        }
+
+        // M4. The doubly-marked case - both flags true. Mutation this guards: an if/else (or any
+        // other structure) that lets one marker silently win over the other instead of composing,
+        // or gets the suffix order backwards.
+        private static void CheckDescribeListItemBothFlagsComposeBothSuffixes(Checklist checklist)
+        {
+            string text;
+            Color foreColor;
+            string toolTip;
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, out text, out foreColor, out toolTip);
+
+            string expected = "TestMarkerGame" + VibranceGUI.SuppressedMarkerSuffix + VibranceGUI.UnconfirmedMarkerSuffix;
+            checklist.Check(text == expected,
+                string.Format("M4: both flags set -> BOTH suffixes present, suppressed first then unconfirmed (\"{0}\"), got text=\"{1}\"",
+                    expected, text));
+        }
+
+        // M5. Mutation this guards: both flags true still resolving to GrayText (an if/else that
+        // checks isUnconfirmed before isSuppressed) instead of the suppressed colour - exactly the
+        // "reads as broken, not switched off" failure the architect flagged.
+        private static void CheckDescribeListItemBothFlagsSuppressionWinsTheColour(Checklist checklist)
+        {
+            string text;
+            Color foreColor;
+            string toolTip;
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, out text, out foreColor, out toolTip);
+
+            checklist.Check(foreColor == VibranceGUI.SuppressedForeColor,
+                string.Format("M5: both flags set -> the suppressed colour wins (not GrayText), got foreColor={0}", foreColor));
+        }
+
+        // M6. Mutation this guards: only one tooltip paragraph survives when both flags are set
+        // (e.g. an if/else-if instead of two independent ifs), or the paragraphs come out in the
+        // wrong order.
+        private static void CheckDescribeListItemBothFlagsComposeBothTooltipParagraphs(Checklist checklist)
+        {
+            string text;
+            Color foreColor;
+            string toolTip;
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, out text, out foreColor, out toolTip);
+
+            int suppressedIndex = toolTip.IndexOf(VibranceGUI.ToolTipSuppressed, StringComparison.Ordinal);
+            int unconfirmedIndex = toolTip.IndexOf(VibranceGUI.ToolTipExecutableUnconfirmed, StringComparison.Ordinal);
+            bool ok = suppressedIndex >= 0 && unconfirmedIndex >= 0 && suppressedIndex < unconfirmedIndex;
+
+            checklist.Check(ok,
+                string.Format("M6: both flags set -> tooltip contains BOTH paragraphs, suppressed before unconfirmed, got suppressedIndex={0} unconfirmedIndex={1} toolTip=\"{2}\"",
+                    suppressedIndex, unconfirmedIndex, toolTip));
+        }
+
+        // M7. Sanity check on the colour choice itself. Mutation this guards: SuppressedForeColor
+        // defined as (or reassigned to) SystemColors.GrayText or SystemColors.WindowText, silently
+        // undoing the "not GrayText" decision without any of M1-M6 necessarily catching it (M1/M2
+        // pass GrayText/WindowText legitimately in their OWN branch; only comparing the constant
+        // against both catches it being aliased to either).
+        private static void CheckDescribeListItemSuppressedColourIsNotGrayTextOrWindowText(Checklist checklist)
+        {
+            checklist.Check(VibranceGUI.SuppressedForeColor != SystemColors.GrayText && VibranceGUI.SuppressedForeColor != SystemColors.WindowText,
+                string.Format("M7: the suppressed marker's own colour is neither GrayText nor WindowText, got {0}", VibranceGUI.SuppressedForeColor));
+        }
+
+        // M8. A null name never throws (C#'s null-tolerant "+=" already makes that true whether or
+        // not the guard exists - the suffix checks above exercise that path). What the "name ??
+        // string.Empty" guard alone is responsible for is the case where NEITHER suffix ever runs:
+        // without it, text would come back null instead of string.Empty. Mutation this guards:
+        // drop the guard (just "text = name;"), which this case - and only this case - can tell
+        // apart from the real code, since every other DescribeListItem check always appends at
+        // least one suffix.
+        private static void CheckDescribeListItemNullNameDoesNotThrow(Checklist checklist)
+        {
+            bool threw = false;
+            string text = null;
+            try
+            {
+                Color foreColor;
+                string toolTip;
+                VibranceGUI.DescribeListItem(null, false, false, out text, out foreColor, out toolTip);
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            checklist.Check(!threw && text == string.Empty,
+                string.Format("M8: a null name with neither flag set resolves to string.Empty, not null (lvi.Text = null is the failure this avoids), got threw={0} text={1}",
+                    threw, text == null ? "null" : "\"" + text + "\""));
+        }
+
+        // M9. Same independent-anchor technique as M7, applied to the two suffixes instead of the
+        // colour. M2/M3/M4/M8 all compare the composed text against VibranceGUI.SuppressedMarkerSuffix/
+        // UnconfirmedMarkerSuffix directly, so aliasing either constant to the OTHER constant's own
+        // value reads back as a match on both sides and nothing above would notice - the "(Off)"
+        // marker would render identically to "(?)" (or vice versa), silently erasing the distinction
+        // this whole feature exists to draw. Mutation this guards: SuppressedMarkerSuffix set equal
+        // to UnconfirmedMarkerSuffix's value, or UnconfirmedMarkerSuffix set equal to
+        // SuppressedMarkerSuffix's value - proven separately below, they are different edits.
+        // Both suffixes are const, so this comparison is folded to a literal true at compile
+        // time: M9 has force only because the fixture compiles in the SAME assembly as
+        // VibranceGUI.cs, which internal access already requires. Split this fixture into its
+        // own assembly and M9 would freeze the values from its last build and go stale against
+        // a rebuilt VibranceGUI - the classic cross-assembly const trap.
+        private static void CheckMarkerSuffixesAreDistinct(Checklist checklist)
+        {
+            checklist.Check(VibranceGUI.SuppressedMarkerSuffix != VibranceGUI.UnconfirmedMarkerSuffix,
+                string.Format("M9: the suppressed and unconfirmed suffixes are not the same text, got SuppressedMarkerSuffix=\"{0}\" UnconfirmedMarkerSuffix=\"{1}\"",
+                    VibranceGUI.SuppressedMarkerSuffix, VibranceGUI.UnconfirmedMarkerSuffix));
+        }
+
+        // N1-N3. Mutation this guards: RefreshToggledListItemAppearance's gate refreshing on every
+        // result (including WriteFailed/None/EngineNotReady, none of which ever flip
+        // ProfileToggleHelper's suppression set - see both proxies' own ToggleForegroundProfile),
+        // or not refreshing on one of the two toggled outcomes.
+        private static void CheckShouldRefreshOnlyOnConfirmedToggles(Checklist checklist)
+        {
+            bool onOk = VibranceGUI.ShouldRefreshListItemForToggleResult(ProfileToggleResult.ToggledOn);
+            bool offOk = VibranceGUI.ShouldRefreshListItemForToggleResult(ProfileToggleResult.ToggledOff);
+            bool noneOk = !VibranceGUI.ShouldRefreshListItemForToggleResult(ProfileToggleResult.NoConfiguredGameInForeground);
+            bool engineNotReadyOk = !VibranceGUI.ShouldRefreshListItemForToggleResult(ProfileToggleResult.EngineNotReady);
+            bool writeFailedOk = !VibranceGUI.ShouldRefreshListItemForToggleResult(ProfileToggleResult.WriteFailed);
+
+            checklist.Check(onOk && offOk && noneOk && engineNotReadyOk && writeFailedOk,
+                string.Format("N1-N3: refresh fires for ToggledOn/ToggledOff only, never for NoConfiguredGameInForeground/EngineNotReady/WriteFailed, got ToggledOn={0} ToggledOff={1} NoConfiguredGameInForeground={2} EngineNotReady={3} WriteFailed={4}",
+                    onOk, offOk, noneOk, engineNotReadyOk, writeFailedOk));
         }
 
         private static void InvokeNvidiaOnWinEventHook(string processName, IntPtr handle)
