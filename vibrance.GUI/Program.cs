@@ -32,6 +32,7 @@ namespace vibrance.GUI
         private const string ResolutionSelfTestMessageBoxCaption = "vibranceGUI resolution change self test";
         private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
+        private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
@@ -145,6 +146,22 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, ProfileToggleFixture.Run().ToArray()),
                     HotkeySelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Unlike every self test above, this one DOES touch real hardware, and is the only one
+            // that does so without asking first - --selftest-gamma-display below also touches real
+            // hardware, but only after its own confirmation prompt. See HdrVibranceFixture's own
+            // header comment for the full reasoning. In short: QueryDisplayConfig and
+            // DisplayConfigGetDeviceInfo (upstream #147's HDR detection) only ever READ display
+            // configuration, so unlike a gamma or resolution write this cannot change any display's
+            // state - and it is the only way anyone learns what a given machine actually reports.
+            // Precedent: VibranceRestoreFixture's AMD checks already read the real
+            // GetForegroundWindow() and Skip on a mismatch.
+            if (args.Contains("--selftest-hdr"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, HdrVibranceFixture.Run().ToArray()),
+                    HdrSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
