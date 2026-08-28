@@ -53,8 +53,25 @@ namespace vibrance.GUI.common
         private bool _hasUnconfirmedEntries;
         private bool _isForegroundConfirmationSubscribed;
 
-        private const string ToolTipExecutableUnconfirmed =
+        // internal (not private): DescribeListItem's own checks in ProfileToggleFixture compare
+        // against these constants directly, rather than hardcoding a second copy of the prose that
+        // could quietly drift out of sync with what actually ships.
+        internal const string ToolTipExecutableUnconfirmed =
             "Not detected yet. vibranceGUI has not seen this executable in the foreground, so this may be the wrong file. Double-click to change the executable.";
+        internal const string UnconfirmedMarkerSuffix = " (?)";
+
+        // The toggle hotkey's own marker (see DescribeListItem below ApplyApplicationListItemAppearance).
+        // A live status the user just set by pressing a key, not a data-quality warning like the
+        // "(?)" pair above - it gets its own suffix, tooltip and colour rather than reusing
+        // GrayText, which already means "this entry is broken", not "this is switched off".
+        internal const string SuppressedMarkerSuffix = " (Off)";
+        internal const string ToolTipSuppressed =
+            "This profile is switched off - vibranceGUI stays at your Windows level while this game is in the foreground. Press the toggle hotkey again to switch it back on.";
+        // Color.DarkOrange itself measures 2.33:1 against the ListView's white background (WCAG AA
+        // wants 4.5:1; the GrayText this replaces is 5.17:1). This shade measures 4.78:1 and still
+        // reads as the same orange. The suffix text carries the state on its own regardless, so
+        // this was never information conveyed by colour alone - just worth being legible.
+        internal static readonly Color SuppressedForeColor = Color.FromArgb(192, 80, 0);
 
         // WM_HOTKEY (winuser.h) - WndProc below dispatches on this with wParam ==
         // HotkeyRegistration.HotkeyId, the toggle hotkey's own fixed registration id.
@@ -801,7 +818,65 @@ namespace vibrance.GUI.common
             }
 
             ProfileToggleResult result = _v.ToggleForegroundProfile(hWnd, processName, processImagePath);
+            RefreshToggledListItemAppearance(result, processName, processImagePath);
             ApplyProfileToggleFeedback(result, processName, hWnd);
+        }
+
+        /// <summary>
+        /// Keeps the marker DescribeListItem draws in sync with a CONFIRMED toggle -
+        /// ToggledOn/ToggledOff only, the two outcomes where ProfileToggleHelper.SetSuppressed
+        /// actually ran (see both proxies' own ToggleForegroundProfile; WriteFailed/None/
+        /// EngineNotReady never flip it, so nothing needs redrawing for them).
+        ///
+        /// Runs unconditionally here, whether or not the window is visible right now -
+        /// ListViewItem.Text/ForeColor/ToolTipText are ordinary properties that keep their value
+        /// while hidden, so applying it now is what makes the marker already correct by the time
+        /// notifyIcon_MouseClick later reveals the window. Deliberately the only refresh seam:
+        /// a second one on the show path would only be able to drift out of sync with this one.
+        ///
+        /// FindMatch is re-run with the exact (processName, processImagePath) ToggleForegroundProfile's
+        /// own Decide just used. Usually the identical _applicationSettings reference, so it
+        /// resolves to the identical setting - the one exception is the narrow startup window
+        /// between ReadVibranceSettings reassigning this field via "out" and SetApplicationSettings
+        /// handing the proxy that same new list, where the proxy's own Decide still runs against
+        /// the constructor's original (empty) list. That never actually mismatches the setting
+        /// resolved here: an empty list can only make Decide return None, and
+        /// ShouldRefreshListItemForToggleResult below already excludes that outcome, so this
+        /// method never gets past its own gate while the two references disagree. A
+        /// lookup miss on the ListViewItem side (the matched profile's item does not exist yet) is
+        /// silently skipped, not an error: the item picks up the current suppression state on its
+        /// own the moment ApplyApplicationListItemAppearance creates it, because that method reads
+        /// ProfileToggleHelper.IsSuppressed fresh every time rather than from a snapshot.
+        /// </summary>
+        private void RefreshToggledListItemAppearance(ProfileToggleResult result, string processName, string processImagePath)
+        {
+            if (!ShouldRefreshListItemForToggleResult(result))
+            {
+                return;
+            }
+
+            ApplicationSetting setting = ApplicationSettingMatcher.FindMatch(_applicationSettings, processName, processImagePath);
+            if (setting == null)
+            {
+                return;
+            }
+
+            ListViewItem lvi = FindApplicationListItem(setting.FileName);
+            if (lvi != null)
+            {
+                ApplyApplicationListItemAppearance(lvi, setting);
+            }
+        }
+
+        /// <summary>
+        /// The gate RefreshToggledListItemAppearance opens on - pulled out, same reason as
+        /// DescribeListItem above, so ProfileToggleFixture pins the real condition instead of a
+        /// hand-copied mirror of it. True only for the two outcomes that actually flip
+        /// ProfileToggleHelper's suppression set (see both proxies' own ToggleForegroundProfile).
+        /// </summary>
+        internal static bool ShouldRefreshListItemForToggleResult(ProfileToggleResult result)
+        {
+            return result == ProfileToggleResult.ToggledOn || result == ProfileToggleResult.ToggledOff;
         }
 
         /// <summary>
@@ -1343,8 +1418,12 @@ namespace vibrance.GUI.common
         }
 
         /// <summary>
-        /// Renders the marker of an executable the game finder guessed. Only the display text is decorated,
-        /// never ApplicationSetting.Name, which is the key the foreground process name is compared against.
+        /// Renders both markers an application list item can carry. Only the display text is
+        /// decorated, never ApplicationSetting.Name, which is the key the foreground process name
+        /// is compared against. Reads ProfileToggleHelper.IsSuppressed fresh on every call, never
+        /// from a cached flag - see RefreshToggledListItemAppearance's own comment for why that is
+        /// what makes an item created AFTER a suppression already correct, with no separate
+        /// refresh needed.
         /// </summary>
         private void ApplyApplicationListItemAppearance(ListViewItem lvi, ApplicationSetting setting)
         {
@@ -1353,18 +1432,55 @@ namespace vibrance.GUI.common
                 return;
             }
 
-            if (setting.IsExecutableUnconfirmed)
+            string text;
+            Color foreColor;
+            string toolTip;
+            DescribeListItem(setting.Name, setting.IsExecutableUnconfirmed, ProfileToggleHelper.IsSuppressed(setting.Name),
+                out text, out foreColor, out toolTip);
+
+            lvi.Text = text;
+            lvi.ForeColor = foreColor;
+            lvi.ToolTipText = toolTip;
+        }
+
+        /// <summary>
+        /// The pure decision behind an application list item's marker - name suffix, colour and
+        /// tooltip - given both states an item can be in at once. Pulled out of
+        /// ApplyApplicationListItemAppearance, the one place that ever writes ListViewItem.Text/
+        /// ForeColor/ToolTipText, for the same reason HotkeyRegistration.EffectiveBinding and
+        /// ClearSuppressionIfNameChanged below are pulled out of their own callers: a fixture
+        /// cannot construct a real Form (the constructor calls getProxy(...)), so a check against
+        /// a hand-copied mirror of this logic would not be pinning the real gate at all.
+        ///
+        /// isUnconfirmed and isSuppressed are orthogonal - a guessed executable can be switched
+        /// off, or a confirmed one can be - so a doubly-marked item shows BOTH suffixes and BOTH
+        /// tooltip paragraphs; neither ever silently wins over the other. Suppression is the live
+        /// fact ("this is what the profile is doing RIGHT NOW") and takes the colour when both
+        /// apply - GrayText already means "this entry might be broken", the wrong message to give
+        /// a profile the user just switched off on purpose.
+        /// </summary>
+        internal static void DescribeListItem(string name, bool isUnconfirmed, bool isSuppressed,
+            out string text, out Color foreColor, out string toolTip)
+        {
+            text = name ?? string.Empty;
+            List<string> toolTipParts = new List<string>();
+
+            if (isSuppressed)
             {
-                lvi.Text = setting.Name + " (?)";
-                lvi.ForeColor = SystemColors.GrayText;
-                lvi.ToolTipText = ToolTipExecutableUnconfirmed;
+                text += SuppressedMarkerSuffix;
+                toolTipParts.Add(ToolTipSuppressed);
             }
-            else
+
+            if (isUnconfirmed)
             {
-                lvi.Text = setting.Name;
-                lvi.ForeColor = SystemColors.WindowText;
-                lvi.ToolTipText = string.Empty;
+                text += UnconfirmedMarkerSuffix;
+                toolTipParts.Add(ToolTipExecutableUnconfirmed);
             }
+
+            foreColor = isSuppressed
+                ? SuppressedForeColor
+                : (isUnconfirmed ? SystemColors.GrayText : SystemColors.WindowText);
+            toolTip = string.Join(Environment.NewLine + Environment.NewLine, toolTipParts.ToArray());
         }
 
         private ListViewItem FindApplicationListItem(string fileName)

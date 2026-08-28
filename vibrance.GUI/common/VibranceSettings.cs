@@ -213,8 +213,10 @@ namespace vibrance.GUI.common
 
         private string resolveApplicationName()
         {
-            // Never the display text of the list item: it may carry the "(?)" marker of an unconfirmed executable,
-            // and Name is the key which gets compared against the process name of the foreground window
+            // Never the display text of the list item: it may carry the "(?)" marker of an unconfirmed
+            // executable and/or the "(Off)" marker of a hotkey-suppressed profile (see
+            // VibranceGUI.DescribeListItem), and Name is the key which gets compared against the
+            // process name of the foreground window
             return Path.GetFileNameWithoutExtension(_filePath);
         }
 
