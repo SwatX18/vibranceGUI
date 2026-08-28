@@ -170,6 +170,10 @@
     <Compile Include="common\ProfileToggleHelper.cs" />
     <Compile Include="common\ProfileToggleFixture.cs" />
     <Compile Include="common\ApplicationSetting.cs" />
+    <Compile Include="common\IHdrStateReader.cs" />
+    <Compile Include="common\HdrVibranceHelper.cs" />
+    <Compile Include="common\HdrStateTracker.cs" />
+    <Compile Include="common\HdrVibranceFixture.cs" />
     <Compile Include="NVIDIA\NvidiaDynamicVibranceProxy.cs" />
     <Compile Include="NVIDIA\NvidiaTypes.cs" />
     <Compile Include="common\RegistryController.cs" />

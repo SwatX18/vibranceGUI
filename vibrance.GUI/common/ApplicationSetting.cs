@@ -22,6 +22,20 @@ namespace vibrance.GUI.common
         // foreground. Rendered as a "(?)" marker. Default false, so settings files written before
         // this feature load unchanged.
         public bool IsExecutableUnconfirmed { get; set; }
+        // Separate vibrance level to use while Windows reports this display as HDR (upstream #147).
+        // HdrVibranceHelper.HdrLevelUnset (-1) means "no separate HDR level configured" and is the
+        // only value a pre-v2.7 profile can ever have: XmlSerializer runs this initialiser and then
+        // finds no <HdrIngameLevel> element in the file to overwrite it with - the same mechanism
+        // that already keeps Brightness = 50 working on older files. -1 can never collide with a
+        // real level - both vendors' minimum level is 0.
+        //
+        // That mechanism is one-directional. Downgrading to a pre-v2.7 build and then saving -
+        // which needs no deliberate action, since VibranceGUI's settingsBackgroundWorker fires a
+        // full re-save 5 seconds after any trackbar scroll - re-serialises applicationData.xml from
+        // a type that has never heard of this property, permanently losing every configured
+        // HdrIngameLevel. Inherent to round-tripping the whole file through a type per version, not
+        // something this property could fix alone - noted here so nobody assumes a downgrade is lossless.
+        public int HdrIngameLevel { get; set; } = HdrVibranceHelper.HdrLevelUnset;
 
         public ApplicationSetting(){ }
 
