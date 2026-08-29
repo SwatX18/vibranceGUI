@@ -56,6 +56,20 @@ namespace vibrance.GUI.common
             CheckReattachedDeviceReenumeratesItsSupportedModes(checklist);
             CheckStickyEmptySupportedListHealsOnNextSuccessfulEnumeration(checklist);
 
+            // ResolutionAdoptionDebouncer coverage - the duration-based fix that sits one layer
+            // above Refresh (see R-A's own comment, immediately above
+            // CheckAdoptedForeignModeSelfHealsOnceItIsGone, for why Refresh itself stays
+            // unchanged). FakeResolutionAdoptionTimer fires synchronously on command, so - like
+            // every check above - none of these ever sleep in real time.
+            CheckDebounceDelaysAdoptionUntilTheIntervalElapses(checklist);
+            CheckDebounceRestartCollapsesRepeatedChangesIntoOneRefresh(checklist);
+            CheckDebounceCallbackMayReArmDuringItsOwnElapse(checklist);
+            CheckDebounceNeverLetsATransientForeignModeReachAdoption(checklist);
+            CheckDebounceAdoptsAGenuineChangeOnceItHasHeldStable(checklist);
+            CheckDebouncePreserveCapturedModeRunsImmediatelyAndCancelsAnyPending(checklist);
+            CheckDebounceCancelStopsAPendingCountdown(checklist);
+            CheckDebounceIntervalMatchesTheDocumentedValue(checklist);
+
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
             return checklist.Lines;
@@ -1046,9 +1060,10 @@ namespace vibrance.GUI.common
             checklist.Lines.Add(string.Empty);
         }
 
-        // R-A. Documents TODAY's behaviour on purpose, and carries the reasoning for why a
-        // reviewer-proposed "smarter" fix - skip re-capturing Item1 when the live mode matches a
-        // configured ApplicationSetting.ResolutionSettings entry - was REJECTED outright, not
+        // R-A. Documents WindowsResolutionRefresher.Refresh's OWN contract, which the duration-
+        // based fix (ResolutionAdoptionDebouncer.cs) deliberately leaves UNCHANGED, and carries the
+        // reasoning for why a value-based fix - skip re-capturing Item1 when the live mode matches
+        // a configured ApplicationSetting.ResolutionSettings entry - was REJECTED outright, not
         // merely postponed:
         //   1. A user can legitimately configure a game at the mode their desktop already runs at.
         //      That fix would then make their OWN desktop mode permanently un-capturable, and
@@ -1066,12 +1081,25 @@ namespace vibrance.GUI.common
         //      OBSERVATIONALLY IDENTICAL: both are a bare DisplaySettingsChanged plus a live mode
         //      that differs from the last capture. Nothing available at refresh time can tell them
         //      apart.
-        // Adopting a game's foreign mode self-heals the moment that mode goes away (this check);
-        // refusing to adopt a user's genuine desktop mode never heals, since nothing else in the
-        // program will ever re-capture it. The right future fix keys on DURATION, not value.
+        // These four reasons still bind, and still rule out a value-based fix inside Refresh
+        // itself. The fix that landed instead keys on DURATION, not value, and lives ONE LAYER UP
+        // from Refresh - in ResolutionAdoptionDebouncer, which decides which DisplaySettingsChanged
+        // notifications are even allowed to reach a Refresh call in the first place (see
+        // VibranceGUI.OnDisplaySettingsChanged). Refresh, driven directly the way every check in
+        // this file drives it, still adopts whatever is live the instant it runs, and still
+        // self-heals the moment a foreign mode goes away and another Refresh runs, exactly as
+        // this check has always documented - that remains correct and load-bearing: once the
+        // debouncer's own countdown finally does let a Refresh call through, Refresh must still
+        // capture whatever is live AT THAT LATER MOMENT with no special-casing of its own. What
+        // changed is that in production, a foreign mode which never survives DebounceIntervalMs
+        // now never gets a Refresh call to adopt it in the first place - see
+        // CheckDebounceNeverLetsATransientForeignModeReachAdoption and
+        // CheckDebounceAdoptsAGenuineChangeOnceItHasHeldStable below for that end-to-end guarantee,
+        // which this check cannot express since it never goes anywhere near
+        // ResolutionAdoptionDebouncer.
         private static void CheckAdoptedForeignModeSelfHealsOnceItIsGone(Checklist checklist)
         {
-            checklist.Lines.Add("With preserveCapturedMode false, a refresh adopts whatever mode is live - even a foreign one set with no profile applied - and self-heals back once that foreign mode is gone (today's stated, deliberate behaviour - see this check's own comment for why the 'match a configured ResolutionSettings entry' fix was rejected):");
+            checklist.Lines.Add("WindowsResolutionRefresher.Refresh itself is unchanged by the duration-based fix: with preserveCapturedMode false, a refresh STILL adopts whatever mode is live the instant it actually runs - even a foreign one set with no profile applied - and still self-heals back once that foreign mode is gone and another refresh runs (see this check's own comment for why a value-based fix inside Refresh was rejected, and why the real fix instead lives one layer up, in ResolutionAdoptionDebouncer, gating which DisplaySettingsChanged notifications ever reach a Refresh call at all):");
             ResolutionHelper.ResetForTests();
 
             const string deviceName = "FAKE-REFRESH-RA";
@@ -1340,6 +1368,309 @@ namespace vibrance.GUI.common
         }
 
         // ------------------------------------------------------------------
+        // ResolutionAdoptionDebouncer coverage (see ResolutionAdoptionDebouncer.cs and R-A's own
+        // comment, above CheckAdoptedForeignModeSelfHealsOnceItIsGone, for the full reasoning).
+        // FakeResolutionAdoptionTimer below fires synchronously on command - Elapse() - so, like
+        // every check above it, none of these ever sleep in real time.
+        // ------------------------------------------------------------------
+
+        // The basic shape: preserveCapturedMode false arms a countdown instead of running its
+        // callback immediately, and the callback runs exactly once that countdown elapses.
+        private static void CheckDebounceDelaysAdoptionUntilTheIntervalElapses(Checklist checklist)
+        {
+            checklist.Lines.Add("ResolutionAdoptionDebouncer.OnDisplaySettingsChanged(preserveCapturedMode: false, ...) arms a countdown instead of running its callback immediately, and the callback runs exactly once the countdown elapses:");
+
+            FakeResolutionAdoptionTimer timer = new FakeResolutionAdoptionTimer();
+            ResolutionAdoptionDebouncer debouncer = new ResolutionAdoptionDebouncer(timer);
+            int refreshCallCount = 0;
+            Action refresh = delegate { refreshCallCount++; };
+
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+
+            checklist.Check(timer.RestartCallCount == 1,
+                string.Format("Restart is called exactly once, got {0}", timer.RestartCallCount));
+            checklist.Check(refreshCallCount == 0,
+                "the refresh callback has not run yet - preserveCapturedMode false never runs it synchronously");
+            checklist.Check(timer.LastDelayMs == ResolutionAdoptionDebouncer.DebounceIntervalMs,
+                string.Format("Restart is armed with the class' own DebounceIntervalMs ({0}ms), got {1}ms",
+                    ResolutionAdoptionDebouncer.DebounceIntervalMs, timer.LastDelayMs));
+
+            timer.Elapse();
+
+            checklist.Check(refreshCallCount == 1,
+                string.Format("the refresh callback runs exactly once the countdown elapses, got {0} calls", refreshCallCount));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // A game switching between two resolutions of its own, or a user cycling through several
+        // desktop resolutions in a row, must reset the clock rather than stack a second pending
+        // refresh alongside the first - see ResolutionAdoptionDebouncer.OnDisplaySettingsChanged's
+        // own "Restart, not start only if nothing is pending" comment.
+        private static void CheckDebounceRestartCollapsesRepeatedChangesIntoOneRefresh(Checklist checklist)
+        {
+            checklist.Lines.Add("A second (and third) DisplaySettingsChanged arriving before the first countdown elapses restarts the clock rather than stacking a second pending refresh - only one refresh call ever runs, no matter how many notifications fire while nothing has elapsed yet:");
+
+            FakeResolutionAdoptionTimer timer = new FakeResolutionAdoptionTimer();
+            ResolutionAdoptionDebouncer debouncer = new ResolutionAdoptionDebouncer(timer);
+            int refreshCallCount = 0;
+            Action refresh = delegate { refreshCallCount++; };
+
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+
+            checklist.Check(timer.RestartCallCount == 3,
+                string.Format("Restart is called once per notification (3), got {0}", timer.RestartCallCount));
+            checklist.Check(refreshCallCount == 0, "no refresh has run yet after three notifications, none elapsed");
+
+            timer.Elapse();
+
+            checklist.Check(refreshCallCount == 1,
+                string.Format("elapsing the single, repeatedly-restarted countdown runs the refresh exactly once, got {0}", refreshCallCount));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // Pins a contract of IResolutionAdoptionTimer itself, not just of ResolutionAdoptionDebouncer's
+        // own logic: a callback invoked from Elapse() may call OnDisplaySettingsChanged again -
+        // re-arming the SAME timer instance from inside its own elapse - and that re-arm must
+        // survive, not be silently wiped by whatever cleanup Elapse() still does after invoking the
+        // callback. FakeResolutionAdoptionTimer.Elapse() models this by clearing its pending
+        // callback BEFORE invoking it (see that class' own comment), exactly the ordering
+        // FormsResolutionAdoptionTimer.OnTick uses for the same reason, on the real
+        // System.Windows.Forms.Timer - see that method's own comment for why nothing in this
+        // codebase can pin this ordering on the REAL timer the way this check pins it on the fake.
+        private static void CheckDebounceCallbackMayReArmDuringItsOwnElapse(Checklist checklist)
+        {
+            checklist.Lines.Add("A callback invoked from Elapse() may itself call OnDisplaySettingsChanged again, re-arming the timer from inside its own elapse - and that re-arm survives Elapse() returning, rather than being wiped by cleanup Elapse() still performs after invoking the callback:");
+
+            FakeResolutionAdoptionTimer timer = new FakeResolutionAdoptionTimer();
+            ResolutionAdoptionDebouncer debouncer = new ResolutionAdoptionDebouncer(timer);
+            int refreshCallCount = 0;
+            Action refresh = null;
+            refresh = delegate
+            {
+                refreshCallCount++;
+                // Re-arms from inside its own elapse - this is the scenario this check exists for.
+                debouncer.OnDisplaySettingsChanged(false, refresh);
+            };
+
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+            timer.Elapse();
+
+            checklist.Check(refreshCallCount == 1,
+                string.Format("the callback runs exactly once from this single Elapse() call, got {0}", refreshCallCount));
+            checklist.Check(timer.IsPending,
+                "the re-arm made from inside the callback survives - a new countdown is pending immediately after Elapse() returns, not wiped by Elapse()'s own post-invoke cleanup");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // The end-to-end guarantee R-A's own check cannot express, since it drives
+        // WindowsResolutionRefresher.Refresh directly and never goes anywhere near
+        // ResolutionAdoptionDebouncer: a foreign mode set with no profile applied, that reverts
+        // again before the debounce interval elapses (a game's own transient resolution change),
+        // never reaches Refresh at all - Item1 is never overwritten with it, not even
+        // momentarily, because Refresh is simply never called while the foreign mode is live.
+        private static void CheckDebounceNeverLetsATransientForeignModeReachAdoption(Checklist checklist)
+        {
+            checklist.Lines.Add("A foreign mode set with no profile applied, that reverts again before the debounce interval elapses (a game's own transient resolution change), never reaches WindowsResolutionRefresher.Refresh at all - Item1 is never overwritten with it, not even momentarily (regression test for the defect this branch fixes):");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-DEBOUNCE-TRANSIENT";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode desktop = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceName, desktop);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+
+            FakeResolutionAdoptionTimer timer = new FakeResolutionAdoptionTimer();
+            ResolutionAdoptionDebouncer debouncer = new ResolutionAdoptionDebouncer(timer);
+            int refreshCallCount = 0;
+            Action refresh = delegate
+            {
+                refreshCallCount++;
+                WindowsResolutionRefresher.Refresh(device, dict, lastKnown, attached, false, true, null);
+            };
+
+            // The initial capture is deliberately NOT routed through the debouncer - exactly like
+            // VibranceGUI's own constructor, which calls RebuildWindowsResolutionSettings(true)
+            // directly, undebounced: a brand new device has no prior capture to protect, so there
+            // is nothing yet for a countdown to guard against.
+            refresh();
+            checklist.Check(dict[deviceName].Item1.Equals(desktop), "the initial (undebounced) capture gets the desktop mode");
+
+            // A game (or anything else) changes the live mode with no profile applied - in reality
+            // this fires SystemEvents.DisplaySettingsChanged, routed through the debouncer exactly
+            // as VibranceGUI.OnDisplaySettingsChanged does.
+            Devmode foreign = BuildDevmode(1280, 720, 32, 60, 0);
+            device.SetCurrentMode(deviceName, foreign);
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+
+            checklist.Check(dict[deviceName].Item1.Equals(desktop),
+                "Item1 is untouched immediately after the foreign mode appears - the countdown has not elapsed yet");
+            checklist.Check(refreshCallCount == 1, "Refresh has not run a second time yet");
+
+            // The foreign mode goes away again - the game exited fullscreen, or exited outright -
+            // before the debounce interval elapsed. This also fires DisplaySettingsChanged.
+            device.SetCurrentMode(deviceName, desktop);
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+
+            checklist.Check(dict[deviceName].Item1.Equals(desktop), "Item1 is still untouched - still nothing has elapsed");
+            checklist.Check(refreshCallCount == 1, "still no second Refresh call - the second notification only restarted the countdown");
+
+            // Only now does the countdown elapse - and by now the live mode is back to the
+            // desktop's own, never the foreign one.
+            timer.Elapse();
+
+            checklist.Check(refreshCallCount == 2,
+                string.Format("elapsing runs Refresh exactly once more, got {0} total calls", refreshCallCount));
+            checklist.Check(dict[deviceName].Item1.Equals(desktop),
+                "Item1 is (re)captured as the desktop mode - the foreign mode was NEVER adopted, not even momentarily, because Refresh never ran while it was live");
+            checklist.Check(device.CallLog.Count == 0, "none of this ever touches the driver - every call above is a live-mode read, never a ChangeMode");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // The other half of the same guarantee: a genuine, LASTING desktop change - the user
+        // actually changing their resolution, with nothing reverting it before the interval
+        // elapses - IS adopted, once it has proven itself stable for the full debounce interval.
+        // Reason 4 in R-A's own comment is exactly why this has to work this way: at notification
+        // time there is nothing to distinguish this case from the transient one
+        // CheckDebounceNeverLetsATransientForeignModeReachAdoption covers - only elapsed stability
+        // does. "Adopt late, never refuse" (this fixture's own file header reasoning, and the
+        // asymmetry the task that produced this file was built around) is why a brief delay before
+        // Item1 catches up, rather than never adopting at all, is the accepted cost.
+        private static void CheckDebounceAdoptsAGenuineChangeOnceItHasHeldStable(Checklist checklist)
+        {
+            checklist.Lines.Add("A genuine desktop resolution change that is still live once the debounce interval elapses IS adopted into Item1, even though - immediately after the change, before the interval elapses - it reads exactly like the transient case above:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-DEBOUNCE-GENUINE";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Devmode original = BuildDevmode(1920, 1080, 32, 60, 0);
+            device.SetCurrentMode(deviceName, original);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> dict =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            Dictionary<string, ResolutionModeWrapper> lastKnown = new Dictionary<string, ResolutionModeWrapper>();
+            List<string> attached = new List<string> { deviceName };
+
+            FakeResolutionAdoptionTimer timer = new FakeResolutionAdoptionTimer();
+            ResolutionAdoptionDebouncer debouncer = new ResolutionAdoptionDebouncer(timer);
+            Action refresh = delegate
+            {
+                WindowsResolutionRefresher.Refresh(device, dict, lastKnown, attached, false, true, null);
+            };
+
+            refresh();
+            checklist.Check(dict[deviceName].Item1.Equals(original), "the initial (undebounced) capture gets the original mode");
+
+            // The user genuinely changes their desktop resolution - nothing reverts this before
+            // the interval below elapses.
+            Devmode changed = BuildDevmode(2560, 1440, 32, 144, 0);
+            device.SetCurrentMode(deviceName, changed);
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+
+            checklist.Check(dict[deviceName].Item1.Equals(original),
+                "Item1 still reads the OLD mode immediately after the change - not yet adopted, exactly like the transient case, since nothing at notification time can tell them apart");
+
+            timer.Elapse();
+
+            checklist.Check(dict[deviceName].Item1.Equals(changed),
+                "Item1 adopts the new mode once the debounce interval has elapsed with nothing having reverted it");
+            checklist.Check(device.CallLog.Count == 0, "none of this ever touches the driver - every call above is a live-mode read, never a ChangeMode");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // preserveCapturedMode true means a vibranceGUI apply is currently outstanding - Refresh
+        // never performs a live read for an existing device in that state at all (Item1 is
+        // preserved unconditionally - see Refresh's own top-of-method comment), so there is no
+        // adoption risk to debounce against, and the refresh must run immediately: a real apply in
+        // progress needs Item2/the reattach fallback (R7/R8 above) kept current right now, not
+        // delayed behind a countdown guarding against a risk that cannot occur in this state. Also
+        // proves a countdown armed from an earlier, since-superseded notification (back when
+        // preserveCapturedMode was still false) is cancelled, not left to fire later on top of this
+        // immediate one.
+        private static void CheckDebouncePreserveCapturedModeRunsImmediatelyAndCancelsAnyPending(Checklist checklist)
+        {
+            checklist.Lines.Add("ResolutionAdoptionDebouncer.OnDisplaySettingsChanged(preserveCapturedMode: true, ...) runs its callback immediately, with no countdown armed, and cancels any countdown already pending from an earlier, since-superseded notification:");
+
+            FakeResolutionAdoptionTimer timer = new FakeResolutionAdoptionTimer();
+            ResolutionAdoptionDebouncer debouncer = new ResolutionAdoptionDebouncer(timer);
+            int refreshCallCount = 0;
+            Action refresh = delegate { refreshCallCount++; };
+
+            // A countdown from an earlier notification, back when no profile was applied yet, is
+            // still pending.
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+            checklist.Check(timer.IsPending, "a countdown is pending after the first (preserveCapturedMode false) notification");
+
+            debouncer.OnDisplaySettingsChanged(true, refresh);
+
+            checklist.Check(refreshCallCount == 1,
+                string.Format("the refresh callback runs immediately and exactly once, got {0} calls", refreshCallCount));
+            checklist.Check(!timer.IsPending,
+                "the earlier pending countdown is cancelled, not left to fire later on top of the immediate refresh");
+            checklist.Check(timer.CancelCallCount == 1,
+                string.Format("Cancel is called exactly once, got {0}", timer.CancelCallCount));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // ResolutionAdoptionDebouncer.Cancel() (the public passthrough, not the internal
+        // preserveCapturedMode=true branch CheckDebouncePreserveCapturedModeRunsImmediatelyAndCancelsAnyPending
+        // already covers) is what VibranceGUI.CleanUp calls, in its own finally block, alongside
+        // unsubscribing SystemEvents.DisplaySettingsChanged - see that call site's own comment for
+        // why: a countdown already armed keeps ticking down independent of SystemEvents, so
+        // unsubscribing the event alone would not stop one already in flight from firing after the
+        // form is disposed.
+        private static void CheckDebounceCancelStopsAPendingCountdown(Checklist checklist)
+        {
+            checklist.Lines.Add("ResolutionAdoptionDebouncer.Cancel() stops a pending countdown outright - the callback never runs even once the interval would otherwise have elapsed (regression test for VibranceGUI.CleanUp's own shutdown-time call to this method):");
+
+            FakeResolutionAdoptionTimer timer = new FakeResolutionAdoptionTimer();
+            ResolutionAdoptionDebouncer debouncer = new ResolutionAdoptionDebouncer(timer);
+            int refreshCallCount = 0;
+            Action refresh = delegate { refreshCallCount++; };
+
+            debouncer.OnDisplaySettingsChanged(false, refresh);
+            checklist.Check(timer.IsPending, "a countdown is pending before Cancel() is called");
+
+            debouncer.Cancel();
+
+            checklist.Check(!timer.IsPending, "no countdown is pending after Cancel()");
+
+            timer.Elapse();
+
+            checklist.Check(refreshCallCount == 0,
+                string.Format("the refresh callback never runs - Cancel() stopped it before the interval elapsed, got {0} calls", refreshCallCount));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // Independently pins the documented interval's actual value - not merely that the class
+        // passes its own constant through wherever it is used
+        // (CheckDebounceDelaysAdoptionUntilTheIntervalElapses already proves that), but that the
+        // constant itself IS what this branch's own report says it is. A change to
+        // DebounceIntervalMs that nobody meant to make is caught here without anyone needing to
+        // remember to cross-check it against a number written down elsewhere.
+        private static void CheckDebounceIntervalMatchesTheDocumentedValue(Checklist checklist)
+        {
+            checklist.Lines.Add("ResolutionAdoptionDebouncer.DebounceIntervalMs is 2000ms - this branch's chosen (not measured; see the constant's own comment for why) debounce interval:");
+
+            checklist.Check(ResolutionAdoptionDebouncer.DebounceIntervalMs == 2000,
+                string.Format("DebounceIntervalMs is 2000, got {0}", ResolutionAdoptionDebouncer.DebounceIntervalMs));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // ------------------------------------------------------------------
         // Shared helpers.
         // ------------------------------------------------------------------
 
@@ -1529,6 +1860,63 @@ namespace vibrance.GUI.common
                 }
 
                 return result;
+            }
+        }
+
+        // The seam the ResolutionAdoptionDebouncer checks above drive - see
+        // ResolutionAdoptionDebouncer.cs's own IResolutionAdoptionTimer comment for the contract
+        // this stands in for. Elapse() fires the most recently armed callback synchronously, on
+        // the calling thread, on command - never a real Thread.Sleep or Application.DoEvents
+        // anywhere, which is what keeps every check above running exactly as instantly as the ones
+        // driving WindowsResolutionRefresher.Refresh directly. Mirrors FakeDisplayModeDevice's own
+        // call-count bookkeeping (CallLog, EnumerateCallCounts) rather than merely tracking the
+        // most recent call, since "was this called the right number of times" is exactly what
+        // several of those checks need to prove.
+        private class FakeResolutionAdoptionTimer : IResolutionAdoptionTimer
+        {
+            public int RestartCallCount;
+            public int CancelCallCount;
+            public int LastDelayMs;
+
+            private Action _pending;
+
+            public bool IsPending
+            {
+                get { return _pending != null; }
+            }
+
+            public void Restart(int delayMs, Action onElapsed)
+            {
+                RestartCallCount++;
+                LastDelayMs = delayMs;
+                // Replaces whatever was pending, exactly like the real
+                // System.Windows.Forms.Timer-backed implementation does by resetting Interval -
+                // never stacks a second pending callback alongside the first.
+                _pending = onElapsed;
+            }
+
+            public void Cancel()
+            {
+                CancelCallCount++;
+                _pending = null;
+            }
+
+            // _pending is read into a local and cleared to null BEFORE pending() runs, deliberately
+            // not after - mirrors FormsResolutionAdoptionTimer.OnTick's own ordering, for the same
+            // reason (see that method's comment): pending() is allowed to call Restart again,
+            // re-arming this very timer from inside its own elapse, and clearing _pending first is
+            // what lets that re-arm's assignment stick rather than being wiped by a
+            // "_pending = null" that would otherwise still be waiting to run AFTER pending()
+            // returns. CheckDebounceCallbackMayReArmDuringItsOwnElapse pins exactly this ordering -
+            // swapping these two statements is the mutation that check exists to catch.
+            public void Elapse()
+            {
+                Action pending = _pending;
+                _pending = null;
+                if (pending != null)
+                {
+                    pending();
+                }
             }
         }
 
