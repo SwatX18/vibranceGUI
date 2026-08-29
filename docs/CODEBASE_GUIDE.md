@@ -116,7 +116,7 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
 | I want to change… | Go to |
 |---|---|
 | What happens when a game gains or loses focus (the heart of the app) | `vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:263-386` (`OnWinEventHook`) and `vibrance.GUI/AMD/AmdDynamicVibranceProxy.cs:146-258` (`OnWinEventHook`) |
-| How a foreground window is matched to a watched game | the `FirstOrDefault` at `NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`) / `AmdDynamicVibranceProxy.cs:152` (`OnWinEventHook`) — `ApplicationSetting.Name` vs `Process.ProcessName`, case-insensitive |
+| How a foreground window is matched to a watched game | `ApplicationSettingMatcher.FindMatch` (`vibrance.GUI/common/ApplicationSettingMatcher.cs:47-83`), called from `NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`) / `AmdDynamicVibranceProxy.cs:152` (`OnWinEventHook`) — exact `ApplicationSetting.Name` vs `ProcessName` first, then the longest `InstallDirectory` that prefixes the process image path |
 | How foreground changes are detected at all | `vibrance.GUI/common/WinEventHook.cs` — one system-wide `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND` |
 | Which GPU vendor is chosen, and the "both drivers found" dialog | `vibrance.GUI/common/GraphicsAdapter.cs:84-109` (`GetAdapter`) |
 | Slider ranges, defaults, level→label mapping | `vibrance.GUI/Program.cs:213-244` (`Main`) (five numbers per vendor) and `vibrance.GUI/common/SettingsController.cs:246-255` (`ReadVibranceSettings`) (a second, inconsistent copy) |
@@ -150,7 +150,7 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
    `vibrance.GUI/NVIDIA/vibranceDLL.dll` is a PE32 i386 image (VERIFIED binary), and `PlatformTarget`
    is `x86` in all four configurations (`vibrance.GUI.csproj:32,43,64,73`, `PlatformTarget`).
 4. **The NVIDIA native layer is not in this repository.** `vibranceDLL.dll` is a checked-in binary
-   built 2017-01-02 from `juvlarN/vibranceDLL` (embedded PDB path, VERIFIED binary). Its 13 bound
+   built 2017-01-02 from `juvlarN/vibranceDLL` (embedded PDB path, VERIFIED binary). Its 12 bound
    exports are the entire NVIDIA capability surface; adding one means rebuilding that other project.
 5. **NVIDIA proxy state is `static`.** `_vibranceInfo`, `_applicationSettings`,
    `_windowsResolutionSettings`, `_gameScreen` and the hook handler are all static
@@ -364,7 +364,7 @@ vibranceGUI/
     │   └── WinEventHookEventArgs.cs   event payload; 4 of its 6 fields are dead
     │
     ├── NVIDIA/                    NVIDIA vendor path (§7)
-    │   ├── NvidiaDynamicVibranceProxy.cs   IVibranceProxy impl + 13 P/Invokes into vibranceDLL
+    │   ├── NvidiaDynamicVibranceProxy.cs   IVibranceProxy impl + 12 P/Invokes into vibranceDLL
     │   ├── NvidiaTypes.cs                  NV_DISPLAY_DVC_INFO, NvApiStatus (dead), NvSystemType
     │   ├── NvidiaVibranceValueWrapper.cs   raw DVC level → "50%".."100%" label map
     │   └── vibranceDLL.dll                 PREBUILT NATIVE BINARY, source is in another repo (§7.2)
@@ -617,7 +617,7 @@ flowchart TD
     C -->|"process already exited<br/>InvalidOperationException / ArgumentException"| X["swallowed — NO event dispatched"]
     C --> D["raise WinEventHookHandler<br/>with ProcessName + hwnd"]
     D --> E{"_applicationSettings.Count &gt; 0 ?"}
-    E -->|no| Y["do nothing at all<br/>(never reverts — see §12)"]
+    E -->|"no — empty list, still reverts"| K
     E -->|yes| F{"any ApplicationSetting.Name<br/>== e.ProcessName, case-insensitive?"}
 
     F -->|"match — APPLY"| G{"resolution change<br/>configured and allowed?"}
@@ -643,22 +643,38 @@ The mechanism underneath:
 - **The delegate is rooted** in an instance field (`WinEventHook.cs:183`) and the instance in a static
   (`:181`), so the classic "GC collected my callback" crash is avoided — by luck rather than by a
   `GCHandle`.
-- **The match rule** is one line in each proxy (`NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`),
+- **The match rule** is one call in each proxy (`NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`),
   `AmdDynamicVibranceProxy.cs:152`, `OnWinEventHook`):
 
   ```csharp
-  ApplicationSetting applicationSetting = _applicationSettings.FirstOrDefault(
-      x => string.Equals(x.Name, e.ProcessName, StringComparison.OrdinalIgnoreCase));
+  ApplicationSetting applicationSetting = _applicationSettings.Count > 0
+      ? ApplicationSettingMatcher.FindMatch(_applicationSettings, e.ProcessName, e.ProcessImagePath)
+      : null;
   ```
 
-  A watched game is "in front" iff the process owning the new foreground window has a `ProcessName`
-  (exe name without extension) that case-insensitively equals a stored `ApplicationSetting.Name`.
-  **The path is ignored.** `ApplicationSetting.FileName` is used for de-duplication, icon extraction
-  and pruning, never for matching — so *any* process named `csgo` triggers the `csgo` profile,
-  wherever it lives.
-- **The whole handler is wrapped in `if (_applicationSettings.Count > 0)`**
-  (`NvidiaDynamicVibranceProxy.cs:211`, `AmdDynamicVibranceProxy.cs:110`) — including the revert
-  branch. Delete your last watched application while a game is ingame and vibrance is never restored.
+  `FindMatch` (`common/ApplicationSettingMatcher.cs:47-83`) runs **two passes, and
+  never OR's them per entry**. First, an exact case-insensitive `ApplicationSetting.Name` vs
+  `ProcessName` match anywhere in the list — the old rule, unchanged (`:89-94`, `NameMatches`).
+  Only if no name matched does it try `InstallDirectory` as a path prefix of `e.ProcessImagePath`,
+  longest match winning (`:64-80`, `FindMatch`). The order is deliberate: a name is what the user
+  typed, a directory is an inference, and the settings list is silently reordered by an unrelated
+  edit — testing both together would let a wrong game-finder guess shadow the user's own entry.
+  Added on `work/directory-process-matching` (`4f3fd19`).
+
+  **The path is no longer ignored — but only through `InstallDirectory`,** which the game finder
+  fills in (`VibranceGUI.cs:1415-1421`, `AddProgramsBulk`) and the settings dialog reads back
+  (`VibranceSettings.cs:39`, `VibranceSettings`) and writes out again (`:113`,
+  `GetApplicationSetting`). `ApplicationSetting.FileName` is
+  still used only for de-duplication, icon extraction and pruning, never for matching. An entry added
+  by hand has no `InstallDirectory` at all, so for those the old behaviour stands exactly: *any*
+  process named `csgo` triggers the `csgo` profile, wherever it lives (**D27**).
+- **The `_applicationSettings.Count > 0` test no longer gates the whole handler.** **Fixed** on
+  `work/stability-pass` (`466de41`, issue #138): it is now only a short-circuit around the match
+  lookup, so an empty list yields a `null` `ApplicationSetting` and falls straight through to the
+  revert branch (`NvidiaDynamicVibranceProxy.cs:268-272` (`OnWinEventHook`),
+  `AmdDynamicVibranceProxy.cs:151-155`, `OnWinEventHook`). Deleting your last watched application
+  while its game holds the foreground now restores vibrance, the resolution and the gamma ramp on
+  the next foreground change (**D9**).
 - **`WinEventHookEventArgs` is mostly dead.** `MainWindowTitle`, `WindowText` and `Process`
   (`common/WinEventHookEventArgs.cs:9-15`) are assigned (or in `Process`'s case not even that) and
   never read. The `Process.GetProcessById` round-trip exists solely to obtain `ProcessName`.
@@ -671,12 +687,12 @@ open when you are debugging a vendor-specific report:
 | Aspect | NVIDIA (`NvidiaDynamicVibranceProxy.cs:263-386`, `OnWinEventHook`) | AMD (`AmdDynamicVibranceProxy.cs:146-258`, `OnWinEventHook`) |
 |---|---|---|
 | "Is this really the foreground?" | native `isWindowActive(ref hwnd)` (`:342`, `OnWinEventHook`) — the DLL compares against `GetForegroundWindow()` (VERIFIED binary) | inline `GetForegroundWindow() != processHandle` (`:228`, `OnWinEventHook`), own P/Invoke at `:143-144` |
-| Which display gets the game level | per-window, via `getAssociatedNvidiaDisplayHandle(screen.DeviceName)` (`:216`, `:299-315`) | `Screen.FromHandle(...).DeviceName` matched against the ADL adapter's `DisplayName` (`AmdAdapter32.cs:140`, `SetSaturationOnDisplay`) |
-| Redundant-write suppression | **yes** — `equalsDVCLevel(...)` gate at `:218,254,263`, i.e. a driver *read* before every write | **none** — every foreground change writes saturation |
-| Order of operations on game focus | resolution change → set DVC on that display | **first resets all displays to the Windows level** (`:127`), then applies the game level (`:180` (`OnWinEventHook`)/`:187`, `OnWinEventHook`) — a visible double-write |
-| `affectPrimaryMonitorOnly` on focus loss | honoured, with an extra bail-out if the new window is on a different screen than `_gameScreen` (`:254-266`) | **not honoured** — always `SetSaturationOnAllDisplays` (`:153`) |
-| `_gameScreen` assignment | assigned outside the resolution-change branch, but still inside the `displayHandle != -1 && !equalsDVCLevel(...)` gate (`:218`; assignment at `:291`, `OnWinEventHook`) | **only inside the resolution-change `if`** (`:173`, `OnWinEventHook`) — so on AMD `_gameScreen` stays `null` unless a resolution change fired, which in turn disables AMD's own restore-resolution branch at `:236` (`OnWinEventHook`) |
-| On exit (`HandleDvcExit`) | honours `affectPrimaryMonitorOnly` (`:783-800`) | ignores it, rewrites every display (`:119-129`, `HandleDvcExit`) |
+| Which display gets the game level | per-window, via `getAssociatedNvidiaDisplayHandle(screen.DeviceName)`, now behind the `INvidiaVibranceDevice` seam (`:679-691`, `TryResolveDisplayHandle`) and called from `ApplyGameVibranceLevel` (`:453`) — the old `GetApplicationDisplayHandle` helper is deleted | `Screen.FromHandle(...).DeviceName` matched against the ADL adapter's `DisplayName` (`AmdAdapter32.cs:140`, `SetSaturationOnDisplay`) |
+| Redundant-write suppression | **yes, per display** — an `IsAtLevel` (`equalsDVCLevel`) read before every write, in `ApplyGameVibranceLevel` (`:464`), `AllDisplaysAtLevel` (`:547`) and `RestoreOneDisplay` (`:573`) | **coarse only** — one `userVibranceSettingDefault != IngameLevel` test gates the whole apply (`:176`, `OnWinEventHook`); with no per-display read-back, a game level that differs from the Windows level is rewritten on every foreground change |
+| Order of operations on game focus | vibrance → resolution change → gamma ramp (`:305`, `:316`, `:334`, `OnWinEventHook`) | the same order (`:180`/`:187`, `:205`, `:221`, `OnWinEventHook`). The unconditional "reset every display to the Windows level" that used to run *first*, making this a visible double-write, is **gone** (`62541a6`, on `master` since `4fb598c`) — see **D16** |
+| `affectPrimaryMonitorOnly` on focus loss | honoured. The extra bail-out that skipped the restore unless the new window was on `_gameScreen` is **gone**: `RestoreWindowsVibranceLevel` restores every display holding a game level, plus the primary, wherever the focus landed (`:505-536`, `RestoreWindowsVibranceLevel`; `0c3057b`, issues #95/#144) | **now honoured** — the restore branches on the flag instead of always calling `SetSaturationOnAllDisplays` (`:265-297`, `RestoreWindowsVibranceLevel`; `0c3057b`, issues #60/#36) |
+| `_gameScreen` assignment | assigned on any match not toggled off by hotkey, before any driver write (`:291`, `OnWinEventHook`); the old `displayHandle != -1 && !equalsDVCLevel(...)` gate around it is gone | the same (`:173`, `OnWinEventHook`). It used to sit **only inside the resolution-change `if`**, so with resolution switching off it stayed `null` and disabled AMD's own restore-resolution branch at `:236` (`OnWinEventHook`) — fixed by `62541a6` (**D18**) |
+| On exit (`HandleDvcExit`) | honours `affectPrimaryMonitorOnly` (`:783-800`, `HandleDvcExit`) | **now honours it too** — `HandleDvcExit` goes through the same `RestoreWindowsVibranceLevel` as the focus-loss path (`:119-129`, `HandleDvcExit`) |
 
 ### 6.4 The optional resolution switch
 
@@ -1001,11 +1017,18 @@ source; the ellipses mark text abbreviated for this table only.
 | Balloon tips: "Registered to Autostart!" / "Registering to Autostart failed!" / "Updated Autostart Path!" / "Updating Autostart Path failed!" / "Unregistered from Autostart!" / "Unregistering from Autostart failed!" | `VibranceGUI.cs:501-523` (`checkBoxAutostart_CheckedChanged`) | the autostart checkbox — **including when it is set programmatically at startup** ([§9.5](#95-autostart)) |
 | Status label: "Initializing…" → "Running!" (green) → "Closing…" (red) | `VibranceGUI.Designer.cs:301` (`InitializeComponent`); `VibranceGUI.cs:435-436` (`backgroundWorker_ProgressChanged`); `:971-972` (`CleanUp`) | "Running!" appears only if `isInitialized` was true (`:329-331`, `backgroundWorker_DoWork`) — if it never turns green, the vendor layer failed silently (**D23**) |
 | "NVAPI Unloaded: …" | `VibranceGUI.cs:440` (`backgroundWorker_ProgressChanged`) | **never** — `ReportProgress(2)` is never called (**§12.7**) |
-| "NVAPI Error" (a native `MessageBoxA` caption) | string inside `vibranceDLL.dll` (VERIFIED binary), used by the native `printError` | not reachable from the 13 bound exports |
+| "NVAPI Error" (a native `MessageBoxA` caption) | string inside `vibranceDLL.dll` (VERIFIED binary), used by the native `printError` | not reachable from the 12 bound exports |
 
-Everything not in this table **fails silently**: a `false` return from `initializeLibrary`, every
-every `setDVCLevel` failure (return values discarded at `NvidiaDynamicVibranceProxy.cs:202,232,261,265,372,375`),
-and every ADL return code (`AmdAdapter32.cs:20,157`, `Init`).
+Everything not in this table **fails silently to the user** — less so than it once did, but the
+difference is "written to the log file", not "shown". Still discarded outright: a `false` return from
+`initializeLibrary`; `AdlMainControlCreate` (`AmdAdapter32.cs:20,27`, `Init`); and the one NVIDIA write
+path that ignores `INvidiaVibranceDevice.SetLevel`'s result — the all-displays restore branch taken
+when "affect primary monitor only" is off (`NvidiaDynamicVibranceProxy.cs:524`,
+`RestoreWindowsVibranceLevel`). Now checked, but only logged: the other two NVIDIA write paths,
+`ApplyGameVibranceLevel` (`:470`) and `RestoreOneDisplay` (`:580`), which report once per device
+through `Program.LogSafely`; and `AdlDisplayColorSet`, whose status `SetSaturationOnDisplay` now
+returns (`AmdAdapter32.cs:157-168`) — though only `ToggleForegroundProfile` reads that return
+value (`AmdDynamicVibranceProxy.cs:337,351,369,377`).
 
 ---
 
@@ -1017,7 +1040,7 @@ and every ADL return code (`AmdAdapter32.cs:20,157`, `Init`).
 VibranceGUI (shell)
    │  IVibranceProxy
    ▼
-NvidiaDynamicVibranceProxy.cs        C#, 13 P/Invokes, ALL state static
+NvidiaDynamicVibranceProxy.cs        C#, 12 P/Invokes, ALL state static
    │  DllImport("vibranceDLL.dll"), CallingConvention.StdCall
    ▼
 vibranceDLL.dll                      prebuilt native C++ (PE32 i386, 2017) — SOURCE NOT IN THIS REPO
@@ -1058,19 +1081,19 @@ as `CallingConvention.StdCall` **with no `this` argument** — see the hazard in
 | # | C# declaration (`NvidiaDynamicVibranceProxy.cs`) | Native signature | CharSet |
 |---|---|---|---|
 | 1 | `bool initializeLibrary()` `:45-50` | `bool()` | Auto |
-| 2 | `bool unloadLibrary()` `:52-57` (`initializeLibrary`) | `bool()` | Auto |
-| 3 | `int getActiveOutputs(int[], int[])` `:60-65` (`unloadLibrary`) | `int(int* const[], int* const[])` | Auto |
-| 4 | `void enumeratePhsyicalGPUs(int[])` `:67-72` (`getActiveOutputs`) | `void(int* const[])` | Auto |
-| 5 | `bool getGpuName(int[], StringBuilder)` `:74-79` (`enumeratePhsyicalGPUs`) | `bool(int* const[], char*)` | **Ansi** |
-| 6 | `bool getDVCInfo(ref NvDisplayDvcInfo, int)` `:81-86` (`getGpuName`) | `bool(NV_DISPLAY_DVC_INFO*, int)` | **Ansi** |
-| 7 | `int enumerateNvidiaDisplayHandle(int)` `:88-93` (`getDVCInfo`) | `int(int)` | Auto |
-| 8 | `bool setDVCLevel(int, int)` `:95-100` (`enumerateNvidiaDisplayHandle`) | `bool(int,int)` | Auto |
-| 9 | `bool isWindowActive(ref IntPtr)` `:102-107` (`setDVCLevel`) | `bool(HWND*)` | Auto |
-| 10 | `bool isCsgoStarted(ref IntPtr)` `:83-88` | `bool(HWND*)` — **never called** | **Ansi** |
-| 11 | `bool equalsDVCLevel(int, int)` `:109-114` (`isWindowActive`) | `bool(int,int)` | Auto |
-| 12 | `NvSystemType getGpuSystemType(int)` `:116-121` (`equalsDVCLevel`) | `int(int*)` — **native takes a pointer, C# passes an `int` by value** | Auto |
-| 13 | `int getAssociatedNvidiaDisplayHandle(string, int)` `:123-128` (`getGpuSystemType`) | `int(const char*, int)` | **Ansi** |
-| — | `GetWindowTextLength` / `GetWindowTextA` `:104-108` | `user32.dll` — **both dead** | — |
+| 2 | `bool unloadLibrary()` `:52-57` (`unloadLibrary`) | `bool()` | Auto |
+| 3 | `int getActiveOutputs(int[], int[])` `:60-65` (`getActiveOutputs`) | `int(int* const[], int* const[])` | Auto |
+| 4 | `void enumeratePhsyicalGPUs(int[])` `:67-72` (`enumeratePhsyicalGPUs`) | `void(int* const[])` | Auto |
+| 5 | `bool getGpuName(int[], StringBuilder)` `:74-79` (`getGpuName`) | `bool(int* const[], char*)` | **Ansi** |
+| 6 | `bool getDVCInfo(ref NvDisplayDvcInfo, int)` `:81-86` (`getDVCInfo`) | `bool(NV_DISPLAY_DVC_INFO*, int)` | **Ansi** |
+| 7 | `int enumerateNvidiaDisplayHandle(int)` `:88-93` (`enumerateNvidiaDisplayHandle`) | `int(int)` | Auto |
+| 8 | `bool setDVCLevel(int, int)` `:95-100` (`setDVCLevel`) | `bool(int,int)` | Auto |
+| 9 | `bool isWindowActive(ref IntPtr)` `:102-107` (`isWindowActive`) | `bool(HWND*)` | Auto |
+| 10 | `bool equalsDVCLevel(int, int)` `:109-114` (`equalsDVCLevel`) | `bool(int,int)` | Auto |
+| 11 | `NvSystemType getGpuSystemType(int)` `:116-121` (`getGpuSystemType`) | `int(int*)` — **native takes a pointer, C# passes an `int` by value** | Auto |
+| 12 | `int getAssociatedNvidiaDisplayHandle(string, int)` `:123-128` (`getAssociatedNvidiaDisplayHandle`) | `int(const char*, int)` | **Ansi** |
+| — | *(removed)* `bool isCsgoStarted(ref IntPtr)` | was bound and never called; **deleted** by `62541a6`, on `master` since `4fb598c`. The export itself is still in the DLL — see [§7.6](#76-what-each-native-call-really-does-verified-binary) | — |
+| — | *(removed)* `GetWindowTextLength` / `GetWindowTextA` | `user32.dll`, both dead; **deleted** by the same commit. The identically named pair in `common/WinEventHook.cs:24` (`GetWindowTextLength`) / `:27` (`GetWindowTextA`) is a different, still-live binding | — |
 
 **The typo `enumeratePhsyicalGPUs` is in the exported symbol itself**, so it must be preserved verbatim
 in any rebinding. Do not "fix" the spelling on the C# side.
@@ -1128,7 +1151,7 @@ pointer. **This works, and the reason it works is fragile:**
 - **VERIFIED (binary):** the constructor `??0vibrance@vibranceDLL@@QAE@XZ` at RVA `0x2f70` is
   `8b c1 c3` — `mov eax, ecx; ret`. The destructor at `0x2f80` is a bare `ret`. **The class carries no
   instance state**; everything lives in module globals at `0x10028328`–`0x1002835c`.
-- **VERIFIED (binary):** none of the 13 bound exports reads the incoming `ECX`. For example
+- **VERIFIED (binary):** none of the bound exports reads the incoming `ECX`. For example
   `setDVCLevel` (RVA `0x2c20`) is
   `push ebp; mov ebp,esp; push [ebp+0Ch]; push 0; push [ebp+08h]; call [NvAPI_SetDVCLevel]; add esp,0Ch; test eax,eax; sete al; pop ebp; ret 8`
   — arguments come only from `[ebp+8]`/`[ebp+0Ch]`, and cleanup is callee-side `ret 8`, byte-for-byte
@@ -1157,8 +1180,8 @@ tested.
 | `getDVCInfo` (`0x2bf0`) | Writes `0x00010010` into `info.version` itself, then `NvAPI_GetDVCInfo(handle, 0, &info)` — **outputId hardcoded to 0**. |
 | `setDVCLevel` (`0x2c20`) | `NvAPI_SetDVCLevel(handle, 0, level)` — outputId hardcoded to 0, **no clamping**; the level passes straight through. |
 | `equalsDVCLevel` (`0x2b90`) | Builds its own `NV_DISPLAY_DVC_INFO`, calls `NvAPI_GetDVCInfo`, returns `currentLevel == level`. **Every "do I need to write?" check is a real driver round-trip, executed inside the WinEvent callback.** |
-| `enumerateNvidiaDisplayHandle` (`0x2c40`) | The critical one. `NvAPI_EnumNvidiaDisplayHandle(index, &h)`: status `0` → return `h`; status `-7` (`NVAPI_END_ENUMERATION`) → return `-1`; **any other status falls into the success path and returns the untouched local, i.e. `0`.** This is the engine behind the runaway loop in [§7.9](#79-nvidia-specific-failure-modes). |
-| `getAssociatedNvidiaDisplayHandle` (`0x2da0`) | `NvAPI_GetAssociatedNvidiaDisplayHandle(szName, &h)`; returns `h` on success, **`-1` on any failure**. The `int length` parameter is **entirely unused**, which makes the `GCHandle.Alloc(deviceName, Pinned)` / `Free()` dance at `:307-309` pure ceremony — the marshaller copies the string to a native ANSI buffer regardless, and pinning a managed string does nothing for the callee. |
+| `enumerateNvidiaDisplayHandle` (`0x2c40`) | The critical one. `NvAPI_EnumNvidiaDisplayHandle(index, &h)`: status `0` → return `h`; status `-7` (`NVAPI_END_ENUMERATION`) → return `-1`; **any other status falls into the success path and returns the untouched local, i.e. `0`.** Unchanged — this was the engine behind the runaway loop in [§7.9](#79-nvidia-specific-failure-modes), which the C#-side bound now stops (**D1**). |
+| `getAssociatedNvidiaDisplayHandle` (`0x2da0`) | `NvAPI_GetAssociatedNvidiaDisplayHandle(szName, &h)`; returns `h` on success, **`-1` on any failure**. The `int length` parameter is **entirely unused**, which is why the `GCHandle.Alloc(deviceName, Pinned)` / `Free()` dance that used to wrap this call was **deleted** on `work/vibrance-restore` (`0c3057b`): the marshaller copies the string to a native ANSI buffer regardless, and pinning a managed string does nothing for the callee. `TryResolveDisplayHandle` (`NvidiaDynamicVibranceProxy.cs:679-691`) now calls it directly, returning `-1` itself for a null or empty `deviceName`. |
 | `isWindowActive` (`0x2b60`) | `GetForegroundWindow()`; `false` if NULL, else `*hwnd == foreground`. |
 | `isCsgoStarted` (`0x2b40`) | `FindWindowW(NULL, L"Counter-Strike: Global Offensive")`, stores the result through the pointer, and **always returns TRUE** (`mov al,1`). Hardcoded to one game title; unused from C#. |
 | `unloadLibrary` (`0x2df0`) | `NvAPI_Unload()`, returns `status == 0`. |
@@ -1166,31 +1189,40 @@ tested.
 Note the pattern: **`outputId` is hardcoded to `0` in both `getDVCInfo` and `setDVCLevel`**, so
 vibranceGUI can only ever address a GPU's first output.
 
-### 7.7 C#-side initialisation, and the startup reset users notice
+### 7.7 C#-side initialisation, and the startup reset it used to cause
 
 `InitializeProxy()` (`NvidiaDynamicVibranceProxy.cs:215-261`), in order:
 
-1. `enumeratePhsyicalGPUs` into an `int[64]` (`NvapiMaxPhysicalGpus = 64`, `:119`).
+1. `enumeratePhsyicalGPUs` into an `int[64]` (`NvapiMaxPhysicalGpus = 64`, `:132`).
 2. For every non-zero handle, `getGpuSystemType(handle)`; if **any** returns `NvSystemTypeUnknown`,
    show *"VibranceProxy failed to initialize! Graphics card system type (Desktop / Laptop) is
    unknown!"*, set `isInitialized = false` and **return** (`:225-233`, `InitializeProxy`).
-3. `EnumerateDisplayHandles()` (`:427-440`) — calls `enumerateNvidiaDisplayHandle(i)` for
-   `i = 0,1,2,…` **until it returns `-1`**, appending each handle.
+3. `EnumerateDisplayHandles()` (`:405-408`), which delegates to the
+   bounded, deduping overload at `:427-440` (`EnumerateDisplayHandles`): `enumerateNvidiaDisplayHandle(i)`
+   for `i = 0 … NvapiMaxDisplays-1`, stopping early on `-1` and skipping any handle already seen. It
+   used to be unbounded (issue #138) — see **D1**.
 4. `getActiveOutputs` → `_vibranceInfo.activeOutput` (**never read anywhere**).
 5. `getGpuName` → `_vibranceInfo.szGpuName` (**never displayed**); `:240` (`InitializeProxy`) allocates a dead
    `char[64] sz`.
-6. `_vibranceInfo.defaultHandle = enumerateNvidiaDisplayHandle(0)`.
-7. `getDVCInfo(ref info, defaultHandle)`; **if `info.currentLevel != userVibranceSettingDefault`,
-   write `userVibranceSettingDefault`** (`:197-204`).
-8. `isInitialized = true`.
+6. `isInitialized = true` (`:260`, `InitializeProxy`).
 
-Step 7 has a behavioural consequence that is easy to miss and that users do notice.
-`InitializeProxy` runs from the constructor (`:194`, `NvidiaDynamicVibranceProxy`), and `_vibranceInfo` was default-initialised three
-lines earlier (`:191`, `NvidiaDynamicVibranceProxy`), so **`userVibranceSettingDefault` is still `0` at that moment**. The saved
-Windows level is not pushed in until the startup worker reaches
-`VibranceGUI.cs:337` (`backgroundWorker_DoWork`). Net effect: **launching vibranceGUI on NVIDIA momentarily forces Digital Vibrance
-to neutral (0 / "50%") on the primary display, then re-applies the saved value.** The AMD path performs
-no equivalent write at init.
+**Two steps are gone.** `InitializeProxy` used to continue with
+`_vibranceInfo.defaultHandle = enumerateNvidiaDisplayHandle(0)` and then, via `getDVCInfo` /
+`setDVCLevel`, write `userVibranceSettingDefault` to that handle. Both were removed on
+`work/vibrance-restore` (`0c3057b`, issues #60/#36); the reasoning is recorded in place at
+`:244-259` (`InitializeProxy`).
+
+That removed write had a behavioural consequence users did notice. `InitializeProxy` runs from the
+constructor (`:194`, `NvidiaDynamicVibranceProxy`), and `_vibranceInfo` was default-initialised three
+lines earlier (`:191`, `NvidiaDynamicVibranceProxy`), so `userVibranceSettingDefault` was still `0` at
+that moment — the saved Windows level is not pushed in until the startup worker reaches
+`VibranceGUI.cs:337` (`backgroundWorker_DoWork`). Net effect, **before `0c3057b`**: launching
+vibranceGUI on NVIDIA momentarily forced Digital Vibrance to neutral (0 / "50%") on whatever display
+handle `0` happened to name — not necessarily the primary, and not a display
+`affectPrimaryMonitorOnly` was ever consulted about — then re-applied the saved value. **That
+write no longer happens** (**D15**). Neither vendor writes DVC at initialisation now; the Windows level
+first reaches the driver on a non-game foreground event after `SetVibranceWindowsLevel` has run, which
+is what the `isWindowsLevelKnown` guard enforces (`:508-511`, `RestoreWindowsVibranceLevel`).
 
 Also note the "system type unknown" dialog in step 2 is a **hardware-sounding message for a software
 failure**: the DLL returns `NvSystemTypeUnknown` for *any* NvAPI failure in `getGpuSystemType`
@@ -1207,9 +1239,9 @@ laptop-specific rejection message that the README implies exists
 | Neutral / default | `0` | `NvapiDefaultLevel = 0` (`:155`) — displayed as "50%" |
 | Slider min / max / default | `0` / `63` / `0` | `Program.cs:239-242` (`Main`) → `VibranceGUI.cs:142-143` (`VibranceGUI`), `VibranceSettings.cs:32-34` (`VibranceSettings`) |
 | Slider → driver | **identity** — the trackbar value *is* the DVC level | `VibranceGUI.cs:365` (`trackBarWindowsLevel_Scroll`), `VibranceSettings.cs:78,109` (`trackBarIngameLevel_Scroll`) |
-| Slider → label | `NvidiaVibranceValueWrapper.Find(x).Percentage` | `Program.cs:69` |
+| Slider → label | `NvidiaVibranceValueWrapper.Find(value).Percentage` | `common/TrackbarLabelHelper.cs:17` (`ResolveVibranceLabelLevel`) |
 | Clamping | **driver-side only** — the DLL passes the level through unmodified (VERIFIED binary) | `setDVCLevel` RVA `0x2c20` |
-| Driver-reported range | `minLevel`/`maxLevel` are fetched (`:198`) and **ignored** | `NvidiaTypes.cs:14-15` |
+| Driver-reported range | **never queried** — `getDVCInfo` is still bound but is now called from nowhere, so `minLevel`/`maxLevel` are never even read | `NvidiaDynamicVibranceProxy.cs:81-86`; `NVIDIA/NvidiaTypes.cs:14-15` |
 
 `NvidiaVibranceValueWrapper` (`vibrance.GUI/NVIDIA/NvidiaVibranceValueWrapper.cs`) maps raw levels to
 the percentages the NVIDIA Control Panel shows:
@@ -1236,25 +1268,39 @@ Desktop = 2`). Useful `NvApiStatus` values when reading the DLL analysis:
 
 ### 7.9 NVIDIA-specific failure modes
 
-**Issue #138 — "extreme CPU usage when no dedicated GPU connected" — INFERENCE, well supported.**
-There is a concrete infinite loop spanning the C#/native boundary:
+**Issue #138 — "extreme CPU usage when no dedicated GPU connected" — the mechanism was real and the
+C# half of it is now bounded (`466de41`, `work/stability-pass`).** What it was:
 
-- `EnumerateDisplayHandles()` (`:427-440`) is `for (int i = 0, displayHandle = 0; displayHandle != -1; i++)`
-  and **terminates only on `-1`**.
-- **VERIFIED (binary):** `enumerateNvidiaDisplayHandle` returns `-1` *only* for
-  `NVAPI_END_ENUMERATION (-7)`; for any other non-zero status it returns `0`.
+- `EnumerateDisplayHandles()` was `for (int i = 0, displayHandle = 0; displayHandle != -1; i++)`
+  and **terminated only on `-1`**.
+- **VERIFIED (binary), and still true today:** `enumerateNvidiaDisplayHandle` returns `-1` *only* for
+  `NVAPI_END_ENUMERATION (-7)`; for any other non-zero status it returns `0`. `vibranceDLL.dll` has
+  not been rebuilt, so this half is exactly as it was.
 - On a machine with `nvapi.dll` present but no usable NVIDIA GPU, the expected statuses are
   `NVAPI_NVIDIA_DEVICE_NOT_FOUND (-6)` or `NVAPI_API_NOT_INITIALIZED (-4)` — **neither is `-7`**.
-- Result: the loop never exits, hammering a P/Invoke into the driver as fast as it can while appending
-  `0` to `displayHandles` — one core pinned at 100 % **plus unbounded memory growth**. It runs inside
-  the proxy constructor, on the UI thread, so **the window never even appears**.
+- Result: the loop never exited, hammering a P/Invoke into the driver as fast as it could while
+  appending `0` to `displayHandles` — one core pinned at 100 % **plus unbounded memory growth**. It
+  ran inside the proxy constructor, on the UI thread, so **the window never even appeared**.
+
+The loop is now `for (int i = 0; i < NvapiMaxDisplays; i++)` (`:430`, `EnumerateDisplayHandles`) with
+`NvapiMaxDisplays = NvapiMaxPhysicalGpus * NvapiAdvancedDisplayHeads` = 256 (`:152`, `:139`), and it
+drops handles it has already seen (`:436-437`). On that same no-GPU machine it now makes at most 256
+P/Invokes, once, and returns `[0]`; both restore paths skip the null handle `0` (`:520-523`,
+`RestoreWindowsVibranceLevel`; `:543-546`, `AllDisplaysAtLevel`). The bound and the dedupe are driven
+by a stub in `StabilityFixture.CheckDisplayHandleEnumeration` (`common/StabilityFixture.cs:43`), so
+both are checkable with no GPU and no prebuilt DLL.
+
+**Read that as "the loop can no longer run away", not "issue #138 is confirmed closed."** The symptom
+was never reproduced here, so the link from this loop to the CPU reports remains **INFERENCE**; and
+the native half is untouched, so making `enumerateNvidiaDisplayHandle` return `-1` for every non-`0`
+status is still an available second fix that would need a rebuild of `juvlarN/vibranceDLL`.
 
 **Silent dead GUI.** If `initializeLibrary` returns `false` (broken NvAPI, missing entry points), the
 constructor skips `InitializeProxy`, `isInitialized` stays `false`, and no dialog is shown at all
 (`:192-201`, `NvidiaDynamicVibranceProxy`). The user sees an open window with everything greyed out and the status label never
 turning green.
 
-**Hard crash on a bad DLL.** `Marshal.PrelinkAll` (`Program.cs:234`, `Main`) resolves all 13 entry points
+**Hard crash on a bad DLL.** `Marshal.PrelinkAll` (`Program.cs:234`, `Main`) resolves all 12 entry points
 eagerly and is not inside a `try`/`catch`, so a missing or renamed export throws
 `EntryPointNotFoundException` on the startup thread. `LoadUnmanagedLibraryFromResource` does not check
 `LoadLibrary`'s result, and `File.WriteAllBytes` throws if the target file is locked (e.g. by another
@@ -1270,9 +1316,11 @@ mechanisms, strongest first:
    advice that is actively wrong for a hybrid machine.
 2. **Optimus (Intel iGPU + NVIDIA dGPU) ⇒ silently does nothing.** On muxless Optimus the panel is
    driven by the Intel iGPU, so `NvAPI_GetAssociatedNvidiaDisplayHandle("\\.\DISPLAY1")` fails and the
-   DLL returns `-1` (VERIFIED binary). `GetApplicationDisplayHandle` returns `-1` (`:299-315`), the
-   guard `displayHandle != -1` at `:218` fails, and the handler exits without applying vibrance and
-   without any message.
+   DLL returns `-1` (VERIFIED binary). `ApplyGameVibranceLevel` treats `-1` (and the null handle `0`)
+   as unresolvable (`:453-462`, `ApplyGameVibranceLevel`) and skips the vibrance write. Since
+   `0c3057b` that no longer aborts the whole handler — the resolution and gamma-ramp work still
+   runs, and the failure is written to the log once per device (`:459-461`, `ApplyGameVibranceLevel`)
+   — but there is still no message and still no vibrance.
 3. **dGPU powered down ⇒ "system type is unknown".** `InitializeProxy` calls `getGpuSystemType` for
    **every** non-zero handle (`:221-235`, `InitializeProxy`); one failure anywhere aborts init with that dialog.
 4. **Multi-GPU reporting is index-0 only.** `getGpuName` and `getActiveOutputs` only look at
@@ -1458,15 +1506,18 @@ one).
 | Raw ADL range used | `0 … 300` | `Program.cs:221-222` (`Main`) |
 | Neutral / default | `100` | `Program.cs:220,223` (`Main`); `SettingsController.cs:244` (`ReadVibranceSettings`) |
 | Slider → driver | **identity** — passed straight to `ADL_Display_Color_Set(…, SATURATION, value)` | `AmdAdapter32.cs:157-161` (`SetSaturationOnDisplay`) |
-| Slider → label | `x => x.ToString()` — a raw number, no unit | `Program.cs:51` |
+| Slider → label | `string.Format("{0}%", value)` — **a percentage, not the raw number** | `common/TrackbarLabelHelper.cs:19` (`ResolveVibranceLabelLevel`) → `:48-51` (`ResolvePercentageLabelLevel`) |
 | Clamping / validation | **none anywhere in the app** | — |
 | Driver-reported range | **never queried** — `ADL_Display_Color_Get` is bound and dead | `ADL.cs:189-203` |
 
-**UNCERTAIN:** the `0..300` bound is hardcoded with a `// todo` beside it
-(`SettingsController.cs:107-109`) and is never reconciled with what the driver actually reports. AMD's
-own saturation control is commonly `0..200` with `100` neutral. Whether values above the driver's
-maximum are clamped, rejected or applied is unverified — and since `AdlDisplayColorSet`'s return code is
-discarded, **the app cannot tell either way**.
+**UNCERTAIN:** the `0..300` bound is still hardcoded and still never reconciled with what the driver
+actually reports. The `// todo` that used to sit beside the literal `100`/`300` in `SettingsController`
+is gone — `62541a6` replaced both literals with `AmdDynamicVibranceProxy.AmdDefaultLevel`/
+`AmdMaxLevel` (`AMD/AmdDynamicVibranceProxy.cs:15-17`) — but that only named the numbers, it did
+not derive them. AMD's own saturation control is commonly `0..200` with `100` neutral. Whether values
+above the driver's maximum are clamped, rejected or applied is unverified: `AdlDisplayColorSet`'s
+status **is** checked now (`AmdAdapter32.cs:157-168`, `SetSaturationOnDisplay`), but an `ADL_OK` says
+nothing about whether the value was clamped on the way in, so **the app still cannot tell either way**.
 
 ### 8.6 Resource management on the AMD path
 
@@ -1566,7 +1617,9 @@ identity-ish fields: `Name` is the runtime match key, `FileName` is the de-dupli
 **Read** — `ReadVibranceSettings` (`:241-373`):
 
 1. Pick `defaultLevel`/`maxLevel` from the vendor: NVIDIA `0`/`63` from the proxy constants
-   (`:246-250`, `ReadVibranceSettings`); AMD **hardcoded `100`/`300` with a `// todo`** (`:251-255`, `ReadVibranceSettings`).
+   (`:246-250`, `ReadVibranceSettings`); AMD `100`/`300`, also from proxy constants since `62541a6`
+   (`:251-255`, `ReadVibranceSettings` → `AMD/AmdDynamicVibranceProxy.cs:15-17`), which replaced the
+   two literals and the `// todo` that used to sit beside them without changing either number.
 2. `if (!IsFileExisting(ini) || !IsFileExisting(xml))` → return all defaults (`:257-268`, `ReadVibranceSettings`). Note the
    **logical OR**: deleting only `applicationData.xml` also resets the vibrance level and both
    checkboxes.
@@ -1793,7 +1846,7 @@ and it will throw `NullReferenceException` if `FileName` is null (reachable from
 
 ### 11.2 `VibranceInfo`
 
-`vibrance.GUI/common/Definitions.cs:7-42` (`isInitialized`) — `[StructLayout(LayoutKind.Sequential)] public struct`. The
+`vibrance.GUI/common/Definitions.cs:7-42` — `[StructLayout(LayoutKind.Sequential)] public struct`. The
 attribute is a leftover; the struct holds a `String` and a `List<int>` and is never marshalled.
 
 | Field | Type | Alive? |
@@ -1839,7 +1892,7 @@ parameterless constructor for XML and one taking a `Devmode` (`:18-25`).
 `vibrance.GUI/common/GraphicsAdapter.cs:12-18` — `Unknown = 0, Nvidia = 1, Amd = 2, Ambiguous = 3`.
 `Ambiguous` means both vendor driver DLLs were found in `SysWOW64`; it is a fatal condition for
 startup, not a preference to resolve ([§6.1](#61-startup)). The companion `GraphicsAdapterHelper` lives
-in the same file (`:40-393`, `DisplayAdapterInfo`).
+in the same file (`:40-393`).
 
 ### 11.5 `ProcessExplorerEntry`
 
@@ -1857,8 +1910,8 @@ assigned; `WindowText` and `MainWindowTitle` are assigned and never read.
 
 ### 11.7 Win32 types in `ResolutionHelper.cs`
 
-`Devmode` (`:568-670`, `Dmdfo`) is a faithful `DEVMODEA` — `[StructLayout(Sequential, CharSet = Ansi)]` with two
-32-character `ByValTStr` name fields and the documented field order; `Pointl` (`:673-679`, `dmPanningHeight`) carries
+`Devmode` (`:568-670`) is a faithful `DEVMODEA` — `[StructLayout(Sequential, CharSet = Ansi)]` with two
+32-character `ByValTStr` name fields and the documented field order; `Pointl` (`:673-679`) carries
 `dmPosition`. The enums match `winuser.h`: `DispChange` (`:549-558`;
 `Successful=0, Restart=1, Failed=-1, Badmode=-2, Notupdated=-3, Badflags=-4, Badparam=-5`), `Dmdfo`
 (`:560-566` (`Dmdfo`); `Default=0, Stretch=1, Center=2`) and `ChangeDisplaySettingsFlags` (`:682-696`). None of
@@ -1897,20 +1950,29 @@ established fact in a bug report or a commit message.
 
 | Issue | Symptom | Mechanism | Confidence |
 |---|---|---|---|
-| **#138** | extreme CPU usage when no dedicated GPU is connected | **D1** below — an infinite loop between `EnumerateDisplayHandles` and the native `enumerateNvidiaDisplayHandle` | **INFERENCE**, well supported (native side VERIFIED binary) |
+| **#138** | extreme CPU usage when no dedicated GPU is connected | **D1** below — an unbounded loop between `EnumerateDisplayHandles` and the native `enumerateNvidiaDisplayHandle`. **Fixed** on `work/stability-pass` (`466de41`): the C# loop is now bounded and deduped | mechanism **INFERENCE**, well supported (native side VERIFIED binary); the symptom itself was never reproduced, so the fix removes the mechanism rather than confirming the issue closed |
 | **#114 / #132** *(fixed on `work/resolution-change`)* | `Changing the resolution failed: DispChangeBadflags`, repeatedly, in Valorant and elsewhere | **D2**/**D58**/**D59** below — a modal box on the callback thread, a success read from the wrong `ChangeDisplaySettingsEx` call, a `_windowsResolutionSettings` snapshot that never learned about a user-initiated desktop resolution change (**D58** — probably #114's actual complaint), and a `DmDisplayFixedOutput`-inclusive equality guard that could re-fire a real mode set forever (**D59** — fits #132's "it keeps on saying that") | message/repeat path is **certain**; the root cause of the underlying `-4` is still **UNCERTAIN** (originates inside `user32`) |
 | **#150 / #145 / #142** | hybrid and dual-GPU laptops, AMD chipset + NVIDIA GPU, dual-GPU desktops | **D3** below — four independent mechanisms, the strongest being that any machine with both vendors' drivers present is classified `Ambiguous` and refused | **INFERENCE** |
 | **#144** | vibrance does not reset to the Windows level when the program closes | **D4** below — the reset happens only on the clean `FormClosing` path *and* only if `isInitialized`; abnormal exit restores nothing, and a dropped foreground event can strand the level | **INFERENCE** for the dropped-event half; the abnormal-exit half is **certain** |
 
-**D1 — NVIDIA display-handle enumeration can never terminate.** `EnumerateDisplayHandles()`
-(`vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:405-408`, `EnumerateDisplayHandles`) loops until
-`enumerateNvidiaDisplayHandle` returns `-1`. **VERIFIED (binary):** that export returns `-1` *only* for
+**D1 — FIXED on `work/stability-pass` (`466de41`, issue #138). NVIDIA display-handle enumeration
+could never terminate.** `EnumerateDisplayHandles()` looped until `enumerateNvidiaDisplayHandle`
+returned `-1`. **VERIFIED (binary), and still true:** that export returns `-1` *only* for
 `NVAPI_END_ENUMERATION (-7)`; for any other non-zero status it falls into the success path and returns
 `0`. On a machine with `nvapi.dll` present but no usable NVIDIA GPU, the expected statuses are `-6`
-(`NVAPI_NVIDIA_DEVICE_NOT_FOUND`) or `-4` (`NVAPI_API_NOT_INITIALIZED`), so the loop spins forever —
+(`NVAPI_NVIDIA_DEVICE_NOT_FOUND`) or `-4` (`NVAPI_API_NOT_INITIALIZED`), so the loop spun forever —
 one core at 100 % plus unbounded growth of `displayHandles` — inside the proxy constructor on the UI
-thread, so the window never appears. Fix on either side: bound the loop (`i < NvapiMaxPhysicalGpus` or a
-sane display cap) and/or make the native function return `-1` for every non-`0` status.
+thread, so the window never appeared. Fixed on the C# side only: the loop is bounded at
+`NvapiMaxDisplays` (`vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:430`, `EnumerateDisplayHandles`)
+and dedupes as it goes (`:436-437`), both driven by a stub in
+`StabilityFixture.CheckDisplayHandleEnumeration` (`common/StabilityFixture.cs:43`).
+
+**Two things did not change, and both matter before anyone calls #138 closed.** The native side still
+returns `0` for every non-`-7` failure — `vibranceDLL.dll` was not rebuilt, so "make that export
+return `-1` for every non-`0` status" is still the other half of the fix, and still needs the
+`juvlarN/vibranceDLL` repository. And the symptom was never reproduced at runtime: the link from this
+loop to the reported CPU usage is still **INFERENCE**, so what landed is "this loop can no longer run
+away", not a confirmed fix for the issue.
 
 **D2 — FIXED on `work/resolution-change`. The resolution failure dialog was modal, on the callback
 thread, and self-repeating.** The old `ResolutionHelper.ChangeResolutionEx` showed
@@ -1967,8 +2029,10 @@ registry write re-fired on **every** foreground event, forever. Fixed by
 **D3 — hybrid/dual-GPU systems.** Four mechanisms, strongest first (all **INFERENCE**, detailed in
 [§7.9](#79-nvidia-specific-failure-modes)): (a) `GraphicsAdapter.cs:86-95` (`GetAdapter`) returns `Ambiguous` whenever
 both vendor DLLs exist in SysWOW64 and `Program.cs:255-261` (`Main`) then quits, showing DDU advice that is wrong
-for a hybrid machine; (b) on muxless Optimus `getAssociatedNvidiaDisplayHandle` returns `-1`, the guard
-at `NvidiaDynamicVibranceProxy.cs:218` fails and nothing happens, silently; (c) a powered-down dGPU
+for a hybrid machine; (b) on muxless Optimus `getAssociatedNvidiaDisplayHandle` returns `-1`, so
+`ApplyGameVibranceLevel` skips the vibrance write (`NvidiaDynamicVibranceProxy.cs:453-462`) — since
+`0c3057b` it logs once per device and lets the rest of the handler run, but the user still sees
+nothing; (c) a powered-down dGPU
 makes `getGpuSystemType` fail, which the DLL flattens to `Unknown`, which aborts init with a
 hardware-sounding dialog (`:225-233`, `InitializeProxy`); (d) GPU name and active outputs are read from `gpuHandles[0]`
 only.
@@ -1979,8 +2043,8 @@ only.
 ingame level, and **the resolution is never restored on exit at all**, even on the clean path. Separately,
 if the process that raised a foreground event has already exited when `Process.GetProcessById` runs, the
 exception is swallowed and **no event is dispatched** (`common/WinEventHook.cs:253-260`, `WinEventProc`) — so the event
-that would have reverted vibrance when a game exits can simply be lost. The third contributor is **D9**
-below. There is no persisted "we changed this, restore it next time" record anywhere.
+that would have reverted vibrance when a game exits can simply be lost. The third contributor,
+**D9**, is fixed. There is no persisted "we changed this, restore it next time" record anywhere.
 
 ### 12.2 Crashes and data loss
 
@@ -2010,10 +2074,14 @@ to `300` read on NVIDIA gives `ArgumentOutOfRangeException` at `VibranceSettings
 **`StackOverflowException`, which .NET cannot catch**. Full description in
 [§9.7](#97-the-cross-vendor-settings-hazard).
 
-**D9 — deleting the last watched application strands the vibrance.** Both handlers wrap *both* branches
-in `if (_applicationSettings.Count > 0)` (`NvidiaDynamicVibranceProxy.cs:211`,
-`AmdDynamicVibranceProxy.cs:110`), so removing the last profile while a game is ingame means the revert
-branch never runs again.
+**D9 — FIXED on `work/stability-pass` (`466de41`, issue #138). Deleting the last watched
+application stranded the vibrance.** Both handlers used to wrap *both* branches in
+`if (_applicationSettings.Count > 0)`, so removing the last profile while a game was ingame meant the
+revert branch never ran again — vibrance, the resolution and the gamma ramp all stuck, with no
+way back short of restarting. The test now only short-circuits the match lookup: an empty list yields
+a `null` `ApplicationSetting` and falls through to the revert branch
+(`NvidiaDynamicVibranceProxy.cs:268-272` (`OnWinEventHook`), `AmdDynamicVibranceProxy.cs:151-155`,
+`OnWinEventHook`).
 
 **D10 — settings changed within five seconds of exit are lost**, because the save is a
 `Thread.Sleep(5000)` debounce (`VibranceGUI.cs:403-407`, `settingsBackgroundWorker_DoWork`) and `CleanUp` does not flush it. If the form is
@@ -2039,25 +2107,48 @@ exception, after the file has already been truncated by `XmlWriter.Create`.
 **D14 — the AMD load clamp contradicts the AMD slider range.** Slider is `0..300`
 (`Program.cs:221-222`, `Main`); reload clamps to `defaultLevel(100)..maxLevel(300)`
 (`SettingsController.cs:253-254,359-360`, `ReadVibranceSettings`), so any saved desktop saturation below 100 resets to 100 on
-the next launch. The `// todo` at `SettingsController.cs:107` marks the spot.
+the next launch. **Still open.** The `// todo` that used to mark the spot is gone — `62541a6`
+replaced the hardcoded `100`/`300` beside it with
+`AmdDynamicVibranceProxy.AmdDefaultLevel`/`AmdMaxLevel` (`AMD/AmdDynamicVibranceProxy.cs:15-17`) —
+but that only moved the numbers: the lower bound of the clamp is still `defaultLevel`, not
+`AmdMinLevel`.
 
-**D15 — NVIDIA momentarily resets Digital Vibrance to 0 at startup.** `InitializeProxy` reads the
-current DVC level and writes `userVibranceSettingDefault`, which is still `0` at that moment
-(`NvidiaDynamicVibranceProxy.cs:143,197-204`); the saved value is only applied later from
-`VibranceGUI.cs:337` (`backgroundWorker_DoWork`). Detail in [§7.7](#77-c-side-initialisation-and-the-startup-reset-users-notice).
+**D15 — FIXED on `work/vibrance-restore` (`0c3057b`, issues #60/#36). NVIDIA momentarily reset
+Digital Vibrance to 0 at startup.** `InitializeProxy` used to read the DVC level of whatever display
+`enumerateNvidiaDisplayHandle(0)` happened to name and write `userVibranceSettingDefault` to it — a
+value still `0` at that point, because the saved level is not pushed in until `VibranceGUI.cs:337`
+(`backgroundWorker_DoWork`). Every launch therefore stamped `0` onto an arbitrary display, which on a
+multi-monitor machine was often not the primary and was never one `affectPrimaryMonitorOnly` had been
+consulted about. The write is deleted, with the reasoning recorded in place at
+`NvidiaDynamicVibranceProxy.cs:244-259` (`InitializeProxy`); `RestoreWindowsVibranceLevel`'s
+`isWindowsLevelKnown` guard (`:508-511`, `RestoreWindowsVibranceLevel`) stops a foreground event that
+lands before `SetVibranceWindowsLevel` from writing the still-unknown level in its place. Detail in
+[§7.7](#77-c-side-initialisation-and-the-startup-reset-it-used-to-cause).
 
-**D16 — AMD double-writes on every game focus.** The handler first resets *all* displays to the Windows
-level (`AmdDynamicVibranceProxy.cs:276`, `RestoreWindowsVibranceLevel`) and then applies the game level (`:180` (`OnWinEventHook`)/`:187`, `OnWinEventHook`) — a visible
-flash, and it happens on every foreground event because AMD has **no redundant-write suppression** at
-all (NVIDIA gates its writes with `equalsDVCLevel`).
+**D16 — FIXED by `62541a6` (on `master` since `4fb598c`). AMD double-wrote on every game focus.**
+The apply branch used to call `SetSaturationOnAllDisplays(userVibranceSettingDefault)` *first* and then
+apply the game level — a visible flash on every foreground event. The reset-first call is gone;
+the handler now writes the game level only, behind a `userVibranceSettingDefault != IngameLevel` test
+(`AmdDynamicVibranceProxy.cs:176`, `OnWinEventHook`). **Partly open:** that test is one comparison
+against the Windows level, not a per-display read-back, so AMD still has nothing equivalent to
+NVIDIA's `equalsDVCLevel` gate and still rewrites the game level on every foreground change while a
+game is in front.
 
-**D17 — AMD ignores "affect primary monitor only" when reverting and on exit.** The revert path always
-calls `SetSaturationOnAllDisplays` (`AmdDynamicVibranceProxy.cs:276`, `RestoreWindowsVibranceLevel`), and so does `HandleDvcExit`
-(`:119-129`, `HandleDvcExit`), despite the flag being stored (`:131-134`, `SetAffectPrimaryMonitorOnly`).
+**D17 — FIXED on `work/vibrance-restore` (`0c3057b`, issues #60/#36). AMD ignored "affect primary
+monitor only" when reverting and on exit.** Both the revert path and `HandleDvcExit` called
+`SetSaturationOnAllDisplays` unconditionally, stomping a second monitor's level even with the
+checkbox on. Both now go through `RestoreWindowsVibranceLevel` (`AmdDynamicVibranceProxy.cs:265-297`),
+which branches on the flag (`:274`) and, in the primary-only branch,
+writes only the displays this application actually applied a game level to, plus the primary. The flag
+is still stored at `:131-134` (`SetAffectPrimaryMonitorOnly`), as before.
 
-**D18 — AMD's `_gameScreen` is only assigned inside the resolution-change branch**
-(`AmdDynamicVibranceProxy.cs:173`, `OnWinEventHook`), so with resolution switching off it stays `null`, which in turn
-disables AMD's own restore-resolution branch at `:236` (`OnWinEventHook`). NVIDIA assigns it outside the resolution-change branch, but still inside the `displayHandle != -1 && !equalsDVCLevel(...)` gate (`:218`; assignment at `:291`, `OnWinEventHook`).
+**D18 — FIXED by `62541a6` (on `master` since `4fb598c`). AMD's `_gameScreen` was only
+assigned inside the resolution-change branch**, so with resolution switching off it stayed `null`,
+which in turn disabled AMD's own restore-resolution branch at `:236` (`OnWinEventHook`). It is now
+assigned on any match not toggled off by hotkey, before any driver write
+(`AmdDynamicVibranceProxy.cs:173`, `OnWinEventHook`). NVIDIA assigns it the same way (`:291`,
+`OnWinEventHook`); the `displayHandle != -1 && !equalsDVCLevel(...)` gate that used to wrap the NVIDIA
+assignment went with `0c3057b`.
 
 **D19 — the "system type is unknown" dialog is a hardware-sounding message for a software failure.**
 **VERIFIED (binary):** the DLL returns `NvSystemTypeUnknown` for *any* NvAPI failure in
@@ -2095,9 +2186,17 @@ the next save for another reason.
 `WritePrivateProfileString` uses `EntryPoint = "WritePrivateProfileString"` with the default ANSI charset
 (`:27-29`, `WritePrivateProfileString`). Harmless for today's ASCII values; a trap for any future non-ASCII value.
 
-**D27 — matching ignores the executable path.** Any process whose `ProcessName` equals a configured
-`Name` triggers that profile, wherever it lives (`NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`),
-`AmdDynamicVibranceProxy.cs:152`, `OnWinEventHook`), even though the full path is stored in `FileName`.
+**D27 — matching ignores the executable path — NARROWED on `work/directory-process-matching`
+(`4f3fd19`).** It used to be name-only: any process whose `ProcessName` equalled a configured `Name`
+triggered that profile, wherever it lived. `ApplicationSettingMatcher.FindMatch`
+(`common/ApplicationSettingMatcher.cs:47-83`) now falls back to a longest-prefix match of
+the process image path against `ApplicationSetting.InstallDirectory` when no name matches, which is
+what both proxies call (`NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`),
+`AmdDynamicVibranceProxy.cs:152`, `OnWinEventHook`). **Still open for the name pass**, which is the
+one that fires most of the time: it is unchanged and still exact-name-only (`:89-94`, `NameMatches`),
+so a profile carrying no `InstallDirectory` — every hand-added entry — still matches any process of
+that name anywhere on disk. The directory pass only ever *adds* matches; it never rejects one made by
+name.
 
 **D28 — the startup blind spot.** The hook only fires on transitions, so a game already in the
 foreground when vibranceGUI starts gets nothing until the user alt-tabs away and back.
@@ -2107,18 +2206,18 @@ foreground when vibranceGUI starts gets nothing until the user alt-tabs away and
 **D29 — the `__thiscall`-as-`StdCall` binding depends on the C++ class staying stateless.**
 VERIFIED binary analysis in
 [§7.5](#75-the-__thiscall-as-stdcall-binding--the-single-biggest-contributor-hazard). Adding a member
-field to the C++ `vibrance` class breaks all 13 P/Invokes.
+field to the C++ `vibrance` class breaks all 12 P/Invokes.
 
 **D30 — bool returns may carry stale high bytes. INFERENCE, unverified at runtime.** The exports set
 only `AL`; C# marshals a `bool` return as a 4-byte `BOOL`. A failed `initializeLibrary` could therefore
 be observed as `true`. Cheap to test; would explain "it says Running but nothing happens" reports.
 
 **D31 — `getActiveOutputs` has an `int[]` vs `int*[]` type mismatch across the boundary** and is
-functionally dead (`NvidiaDynamicVibranceProxy.cs:60-65` (`unloadLibrary`), `:238` (`InitializeProxy`); native RVA `0x2d20`). Its result is
+functionally dead (`NvidiaDynamicVibranceProxy.cs:60-65` (`getActiveOutputs`), `:238` (`InitializeProxy`); native RVA `0x2d20`). Its result is
 stored in `VibranceInfo.activeOutput`, which nothing reads.
 
 **D32 — `getGpuSystemType` is declared taking an `int` in C# and an `int*` in C++**
-(`NvidiaDynamicVibranceProxy.cs:116-121`, `equalsDVCLevel`). It works only because NvAPI GPU handles *are* pointers and the
+(`NvidiaDynamicVibranceProxy.cs:116-121`, `getGpuSystemType`). It works only because NvAPI GPU handles *are* pointers and the
 process is 32-bit; the type lie will bite anyone porting to x64.
 
 **D33 — the native DLL does not null-check `NvAPI_GetAssociatedNvidiaDisplayHandle`** at init
@@ -2132,9 +2231,14 @@ only a GPU's first output can ever be addressed.
 real `NvAPI_GetDVCInfo` call (VERIFIED binary), and the revert path can call it once per display
 (`NvidiaDynamicVibranceProxy.cs:538-553`, `AllDisplaysAtLevel`) — all on the UI thread.
 
-**D36 — no ADL return code is ever checked.** `AdlMainControlCreate` (`AmdAdapter32.cs:20,27`),
-`AdlAdapterNumberOfAdaptersGet` (`:24`) and above all **`AdlDisplayColorSet` (`:157`, `SetSaturationOnDisplay`)** discard their
-results, so an AMD failure is invisible to the app and to the user.
+**D36 — most ADL return codes are still ignored, but no longer the one that matters.**
+`AdlMainControlCreate` (`AmdAdapter32.cs:20,27`, `Init`) and `AdlAdapterNumberOfAdaptersGet` (`:24`,
+`Init`) still discard their results. **`AdlDisplayColorSet` no longer does:** its status is compared
+against `AdlSuccess` and reported through `SetSaturationOnDisplay`'s `bool` return (`:157-168`), which
+also null-checks the delegate first. Only `ToggleForegroundProfile` reads that return value
+(`AmdDynamicVibranceProxy.cs:337,351,369,377`); the automatic apply and restore paths still throw it
+away, deliberately — see the comment at `AmdDynamicVibranceProxy.cs:281-290`
+(`RestoreWindowsVibranceLevel`).
 
 **D37 — `AmdAdapter32.Init()` calls a delegate with no null check** (`:20`) while null-checking a
 sibling one line later (`:22`). Safe only because `Init()` is always preceded by `IsAvailable()`.
@@ -2223,7 +2327,7 @@ re-established in-process.
 | The `ProgressPercentage == 2` branch ("NVAPI Unloaded: …") is unreachable; only `ReportProgress(1)` is ever called | `VibranceGUI.cs:331,438-441` (`backgroundWorker_DoWork`) |
 | `observerStatusLabel` shows a static string forever | `VibranceGUI.Designer.cs:303-311` (`InitializeComponent`) |
 | `NvApiStatus` — the entire 100+ member enum, unreferenced | `NVIDIA/NvidiaTypes.cs:25-56` |
-| `isCsgoStarted` P/Invoke; the two `user32` text P/Invokes; the dead `char[64] sz` local | `NvidiaDynamicVibranceProxy.cs:83-88,104-108,192` |
+| **Removed:** the `isCsgoStarted` P/Invoke and the two `user32` text P/Invokes, deleted by `62541a6`. The dead `char[64] sz` local survives | `NvidiaDynamicVibranceProxy.cs:240` (`InitializeProxy`) |
 | ADL: `AdlDisplayColorGet`, `ADL_Main_Memory_Free`, `AdlCheckLibrary.GetProcAddress`, and the unused constants (`AdlFail`, `AdlDriverOk`, `AdlMaxDisplays`, `AdlDisplayColorBrightness/Contrast/Hue/Temperature`, …) | `AMD/vendor/adl32/ADL.cs:44-59,69-75,189-203`; `ADLCheckLibrary.cs:45-53` |
 | `isActive` assigned and never read | `AMD/vendor/AmdAdapter32.cs:43,53` |
 | Native exports unreachable from C#: `handleDVC`, `test`, `getInterfaceVersionString`, both `printError` overloads | `vibranceDLL.dll` (VERIFIED binary) |
@@ -2263,13 +2367,16 @@ pair this used to call out is deleted from both proxies; both now call
   with no hash or signature check (`CommonUtils.cs:29-34`). Not remotely exploitable, but any process
   running as the user can plant a same-named DLL there — worth knowing before you add more
   `LoadLibrary`-by-name calls.
-- **Hardcoded external URLs**, all opened with `Process.Start` on a user click: the maintainer's Twitter
-  (`Program.cs:23,251` (`ErrorGraphicsAdapterUnknown`); `VibranceGUI.cs:29,548,553`, `TwitterLink`), the PayPal donation link (`VibranceGUI.cs:27`), the
+- **Hardcoded external URLs**, all opened with `Process.Start` on a user click: the maintainer's X/Twitter
+  (`Program.cs:23,251` (`ErrorGraphicsAdapterUnknown`); `VibranceGUI.cs:29,548,553`, `TwitterLink`), the
   Guru3D DDU page (`Program.cs:355`, `ShowLegacyAmbiguousDriverDialog`), the Steam guide (`NvidiaDynamicVibranceProxy.cs:163`, `GuideLink`).
+  The PayPal donation link and its `buttonPaypal_Click` handler are **gone** (`7782a4f`).
 - **Hardcoded names and limits**: the mutex `vibranceGUI~Mutex`, `AppName = "vibranceGUI"`, the `Run`
   key, both settings filenames, `vibranceGUI.log`; `AdlMaxAdapters = 40` (`ADL.cs:51`);
-  `NvapiMaxPhysicalGpus = 64` (`NvidiaDynamicVibranceProxy.cs:132`); the AMD `0..300` range with its
-  `// todo`; and `"Counter-Strike: Global Offensive"` **compiled into the native DLL** (VERIFIED binary).
+  `NvapiMaxPhysicalGpus = 64` (`NvidiaDynamicVibranceProxy.cs:132`); the AMD `0..300` range, named
+  constants since `62541a6` (`AMD/AmdDynamicVibranceProxy.cs:15-17`) but still a guess, and no longer
+  carrying the `// todo` that said so; and `"Counter-Strike: Global Offensive"` **compiled into the
+  native DLL** (VERIFIED binary).
 - **Culture-sensitive comparisons**: `.ToLower()` for path comparison (`VibranceGUI.cs:1291,1321`, `buttonAddProgram_Click`) where
   `OrdinalIgnoreCase` is meant (the proxies do use `OrdinalIgnoreCase` for name matching);
   `int.Parse`/`bool.Parse` with the current culture on INI values (`SettingsController.cs:338-340`, `ReadVibranceSettings`).
@@ -2281,8 +2388,9 @@ pair this used to call out is deleted from both proxies; both now call
   (`adl32/ADLCheckLibrary.cs:19-21`); `WinEventHook.RemoveWinEventHook` logs a **freshly constructed**
   exception instead of the one it caught and has an empty `finally {}` (`common/WinEventHook.cs:202-205`, `RemoveWinEventHook`).
 - **Naming/i18n leftovers**: `activeProcceses` (`ProcessExplorer.cs:40`, `GetAllProcesses`), German designer comments
-  (`VibranceGUI.Designer.cs:5-27`) and a German MSBuild error message (`vibrance.GUI.csproj:214`),
-  handlers still called `Form1_*` (`VibranceGUI.cs:287-290`, `Form1_Load`).
+  (`VibranceGUI.Designer.cs:5-27`), handlers still called `Form1_*` (`VibranceGUI.cs:287-290`, `Form1_Load`).
+  The German MSBuild `ErrorText` went with the `EnsureNuGetPackageBuildImports` target when the NuGet
+  packages were dropped (`a86c3a4`, v2.6.0).
 
 ### 12.10 Open upstream issues and what the code says about them
 
@@ -2295,17 +2403,17 @@ not that none exists.
 | #150, #145, #142 | laptop + external monitor; dual GPU with integrated graphics; NVIDIA GPU on AMD chipset | **D3** — four candidate mechanisms, INFERENCE. |
 | #149 | does not work with NVIDIA driver 591.44 | No mechanism identified; see **D40**/**D41**. |
 | #147, #143, #120 | feature requests: SDR/HDR sliders, reset keybind, command-line options | Not defects. Note only `-minimized` is parsed (`Program.cs:262`, `Main`). |
-| #144 | vibrance does not reset to Windows level when the program closes | **D4** (+ **D9**). |
-| #138 | extreme CPU usage with no dedicated GPU | **D1**, INFERENCE, well supported. |
-| #137 | does not reliably detect the game in the foreground | Candidates: the dropped-event race (**D4**), the startup blind spot (**D28**), and name-only matching (**D27**) — e.g. a launcher process owning the foreground window. INFERENCE. |
+| #144 | vibrance does not reset to Windows level when the program closes | **D4**. **D9**, the second contributor, is fixed (`466de41`). |
+| #138 | extreme CPU usage with no dedicated GPU | **D1**, fixed on `work/stability-pass` (`466de41`) — the loop is bounded and deduped. The mechanism was always **INFERENCE** and the symptom was never reproduced here, so read this as "mechanism removed", not "confirmed closed"; the native half is also unchanged. |
+| #137 | does not reliably detect the game in the foreground | Candidates: the dropped-event race (**D4**) and the startup blind spot (**D28**), both still open. Name-only matching (**D27**) was narrowed by `4f3fd19`, which added the `InstallDirectory` fallback aimed at exactly this report — a launcher or anti-cheat shim running from under the game's install folder now matches — but an entry added by hand still carries no directory and still matches on name alone. INFERENCE. |
 | #134 | CS2 jumps to the second monitor on alt-tab | No mechanism established. The historical candidate was the unconditional global commit call (`ChangeDisplaySettingsEx(null, ...)`) the pre-fix code ran after every staged mode change — **removed** on `work/resolution-change` (see **D2**; the new `CDS_TEST`/`CDS_UPDATEREGISTRY` sequence never touches a device other than the one it was asked about), so this hypothesis no longer applies to current `master`+this branch even though it was never confirmed either way. |
 | #133 | native GUI is bugging | No mechanism identified. |
 | #132, #114 | `DispChangeBadFlags` when changing resolution | **D2**/**D58**/**D59**, fixed on `work/resolution-change` — see [§6.4](#64-the-optional-resolution-switch). |
-| #131 | degrades image on return to normal | No mechanism established; on AMD note **D16** (unconditional rewrite of every display on every event). |
+| #131 | degrades image on return to normal | No mechanism established; on AMD note **D16** — the reset-every-display-first double write is fixed, but the game level is still rewritten on every foreground event, with no per-display read-back. |
 | #128 | contrast/brightness messed up after CS:GO exit | Factually, this app writes **only** the saturation bit — `Adl.AdlDisplayColorSaturation` (`AMD/vendor/AmdAdapter32.cs:157-161`, `SetSaturationOnDisplay`) — and never brightness, contrast, hue or temperature; those ADL constants are defined and unused (`adl32/ADL.cs:44-48`). On NVIDIA it writes only DVC levels. No code path in this repository sets contrast or brightness. |
 | #116 | alt-tab out of Vulkan games → black screen | No mechanism established; the resolution switch (**D2** area) is the only display-mode code, and "Never change resolutions" is the available mitigation. |
 | #113 | inconsistent behaviour in Battlefield 2042 | No mechanism identified. |
-| #111 | AMD saturation set to 0 after a Windows restart | No mechanism identified. Two relevant facts: the AMD path performs **no driver write at initialisation** (unlike NVIDIA, **D15**), so whatever the driver holds after a reboot persists until the first foreground change; and the load clamp (**D14**) resets sub-100 saved values to 100. |
+| #111 | AMD saturation set to 0 after a Windows restart | No mechanism identified. Two relevant facts: **neither** path performs a driver write at initialisation any more (NVIDIA's did until `0c3057b` — **D15**), so whatever the driver holds after a reboot persists until the first foreground change; and the load clamp (**D14**, still open) resets sub-100 saved values to 100. |
 
 ---
 
@@ -2321,12 +2429,14 @@ not that none exists.
 2. **`vibrance.GUI/Intel/IntelDynamicVibranceProxy.cs`** — implement all ten `IVibranceProxy` members.
    **Copy the AMD proxy's shape, not the NVIDIA one**: instance state, an injected vendor adapter, no
    static handler. Subscribe to `WinEventHook.GetInstance()` in the constructor **only after
-   initialisation actually succeeded**, and implement the redundant-write suppression that AMD lacks
-   (**D16**).
-3. **`vibrance.GUI/Program.cs`** — add a branch beside `:213-244` (`Main`) supplying the proxy factory plus
-   `defaultWindowsLevel`, `minTrackBarValue`, `maxTrackBarValue`, `defaultIngameValue` and the
-   `Func<int,string>` label resolver. **Those five numbers *are* the vendor's value contract; there is no
-   interface for them.**
+   initialisation actually succeeded**, and implement the per-display redundant-write suppression that
+   AMD still lacks (**D16**).
+3. **`vibrance.GUI/Program.cs`** — add a branch beside `:213-244` (`Main`) supplying the proxy
+   factory, the `GraphicsAdapter` enum member, and `defaultWindowsLevel`, `minTrackBarValue`,
+   `maxTrackBarValue`, `defaultIngameValue`. **Those four numbers *are* the vendor's value contract;
+   there is no interface for them.** The label resolver is no longer passed in here — add a `case`
+   to `TrackbarLabelHelper.ResolveVibranceLabelLevel` (`common/TrackbarLabelHelper.cs:12-25`), which
+   switches on that same enum member.
 4. **`vibrance.GUI/common/SettingsController.cs:246-255` (`ReadVibranceSettings`)** — add the vendor's `defaultLevel`/`maxLevel`,
    and **fix the `< defaultLevel` lower-bound bug at `:359` (`ReadVibranceSettings`)** rather than replicating it (**D14**).
 5. **`vibrance.GUI/vibrance.GUI.csproj`** — add every new file by hand (`:91-225`, `Compile`). If you ship a native
@@ -2362,10 +2472,12 @@ DLL — do not hand-write it.** Keep the C++ class **stateless** (**D29**). Upda
 note that `%APPDATA%\vibranceGUI\vibranceDLL.dll` is overwritten at every start, so stale copies
 self-heal, but a running instance locks the file.
 
-**Do this first, whatever else you do.** Wire up the two calls that already exist and are dead:
-`ADL_Display_Color_Get` (`adl32/ADL.cs:189-203`) and NVIDIA's `NvDisplayDvcInfo.minLevel`/`maxLevel`,
-which are already fetched and ignored (`NvidiaDynamicVibranceProxy.cs:198`,
-`NVIDIA/NvidiaTypes.cs:14-15`). Sourcing the UI ranges from the driver instead of the hardcoded
+**Do this first, whatever else you do.** Wire up the two driver reads that are bound and dead:
+`ADL_Display_Color_Get` (`adl32/ADL.cs:189-203`) and NVIDIA's `getDVCInfo`
+(`NvidiaDynamicVibranceProxy.cs:81-86`), which carries `NvDisplayDvcInfo.minLevel`/`maxLevel`
+(`NVIDIA/NvidiaTypes.cs:14-15`). Neither is called from anywhere today — `getDVCInfo`'s last
+call site went with the startup write (**D15**), so those two fields are not "fetched and ignored",
+they are never fetched at all. Sourcing the UI ranges from the driver instead of the hardcoded
 `0..63` / `0..300` removes the largest single class of value-semantics bugs in this codebase (**D8**,
 **D14**, and the `Find()` stack overflow).
 
@@ -2394,7 +2506,7 @@ which are already fetched and ignored (`NvidiaDynamicVibranceProxy.cs:198`,
 12. **Do not add new vendor-specific references to `common/`.** It is already leaky (**D56**); adding more
     makes the vendor seam meaningless.
 13. **Do not promote an INFERENCE to a fact** in code comments, commit messages or issue replies. Several
-    of the most important claims in this document (**D1**, **D3**, **D30**) are unverified at runtime.
+    of the most important claims in this document (**D3**, **D30**, and the mechanism behind **D1** even though its loop is now bounded) are unverified at runtime.
 
 ---
 
@@ -2419,7 +2531,10 @@ Merged from both archaeology passes, de-duplicated. These are genuinely unanswer
 **AMD**
 
 6. What is the *actual* saturation range the AMD driver accepts — is the hardcoded `0..300` correct, or
-   was it a guess? The `// todo` at `SettingsController.cs:107` suggests the latter.
+   was it a guess? The `// todo` that sat beside the literal `100`/`300` in `SettingsController`
+   suggested the latter. `62541a6` replaced both literals with
+   `AmdDynamicVibranceProxy.AmdDefaultLevel`/`AmdMaxLevel` (`AMD/AmdDynamicVibranceProxy.cs:15-17`)
+   and deleted the comment without answering the question.
 7. Is the AMD clamp `defaultLevel = 100` (`SettingsController.cs:244`, `ReadVibranceSettings`) deliberate (100 % is the ADL
    baseline) or a copy of the trackbar default? If deliberate, `minTrackBarValue` at `Program.cs:221` (`Main`)
    should be `100` to match (**D14**).
