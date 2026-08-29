@@ -46,6 +46,15 @@ namespace vibrance.GUI.common
         private readonly Dictionary<string, ResolutionModeWrapper> _lastKnownWindowsModes =
             new Dictionary<string, ResolutionModeWrapper>();
 
+        // Debounces which SystemEvents.DisplaySettingsChanged notifications are allowed to reach
+        // RebuildWindowsResolutionSettings(false) at all - see ResolutionAdoptionDebouncer.cs for
+        // the full reasoning (upstream defect: a game changing the resolution itself, with no
+        // vibranceGUI profile applied, could get captured as "the user's desktop resolution").
+        // Constructed once, here, rather than lazily, so OnDisplaySettingsChanged never has to
+        // null-check it.
+        private readonly ResolutionAdoptionDebouncer _resolutionAdoptionDebouncer =
+            new ResolutionAdoptionDebouncer(new FormsResolutionAdoptionTimer());
+
         private readonly bool _isForcedExecution;
 
         // Kept in sync with _applicationSettings by RefreshUnconfirmedCache. The foreground handler runs on
@@ -980,11 +989,28 @@ namespace vibrance.GUI.common
                 // comment for why leaving it subscribed leaks this form and can fault at shutdown.
                 SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
                 ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed;
+                // Unsubscribing SystemEvents above stops any NEW DisplaySettingsChanged from
+                // reaching the debouncer, but a countdown it already armed keeps ticking down on
+                // its own regardless - this stops one already in flight from firing after the form
+                // is disposed (see ResolutionAdoptionDebouncer.Cancel's own comment).
+                _resolutionAdoptionDebouncer.Cancel();
                 // One of the three layers that guarantee the toggle hotkey is unregistered - see
                 // HotkeyRegistration's own header comment. Idempotent: OnHandleDestroyed (below,
                 // via the form's own Dispose chain) may already have done this.
                 _hotkeyRegistration.Release();
             }
+        }
+
+        // Single source of truth for "is a vibranceGUI apply currently outstanding" - both
+        // RebuildWindowsResolutionSettings and OnDisplaySettingsChanged need this exact same read
+        // of _v, at two different call sites, and a hand-copied second expression is exactly what
+        // lets the two silently drift apart if only one is ever updated (a review nitpick on this
+        // branch, before the duplication was extracted). _v is null until the constructor's
+        // getProxy call returns, well after RebuildWindowsResolutionSettings(true)'s own initial
+        // call - this property already handles that the same way the old inline expression did.
+        private bool IsResolutionChangeCurrentlyApplied
+        {
+            get { return _v != null && _v.GetVibranceInfo().isResolutionChangeApplied; }
         }
 
         /// <summary>
@@ -1001,7 +1027,7 @@ namespace vibrance.GUI.common
         /// </summary>
         private void RebuildWindowsResolutionSettings(bool showFailureDialog)
         {
-            bool preserveCapturedMode = _v != null && _v.GetVibranceInfo().isResolutionChangeApplied;
+            bool preserveCapturedMode = IsResolutionChangeCurrentlyApplied;
 
             List<string> attachedDeviceNames = new List<string>();
             foreach (Screen screen in Screen.AllScreens)
@@ -1066,7 +1092,28 @@ namespace vibrance.GUI.common
             // thread mistake this whole fix removes. The constructor's own one-time build above
             // still shows it once, at startup, where the user is looking at the window and can act
             // on it immediately.
-            RebuildWindowsResolutionSettings(false);
+            //
+            // Routed through _resolutionAdoptionDebouncer rather than called directly - see
+            // ResolutionAdoptionDebouncer.cs for why: an immediate call here is exactly what let a
+            // game's own resolution change (fired with no vibranceGUI profile applied) get captured
+            // as "the user's desktop resolution". IsResolutionChangeCurrentlyApplied is read fresh,
+            // right here, for this specific notification - it is what the debouncer uses to decide
+            // whether this particular refresh needs debouncing at all, or can run immediately.
+            bool preserveCapturedMode = IsResolutionChangeCurrentlyApplied;
+            _resolutionAdoptionDebouncer.OnDisplaySettingsChanged(preserveCapturedMode, delegate
+            {
+                // Re-checked here, not just by the caller above: this may run later, from the
+                // debounce timer's own callback, well after this OnDisplaySettingsChanged call has
+                // returned - CleanUp() cancels any pending countdown in its own finally block, but a
+                // Tick already queued on the UI thread's message loop the instant CleanUp runs could
+                // still reach here, exactly the race IsDisposed/IsHandleCreated already guard
+                // against at the top of this method.
+                if (this.IsDisposed || !this.IsHandleCreated)
+                {
+                    return;
+                }
+                RebuildWindowsResolutionSettings(false);
+            });
         }
 
         /// <summary>

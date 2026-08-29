@@ -142,6 +142,8 @@
     <Compile Include="common\StabilityFixture.cs" />
     <Compile Include="common\ResolutionHelper.cs" />
     <Compile Include="common\WindowsResolutionRefresher.cs" />
+    <Compile Include="common\ResolutionAdoptionDebouncer.cs" />
+    <Compile Include="common\FormsResolutionAdoptionTimer.cs" />
     <Compile Include="common\ResolutionModeWrapper.cs" />
     <Compile Include="common\DeviceGammaRampHelper.cs" />
     <Compile Include="common\GammaRestoreFixture.cs" />

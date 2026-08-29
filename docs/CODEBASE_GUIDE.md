@@ -782,7 +782,9 @@ no `Screen`, no `Form` and no real display anywhere in the call stack. `SystemEv
 **must** be unsubscribed in `CleanUp()` (`:441`) — it holds a strong reference to the handler on its
 own dedicated thread, so a leaked subscription leaks the form and can fault at shutdown. The handler
 (`OnDisplaySettingsChanged`, `:493-526`) guards `IsDisposed`/`!IsHandleCreated` and marshals onto the
-UI thread with `BeginInvoke` (see above) before calling `RebuildWindowsResolutionSettings(false)` —
+UI thread with `BeginInvoke` (see above) before handing off to `ResolutionAdoptionDebouncer` — **not**
+calling `RebuildWindowsResolutionSettings(false)` directly any more (see "Known limitation" below for
+why this changed) — which itself calls it, either immediately or after a debounce, with
 `false` so a hot-plug or resolution change never pops the constructor's own failure dialog from
 inside an arbitrary system event, which would be exactly the D2-shaped mistake this whole fix
 removes.
@@ -816,22 +818,46 @@ carried across the gap — a detached device has no dictionary entry at all, so 
 re-enumerates its supported modes from scratch (`WindowsResolutionRefresher.cs:67-80`), picking up
 whatever a driver update or a different port reports now.
 
-**Known limitation: an adopted foreign mode never gets special-cased, on purpose.** With
-`preserveCapturedMode` false, `Refresh` adopts whatever mode is live as the new `Item1` — even one a
-game set without going through a profile-driven apply at all — and this is deliberate, not an
-oversight. A reviewer proposed skipping that re-capture whenever the live mode matches a configured
-`ApplicationSetting.ResolutionSettings` entry; it was rejected, because at refresh time "a game
-changed the resolution itself with no profile applied" and "the user's own genuine desktop mode
-happens to equal a configured entry" are observationally identical — both are a bare
-`DisplaySettingsChanged` plus a live mode that differs from the last capture, with no reliable field
-comparison available to tell them apart (`Equals` includes the driver-unreliable
-`DmDisplayFixedOutput`; `MatchesAchievedMode` widens the false-positive surface instead). Special-
-casing the match would make a user's *real* desktop mode permanently un-capturable the moment they
-configure a game at that same mode, and every future revert would drag them to a stale value while
-still reporting success — a strictly worse, non-self-healing failure than adopting a game's own
-foreign mode, which corrects itself the moment that mode goes away (see `ResolutionChangeFixture.cs`,
-`CheckAdoptedForeignModeSelfHealsOnceItIsGone`, for the full reasoning). The right future fix keys on
-*duration*, not value.
+**An adopted foreign mode is never special-cased by value, on purpose — narrowed by duration
+instead.** `WindowsResolutionRefresher.Refresh` itself is untouched: with `preserveCapturedMode`
+false, it still adopts whatever mode is live as the new `Item1` the instant it actually runs — even
+one a game set without going through a profile-driven apply at all (see
+`ResolutionChangeFixture.cs`, `CheckAdoptedForeignModeSelfHealsOnceItIsGone`, which documents exactly
+that as `Refresh`'s permanent, deliberate contract). A reviewer proposed skipping that re-capture
+whenever the live mode matches a configured `ApplicationSetting.ResolutionSettings` entry instead;
+it was rejected outright, and still is, because at refresh time "a game changed the resolution
+itself with no profile applied" and "the user's own genuine desktop mode happens to equal a
+configured entry" are observationally identical — both are a bare `DisplaySettingsChanged` plus a
+live mode that differs from the last capture, with no reliable field comparison available to tell
+them apart (`Equals` includes the driver-unreliable `DmDisplayFixedOutput`; `MatchesAchievedMode`
+widens the false-positive surface instead). Special-casing the match would make a user's *real*
+desktop mode permanently un-capturable the moment they configure a game at that same mode, and every
+future revert would drag them to a stale value while still reporting success — a strictly worse,
+non-self-healing failure than adopting a game's own foreign mode, which corrects itself the moment
+that mode goes away.
+
+`ResolutionAdoptionDebouncer` (`ResolutionAdoptionDebouncer.cs`) is the fix that keys on *duration*
+instead, sitting one layer above `Refresh`: `VibranceGUI.OnDisplaySettingsChanged` no longer calls
+`RebuildWindowsResolutionSettings(false)` directly, but arms a one-shot countdown
+(`DebounceIntervalMs`, currently 2000ms) and only lets that call through once a live mode has held
+steady with no further `DisplaySettingsChanged` arriving for the whole interval. **This narrows the
+exposure, it does not close it.** A game that holds its own foreign mode for *longer* than
+`DebounceIntervalMs` — exclusive fullscreen for the whole session, the dominant real-world shape —
+is still adopted exactly as before, the moment the debounce elapses with that mode still live, and
+still self-heals the same way once the mode goes away. What the debounce actually removes is
+adoption of foreign modes that *don't* outlast the interval: startup/exit mode flaps, alt-tab
+restore/re-set pairs, launcher and anti-cheat mode sets, and the window at game exit where the dying
+mode is still live before Windows restores the desktop. The accepted cost in exchange: if a
+countdown is still pending when a profiled game's own apply sets `isResolutionChangeApplied`, the
+pending genuine change is not merely delayed — `RebuildWindowsResolutionSettings` re-reads that flag
+as true at whichever moment it next runs and preserves the *old*, pre-change `Item1` unconditionally
+(the single most dangerous line above, working exactly as designed), so the user's change is dropped
+for that entire game session and the game's own exit-revert then drags the real desktop back to the
+stale value. Narrow — it needs a genuine resolution change and a profiled game launch inside the
+same `DebounceIntervalMs` window to coincide — but real. The constructor's own initial build
+(`RebuildWindowsResolutionSettings(true)`) is not routed through the debouncer at all and is
+unaffected by any of this: restarting vibranceGUI while a game already holds a foreign mode still
+captures it immediately, unchanged from before this class existed.
 
 **The fixed-output-loop fix.** `IsResolutionChangeNeeded`/`ChangeResolutionEx`'s "does this still
 need changing?" guard is `ResolutionModeWrapper.MatchesAchievedMode` (`ResolutionModeWrapper.cs`),
