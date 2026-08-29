@@ -12,7 +12,7 @@ The download at vibrancegui.com is the original author's build and contains none
 
 ## Before you download
 
-v2.6.0 is this fork's first release, and nothing in it has been run against a live game by anyone, including me. The fixes are backed by 338 automated checks, but those drive fakes and stubs, not a real GPU driver, display or game. Several of them were validated by reading the code and reasoning about documented driver behaviour, not by reproducing the original bug on the reporter's hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
+v2.6.0 is this fork's first release. I have now played one game with it, on one machine: vibrance came on while the game was running and went back to my normal level when it exited. That is the app's core behaviour rather than any of the fixes below, and it is the only thing anyone has seen this build do on real hardware - that session involved no resolution change and had the colour settings switched off, so those paths are still unexercised. The fixes in this release are backed by 338 automated checks, but those drive fakes and stubs, not a real GPU driver, display or game. Several of them were validated by reading the code and reasoning about documented driver behaviour, not by reproducing the original bug on the reporter's hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
 
 ## What is different in this fork
 
