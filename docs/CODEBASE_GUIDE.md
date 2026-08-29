@@ -315,7 +315,11 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:27`)
 
 ### 3.7 Tests and CI
 
-- **There are no automated tests.** No test project exists in the solution.
+- **There is no test project**, but there are automated checks: 412 of them across nine
+  `*Fixture.cs` files in `vibrance.GUI/common/`, compiled into the app and run through
+  `--selftest-*` flags dispatched early in `Program.cs`. They report through `Checklist`
+  (PASS/FAIL/SKIP), not a third-party assertion library, so searching for `Assert.` or
+  `*Test*` finds nothing and wrongly suggests the project is untested.
 - **CI is dead.** `.travis.yml` targets travis-ci.org (shut down) with `dist: trusty`, `mono: beta`,
   `dotnet: 1.0.3`. There is no GitHub Actions workflow. Assume nothing is verified on push.
 - **`.gitattributes` sets `*.sln merge=union` and `*.csproj merge=union`.** Union merge on project
