@@ -1689,7 +1689,7 @@ vibrance — that happens only inside the proxy's event handler.
 
 Behavioural details worth knowing:
 
-- **The tray icon is always visible** (`VibranceGUI.Designer.cs:96` (`notifyIcon.Visible`)), even when the window is open. Minimising
+- **The tray icon is always visible** (`VibranceGUI.Designer.cs:96`, `notifyIcon.Visible`), even when the window is open. Minimising
   hides the window (`VibranceGUI.cs:292-300` (`Form1_Resize`); the balloon-tip lines there are commented out).
 - `notifyIcon_MouseClick` (`:448-458`) restores the window without filtering `e.Button`, so a
   **right-click both opens the context menu and restores the window**.
