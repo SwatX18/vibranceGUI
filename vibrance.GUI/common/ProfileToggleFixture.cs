@@ -2329,11 +2329,22 @@ namespace vibrance.GUI.common
 
         // ------------------------------------------------------------------
         // LogSink - the seam VibranceGUI.Log(string)/Log(Exception) now delegate to instead of
-        // opening %APPDATA%\vibranceGUI\vibranceGUI.log directly (see ILogSink.cs). L1/L2 pin
-        // SettingsController's parse-failure logging above (LogSettingsParseFailure) by content -
-        // S1-S8 above only ever pinned the seven returned VALUES, never what got logged about a
-        // failed one, so a wrong key name, a swapped raw-value/fallback argument, or a missing
-        // call could regress silently. L3 pins the property Program.LogSafely exists for:
+        // opening %APPDATA%\vibranceGUI\vibranceGUI.log directly (see ILogSink.cs). L4/L5 pin
+        // LogSink.Current's own default and null-fallback (ILogSink.cs) - the property that
+        // regressed once already: installing NullLogSink per --selftest-* flag in Program.Main
+        // only ever protected Main's own entry point, never a reflection harness that calls a
+        // fixture's Run() directly, which is how every self test in this codebase actually gets
+        // run. They run FIRST below, ahead of L1-L3, despite the numbering: L1-L3 each save and
+        // restore LogSink.Current around their own use of it, so L4/L5 would still read back
+        // correctly even placed last, but only by relying on that restore being correct; running
+        // first instead means L4/L5 observe the value nothing in this process has touched yet,
+        // which is the actual property worth pinning. No other fixture in this codebase reads or
+        // writes LogSink.Current (only Program.cs, ILogSink.cs and this file do), so nothing
+        // upstream of ProfileToggleFixture.Run() in a full suite run can have replaced it either.
+        // L1/L2 pin SettingsController's parse-failure logging above (LogSettingsParseFailure) by
+        // content - S1-S8 above only ever pinned the seven returned VALUES, never what got logged
+        // about a failed one, so a wrong key name, a swapped raw-value/fallback argument, or a
+        // missing call could regress silently. L3 pins the property Program.LogSafely exists for:
         // DeviceGammaRampHelper's WinEvent-reachable restore path must never throw back into a
         // native callback frame, even when the sink underneath VibranceGUI.Log is itself broken.
         // ------------------------------------------------------------------
@@ -2342,11 +2353,51 @@ namespace vibrance.GUI.common
         {
             checklist.Lines.Add("LogSink (temp INI, RecordingLogSink/ThrowingLogSink fakes, never the real vibranceGUI.log):");
 
+            CheckLogSinkDefaultsToNullSink(checklist);
+            CheckLogSinkNullSetterFallsBackToNullSink(checklist);
             CheckSettingsParseFailureLogsSingleKeyContent(checklist);
             CheckSettingsParseFailureLogsEverySpecificFailure(checklist);
             CheckLogSinkNeverThrowsAcrossLogSafely(checklist);
 
             checklist.Lines.Add(string.Empty);
+        }
+
+        // L4. Mutation this guards: LogSink._current initialised to RealLogSink instead of
+        // NullLogSink (ILogSink.cs) - the exact regression this fixture exists to catch: a
+        // reflection harness that calls ProfileToggleFixture.Run() (or any fixture's Run())
+        // directly, bypassing Program.Main entirely, never sees Main's own --selftest guard, so
+        // the default LogSink.Current starts with is the only thing standing between such a run
+        // and the real, shared vibranceGUI.log. Must run before L1-L3, which each swap
+        // LogSink.Current out for the duration of one check - see the section comment above for
+        // why.
+        private static void CheckLogSinkDefaultsToNullSink(Checklist checklist)
+        {
+            ILogSink current = LogSink.Current;
+            checklist.Check(current is NullLogSink,
+                string.Format("L4: LogSink.Current defaults to NullLogSink, so a run that never reaches Program.Main (a reflection harness calling Run() directly, for one) still never appends to the real vibranceGUI.log, got {0}",
+                    current == null ? "<null>" : current.GetType().Name));
+        }
+
+        // L5. Mutation this guards: LogSink.Current's setter falling back to RealLogSink instead
+        // of NullLogSink when assigned null (ILogSink.cs) - the same unsafe default, reachable a
+        // second way, since both ResetForTests(null) and a bare Current = null funnel through this
+        // one setter.
+        private static void CheckLogSinkNullSetterFallsBackToNullSink(Checklist checklist)
+        {
+            ILogSink previousSink = LogSink.Current;
+            try
+            {
+                LogSink.Current = null;
+                ILogSink current = LogSink.Current;
+
+                checklist.Check(current is NullLogSink,
+                    string.Format("L5: assigning LogSink.Current = null falls back to NullLogSink, not RealLogSink, got {0}",
+                        current == null ? "<null>" : current.GetType().Name));
+            }
+            finally
+            {
+                LogSink.Current = previousSink;
+            }
         }
 
         // L1. Mutation this guards: LogSettingsParseFailure's format string dropping the key name,

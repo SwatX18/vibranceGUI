@@ -59,12 +59,15 @@ namespace vibrance.GUI.common
     }
 
     /// <summary>
-    /// The self-test sink Program.cs installs for every --selftest-* flag (see Main), so running
-    /// any self test never appends to the real, shared vibranceGUI.log - the file this user's own
-    /// configured games' diagnostic history lives in. Deliberately does nothing with either
-    /// overload: nothing reads a self-test run's log output back through this sink, unlike the
-    /// fixture-owned fakes (e.g. ProfileToggleFixture's RecordingLogSink) built to assert on
-    /// specific messages.
+    /// The default ILogSink (see LogSink._current below), so anything that never reaches
+    /// Program.Main - a reflection harness that calls a fixture's Run() directly, a future tool,
+    /// a fixture invoked on its own - is silent by default and never appends to the real, shared
+    /// vibranceGUI.log, the file this user's own configured games' diagnostic history lives in.
+    /// Program.Main only overrides this with RealLogSink for a normal (non --selftest-*) run; see
+    /// Main for why the old approach - installing NullLogSink per --selftest-* flag instead - left
+    /// exactly that harness unprotected. Deliberately does nothing with either overload: nothing
+    /// reads a self-test run's log output back through this sink, unlike the fixture-owned fakes
+    /// (e.g. ProfileToggleFixture's RecordingLogSink) built to assert on specific messages.
     /// </summary>
     internal class NullLogSink : ILogSink
     {
@@ -82,18 +85,34 @@ namespace vibrance.GUI.common
     /// swappable static), not DeviceGammaRampHelper's per-call IGammaDevice parameter, because
     /// VibranceGUI.Log's own signature is the existing-call-site contract this seam must not
     /// disturb. Current has a public setter (unlike HdrStateTracker's reader) so a check can save
-    /// it, install its own fake, and restore exactly what was there before - not always the real
-    /// sink - since Program.cs may already have a self-test sink of its own installed for the
-    /// whole run.
+    /// it, install its own fake, and restore exactly what was there before - not always
+    /// RealLogSink - since Current defaults to NullLogSink and Program.Main only ever swaps in
+    /// RealLogSink for a normal run (see below), so a previously-saved sink is just as often
+    /// NullLogSink itself.
     /// </summary>
     internal static class LogSink
     {
-        private static ILogSink _current = new RealLogSink();
+        // Defaults to NullLogSink, not RealLogSink. Anything that never runs through
+        // Program.Main - most importantly a reflection harness that calls a fixture's Run()
+        // directly, which is how every self test in this codebase actually gets run, not through
+        // the --selftest-* command line Main parses - gets this default untouched. A prior version
+        // of this seam defaulted to RealLogSink and relied on Main installing NullLogSink for
+        // every --selftest-* flag; that only ever protected Main's own entry point; a harness that
+        // bypasses Main bypassed that guard too; measured cost: the real, shared
+        // %APPDATA%\vibranceGUI\vibranceGUI.log grew by over 35,000 bytes across one such suite
+        // run, with settings-fixture parse-failure lines mixed into a user's own diagnostic
+        // history. The tradeoff this direction accepts: if Program.Main's own RealLogSink install
+        // below were ever removed, or Main itself bypassed for what is actually a normal run,
+        // production would log nothing. That is the safer failure - an empty log, or a bug report
+        // with nothing to attach, is visible and checkable - where the old default silently wrote
+        // to a user's disk and nobody noticed until someone measured the byte count. Do not "fix"
+        // this back to RealLogSink.
+        private static ILogSink _current = new NullLogSink();
 
         internal static ILogSink Current
         {
             get { return _current; }
-            set { _current = value ?? new RealLogSink(); }
+            set { _current = value ?? new NullLogSink(); }
         }
 
         /// <summary>

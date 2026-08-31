@@ -54,16 +54,16 @@ namespace vibrance.GUI
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // Every --selftest-* flag below runs through VibranceGUI.Log at some point (a forced
-            // gamma/resolution write failure, a corrupt settings value, ...) - installed once here
-            // rather than per flag so a future --selftest-* addition gets this for free. Swapped
-            // in before any of them dispatch, never restored, because every branch below returns
-            // (or falls through into the real GUI, which never re-enters this block) - see
-            // ILogSink.cs for why this is the one thing that keeps a self-test run from appending
-            // to the real, shared %APPDATA%\vibranceGUI\vibranceGUI.log.
-            if (args.Any(a => a.StartsWith("--selftest")))
+            // LogSink.Current defaults to NullLogSink (see ILogSink.cs) - a --selftest-* flag
+            // below, and a reflection harness that bypasses this method altogether and calls a
+            // fixture's Run() directly, both get that default untouched and need nothing installed
+            // here. Only a normal run opts in to the real, file-backed sink, installed once here
+            // rather than per branch below so a future one gets this for free. Swapped in before
+            // any --selftest-* branch could dispatch, never restored, because every branch below
+            // returns (or falls through into the real GUI, which never re-enters this block).
+            if (!args.Any(a => a.StartsWith("--selftest")))
             {
-                LogSink.ResetForTests(new NullLogSink());
+                LogSink.ResetForTests(new RealLogSink());
             }
 
             // Runs before the GPU vendor detection below on purpose: the picker is pure, so the
