@@ -12,7 +12,8 @@ namespace vibrance.GUI.common.gamefinder
         BattleNet = 3,      // Blizzard Entertainment
         Rockstar = 4,       // Rockstar Games
         Ubisoft = 5,        // Ubisoft, Ubisoft Entertainment
-        OtherLauncher = 6   // an allowlisted publisher with no store of its own worth naming
+        OtherLauncher = 6,  // an allowlisted publisher with no store of its own worth naming
+        Shortcut = 7        // a Start Menu or desktop .lnk - StartMenuShortcutSource
     }
 
     public enum ExecutableConfidence

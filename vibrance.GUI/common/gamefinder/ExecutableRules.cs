@@ -26,7 +26,15 @@ namespace vibrance.GUI.common.gamefinder
             // vconsole*: THE load-bearing entry. Without it Counter-Strike 2 selects vconsole2.exe
             // (4.8 MB) over the correct cs2.exe (2.8 MB), because Source 2 games are thin launchers.
             // Do not remove. See game-finder-evidence.md Finding 8.
-            "vconsole*", "hammer*", "*prereq*", "*webhelper*", "*subprocess*"
+            "vconsole*", "hammer*", "*prereq*", "*webhelper*", "*subprocess*",
+            // unins0*: the InnoSetup uninstaller naming convention (unins000.exe, unins001.exe -
+            // the latter a log InnoSetup writes next to the former, never itself an executable, but
+            // matched anyway for the same reason "*uninst*" already is). "*uninst*" alone does NOT
+            // catch this - "unins000" has no "t" in it. Added for StartMenuShortcutSource, which
+            // measured "Uninstall ASUS XG-C100C 10G Adapter Driver.lnk" resolving straight to
+            // unins000.exe on the reference machine; kept in the shared list rather than duplicated
+            // because InnoSetup is common enough that Steam and the Uninstall registry benefit too.
+            "unins0*"
         };
 
         // Belt and braces with the globs above: Steamworks Shared is already filtered for free,
