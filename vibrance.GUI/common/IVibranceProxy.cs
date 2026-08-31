@@ -58,5 +58,23 @@ namespace vibrance.GUI.common
         /// thinking a toggle landed that did not.
         /// </summary>
         ProfileToggleResult ToggleForegroundProfile(IntPtr foregroundWindow, string processName, string processImagePath);
+
+        /// <summary>
+        /// Upstream #147 part 2's re-check path: re-resolves (HdrVibranceHelper.ResolveIngameLevel,
+        /// against HdrStateTracker's CURRENT reading for foregroundWindow's own screen) and
+        /// re-applies whichever configured profile owns foregroundWindow, so a game already
+        /// holding a level picks up its separate HDR level the moment Windows' own HDR state
+        /// changes under it, not only on the next foreground event. Called by VibranceGUI after
+        /// HdrStateTracker.RefreshAndDetectChange() reports a transition - both the
+        /// SystemEvents.DisplaySettingsChanged fast path and the poll timer's backstop route
+        /// through this same method, never duplicate the resolve-and-apply logic themselves.
+        ///
+        /// A silent no-op when no configured profile owns foregroundWindow, when
+        /// userVibranceSettingDefault is not known yet, or when the resolved level already
+        /// matches what each proxy's own write-site guard already treats as "nothing to do" -
+        /// exactly the same skip rules the automatic apply branch follows, so a tick that finds
+        /// nothing to change writes nothing and logs nothing.
+        /// </summary>
+        void RecheckForegroundHdrLevel(IntPtr foregroundWindow, string processName, string processImagePath);
     }
 }

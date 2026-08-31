@@ -3,7 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using System.Windows.Forms;
+using vibrance.GUI.AMD;
+using vibrance.GUI.AMD.vendor;
+using vibrance.GUI.NVIDIA;
 
 namespace vibrance.GUI.common
 {
@@ -36,6 +40,7 @@ namespace vibrance.GUI.common
             RunStructLayoutChecks(checklist);
             RunColorInfoMappingChecks(checklist);
             RunSettingsChecks(checklist);
+            RunWriteSiteChecks(checklist);
             RunDiagnosticsChecks(checklist);
 
             checklist.Lines.Add(string.Empty);
@@ -706,6 +711,546 @@ namespace vibrance.GUI.common
             {
                 DeleteFileIfExists(tempIni);
                 DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Write sites - the actual wiring from part 1's pure resolver into every place a vendor
+        // proxy writes vibrance (upstream #147, part 2). Real OnWinEventHook/ToggleForegroundProfile/
+        // RecheckForegroundHdrLevel, driven exactly like VibranceRestoreFixture/ProfileToggleFixture
+        // already drive them - reflection where the method is private, a fake device/adapter always,
+        // never a real GPU. HdrStateTracker.ResetForTests(fake) is what stands in for "a real display
+        // reporting HDR" here; every check that installs one restores the real reader
+        // (HdrStateTracker.ResetForTests(null)) before returning, so RunDiagnosticsChecks below still
+        // sees this machine's actual sweep, not a check's leftover fake.
+        // ------------------------------------------------------------------
+
+        private static void RunWriteSiteChecks(Checklist checklist)
+        {
+            checklist.Lines.Add("Write sites use the resolved level, not raw IngameLevel (real OnWinEventHook/ToggleForegroundProfile/RecheckForegroundHdrLevel via reflection + fake devices):");
+
+            CheckNvidiaApplyBranchUsesResolvedLevel(checklist);
+            CheckNvidiaApplyBranchUnaffectedWhenNoSeparateLevel(checklist);
+            CheckNvidiaToggleUsesResolvedLevel(checklist);
+            CheckNvidiaRecheckAppliesOnDetectedTransition(checklist);
+            CheckNvidiaRecheckSkipsSuppressedGame(checklist);
+
+            CheckAmdGuardUsesResolvedLevelNotRawIngameLevel(checklist);
+            CheckAmdNoSeparateLevelBehavesExactlyAsBefore(checklist);
+            CheckAmdApplyBranchWritesResolvedLevel(checklist);
+            CheckAmdToggleUsesResolvedLevel(checklist);
+            CheckAmdRecheckAppliesOnDetectedTransition(checklist);
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDesktopWindow();
+
+        // Installs a fake IHdrStateReader that reports deviceName as state (and, for Hdr, capable)
+        // and nothing else - the seam every check below uses to stand in for "this display is
+        // currently in HDR" with no real display involved.
+        private static void SetHdrState(string deviceName, HdrDisplayState state)
+        {
+            FakeHdrStateReader fake = new FakeHdrStateReader();
+            fake.NextResult = OneDisplay(deviceName, state, state == HdrDisplayState.Hdr);
+            HdrStateTracker.ResetForTests(fake);
+        }
+
+        // W1. Mutation this guards: OnWinEventHook's apply branch passing
+        // applicationSetting.IngameLevel (the raw SDR value) into ApplyGameVibranceLevel instead of
+        // the level HdrVibranceHelper.ResolveIngameLevel actually resolved.
+        private static void CheckNvidiaApplyBranchUsesResolvedLevel(Checklist checklist)
+        {
+            FakeNvidiaVibranceDevice device = new FakeNvidiaVibranceDevice();
+            ApplicationSetting matchingSetting = new ApplicationSetting();
+            matchingSetting.Name = "TestHdrW1";
+            matchingSetting.IngameLevel = 60;
+            matchingSetting.HdrIngameLevel = 20;
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.neverChangeResolution = true;
+            vibranceInfo.neverChangeColorSettings = true;
+            NvidiaDynamicVibranceProxy.ResetForTests(device, vibranceInfo, settings);
+
+            IntPtr desktop = GetDesktopWindow();
+            string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+            SetHdrState(gameDeviceName, HdrDisplayState.Hdr);
+
+            InvokeNvidiaOnWinEventHook(desktop, "TestHdrW1");
+
+            checklist.Check(device.LevelFor(gameDeviceName) == 20, string.Format(
+                "W1 (NVIDIA apply): the apply branch writes HdrIngameLevel (20) while the display is Hdr, not the raw IngameLevel (60), got {0}",
+                device.LevelFor(gameDeviceName)));
+
+            HdrStateTracker.ResetForTests(null);
+        }
+
+        // W2. A profile with no separate HDR level configured (HdrLevelUnset) must behave EXACTLY
+        // as it did before this PR, in BOTH display states - always the raw IngameLevel. Mutation
+        // this guards: ResolveIngameLevel (or its wiring here) treating Unset as a real level, or
+        // treating Hdr like Sdr's opposite instead of falling back identically in both.
+        private static void CheckNvidiaApplyBranchUnaffectedWhenNoSeparateLevel(Checklist checklist)
+        {
+            foreach (HdrDisplayState state in new[] { HdrDisplayState.Sdr, HdrDisplayState.Hdr })
+            {
+                FakeNvidiaVibranceDevice device = new FakeNvidiaVibranceDevice();
+                ApplicationSetting matchingSetting = new ApplicationSetting();
+                matchingSetting.Name = "TestHdrW2";
+                matchingSetting.IngameLevel = 45;
+                // HdrIngameLevel left at its default (HdrLevelUnset) - no separate level configured.
+                List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+                VibranceInfo vibranceInfo = new VibranceInfo();
+                vibranceInfo.neverChangeResolution = true;
+                vibranceInfo.neverChangeColorSettings = true;
+                NvidiaDynamicVibranceProxy.ResetForTests(device, vibranceInfo, settings);
+
+                IntPtr desktop = GetDesktopWindow();
+                string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+                SetHdrState(gameDeviceName, state);
+
+                InvokeNvidiaOnWinEventHook(desktop, "TestHdrW2");
+
+                checklist.Check(device.LevelFor(gameDeviceName) == 45, string.Format(
+                    "W2 (NVIDIA apply, no separate HDR level, state={0}): still writes the raw IngameLevel (45) exactly as before this PR, got {1}",
+                    state, device.LevelFor(gameDeviceName)));
+
+                HdrStateTracker.ResetForTests(null);
+            }
+        }
+
+        // W3. ToggleForegroundProfile's own write (line ~618) must resolve the level too, not just
+        // OnWinEventHook's automatic apply branch.
+        private static void CheckNvidiaToggleUsesResolvedLevel(Checklist checklist)
+        {
+            FakeNvidiaVibranceDevice device = new FakeNvidiaVibranceDevice();
+            ApplicationSetting matchingSetting = new ApplicationSetting();
+            matchingSetting.Name = "TestHdrW3";
+            matchingSetting.IngameLevel = 60;
+            matchingSetting.HdrIngameLevel = 25;
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.isWindowsLevelKnown = true;
+            vibranceInfo.userVibranceSettingDefault = 30;
+            NvidiaDynamicVibranceProxy.ResetForTests(device, vibranceInfo, settings);
+            ProfileToggleHelper.SetSuppressed("TestHdrW3", true);
+
+            IntPtr desktop = GetDesktopWindow();
+            string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+            SetHdrState(gameDeviceName, HdrDisplayState.Hdr);
+
+            ProfileToggleResult result = InvokeNvidiaToggle(desktop, "TestHdrW3", null);
+
+            checklist.Check(result == ProfileToggleResult.ToggledOn && device.LevelFor(gameDeviceName) == 25, string.Format(
+                "W3 (NVIDIA toggle): ToggleForegroundProfile's ApplyGameLevel write uses the resolved HDR level (25), not the raw IngameLevel (60), got result={0} level={1}",
+                result, device.LevelFor(gameDeviceName)));
+
+            HdrStateTracker.ResetForTests(null);
+            ProfileToggleHelper.ResetForTests();
+        }
+
+        // W4. RecheckForegroundHdrLevel (the poll timer / DisplaySettingsChanged fast path's call)
+        // re-applies against HdrStateTracker's CURRENT reading - proves a Sdr->Hdr transition,
+        // detected via the exact same RefreshAndDetectChange() the real poll uses, actually reaches
+        // a new write. Mutation this guards: RecheckForegroundHdrLevel resolving against a stale or
+        // cached state, or not writing at all.
+        private static void CheckNvidiaRecheckAppliesOnDetectedTransition(Checklist checklist)
+        {
+            FakeNvidiaVibranceDevice device = new FakeNvidiaVibranceDevice();
+            ApplicationSetting matchingSetting = new ApplicationSetting();
+            matchingSetting.Name = "TestHdrW4";
+            matchingSetting.IngameLevel = 60;
+            matchingSetting.HdrIngameLevel = 15;
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.isWindowsLevelKnown = true;
+            vibranceInfo.userVibranceSettingDefault = 5;
+            NvidiaDynamicVibranceProxy.ResetForTests(device, vibranceInfo, settings);
+
+            IntPtr desktop = GetDesktopWindow();
+            string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+
+            FakeHdrStateReader fake = new FakeHdrStateReader();
+            fake.NextResult = OneDisplay(gameDeviceName, HdrDisplayState.Sdr, true);
+            HdrStateTracker.ResetForTests(fake);
+            HdrStateTracker.RefreshAndDetectChange();
+
+            IVibranceProxy proxy = (IVibranceProxy)NewNvidiaInstance();
+            proxy.RecheckForegroundHdrLevel(desktop, "TestHdrW4", null);
+            int levelWhileSdr = device.LevelFor(gameDeviceName);
+
+            // The transition RecheckForegroundHdrLevel is meant to notice - same
+            // RefreshAndDetectChange() the real poll timer/fast path calls before ever reaching
+            // RecheckForegroundHdrLevel (see VibranceGUI.OnHdrRecheckTick).
+            fake.NextResult = OneDisplay(gameDeviceName, HdrDisplayState.Hdr, true);
+            bool changed = HdrStateTracker.RefreshAndDetectChange();
+
+            proxy.RecheckForegroundHdrLevel(desktop, "TestHdrW4", null);
+            int levelWhileHdr = device.LevelFor(gameDeviceName);
+
+            checklist.Check(changed && levelWhileSdr == 60 && levelWhileHdr == 15, string.Format(
+                "W4 (NVIDIA recheck): a detected Sdr->Hdr transition re-applies from IngameLevel (60) to HdrIngameLevel (15), got changed={0} levelWhileSdr={1} levelWhileHdr={2}",
+                changed, levelWhileSdr, levelWhileHdr));
+
+            HdrStateTracker.ResetForTests(null);
+        }
+
+        // W5. A suppressed profile (toggled off by hotkey) owes RecheckForegroundHdrLevel nothing -
+        // mirrors OnWinEventHook's own suppression gate. Mutation this guards: re-applying (and so
+        // silently undoing the toggle hotkey's own effect) for a game the user explicitly forced to
+        // the Windows level.
+        private static void CheckNvidiaRecheckSkipsSuppressedGame(Checklist checklist)
+        {
+            FakeNvidiaVibranceDevice device = new FakeNvidiaVibranceDevice();
+            ApplicationSetting matchingSetting = new ApplicationSetting();
+            matchingSetting.Name = "TestHdrW5";
+            matchingSetting.IngameLevel = 60;
+            matchingSetting.HdrIngameLevel = 15;
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.isWindowsLevelKnown = true;
+            vibranceInfo.userVibranceSettingDefault = 5;
+            NvidiaDynamicVibranceProxy.ResetForTests(device, vibranceInfo, settings);
+            ProfileToggleHelper.SetSuppressed("TestHdrW5", true);
+
+            IntPtr desktop = GetDesktopWindow();
+            string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+            SetHdrState(gameDeviceName, HdrDisplayState.Hdr);
+
+            IVibranceProxy proxy = (IVibranceProxy)NewNvidiaInstance();
+            proxy.RecheckForegroundHdrLevel(desktop, "TestHdrW5", null);
+
+            checklist.Check(device.LevelFor(gameDeviceName) == int.MinValue,
+                string.Format("W5 (NVIDIA recheck, suppressed): a suppressed profile is never re-applied, got level={0}", device.LevelFor(gameDeviceName)));
+
+            HdrStateTracker.ResetForTests(null);
+            ProfileToggleHelper.ResetForTests();
+        }
+
+        // A1 (the trap). The AMD guard at the apply branch's own line - "if
+        // (_vibranceInfo.userVibranceSettingDefault != resolvedLevel)" - has to compare against the
+        // RESOLVED level, not applicationSetting.IngameLevel. This is #147 part 2's most natural
+        // configuration: Windows level 100, IngameLevel 100 (so the SDR guard would read
+        // "100 != 100" == false and skip), HdrIngameLevel 40, display Hdr. A write-only fix that
+        // leaves the guard comparing IngameLevel would still skip here and this check would see
+        // int.MinValue (never written) instead of 40 - this is the check the team's own review
+        // called out as the one thing most likely to go wrong.
+        private static void CheckAmdGuardUsesResolvedLevelNotRawIngameLevel(Checklist checklist)
+        {
+            FakeAmdAdapter adapter = new FakeAmdAdapter();
+            ApplicationSetting matchingSetting = new ApplicationSetting();
+            matchingSetting.Name = "TestHdrA1";
+            matchingSetting.IngameLevel = 100;
+            matchingSetting.HdrIngameLevel = 40;
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+            AmdDynamicVibranceProxy proxy = BuildAmdProxy(adapter, settings);
+            proxy.SetAffectPrimaryMonitorOnly(true);
+            proxy.SetVibranceWindowsLevel(100);
+
+            IntPtr desktop = GetDesktopWindow();
+            string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+            SetHdrState(gameDeviceName, HdrDisplayState.Hdr);
+
+            InvokeAmdOnWinEventHook(proxy, desktop, "TestHdrA1");
+
+            int writtenLevel = adapter.SetSaturationOnDisplayLevels.Count > 0 ? adapter.SetSaturationOnDisplayLevels[adapter.SetSaturationOnDisplayLevels.Count - 1] : int.MinValue;
+            checklist.Check(adapter.SetSaturationOnDisplayLevels.Count == 1 && writtenLevel == 40, string.Format(
+                "A1 (AMD guard trap): Windows==IngameLevel==100, HdrIngameLevel=40, display Hdr - the guard must compare against the RESOLVED level (40 != 100) and write it, not skip on \"100 != 100\", got writeCount={0} lastLevel={1}",
+                adapter.SetSaturationOnDisplayLevels.Count, writtenLevel));
+
+            HdrStateTracker.ResetForTests(null);
+        }
+
+        // A2. The guard's ORIGINAL purpose - "don't rewrite the game level onto its own Windows
+        // default" - must still hold for a profile with no separate HDR level configured, in both
+        // display states. Mutation this guards: losing the skip-when-equal behaviour entirely while
+        // fixing A1 above (e.g. always writing regardless of the guard).
+        private static void CheckAmdNoSeparateLevelBehavesExactlyAsBefore(Checklist checklist)
+        {
+            foreach (HdrDisplayState state in new[] { HdrDisplayState.Sdr, HdrDisplayState.Hdr })
+            {
+                FakeAmdAdapter adapter = new FakeAmdAdapter();
+                ApplicationSetting matchingSetting = new ApplicationSetting();
+                matchingSetting.Name = "TestHdrA2";
+                matchingSetting.IngameLevel = 100;
+                // HdrIngameLevel left at HdrLevelUnset - no separate level configured.
+                List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+                AmdDynamicVibranceProxy proxy = BuildAmdProxy(adapter, settings);
+                proxy.SetAffectPrimaryMonitorOnly(true);
+                proxy.SetVibranceWindowsLevel(100);
+
+                IntPtr desktop = GetDesktopWindow();
+                string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+                SetHdrState(gameDeviceName, state);
+
+                InvokeAmdOnWinEventHook(proxy, desktop, "TestHdrA2");
+
+                checklist.Check(adapter.SetSaturationOnDisplayLevels.Count == 0, string.Format(
+                    "A2 (AMD guard, no separate HDR level, state={0}): resolves to IngameLevel (100), equal to the Windows level (100), so the pre-existing skip-when-equal guard still makes zero writes exactly as before, got {1}",
+                    state, adapter.SetSaturationOnDisplayLevels.Count));
+
+                HdrStateTracker.ResetForTests(null);
+            }
+        }
+
+        // A3. The write itself uses the resolved level, independent of A1's guard-equality trap -
+        // Windows/IngameLevel/HdrIngameLevel all distinct here, so this fails on its own if the
+        // write site is reverted to applicationSetting.IngameLevel even where the guard happens to
+        // still pass.
+        private static void CheckAmdApplyBranchWritesResolvedLevel(Checklist checklist)
+        {
+            FakeAmdAdapter adapter = new FakeAmdAdapter();
+            ApplicationSetting matchingSetting = new ApplicationSetting();
+            matchingSetting.Name = "TestHdrA3";
+            matchingSetting.IngameLevel = 80;
+            matchingSetting.HdrIngameLevel = 40;
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+            AmdDynamicVibranceProxy proxy = BuildAmdProxy(adapter, settings);
+            proxy.SetAffectPrimaryMonitorOnly(true);
+            proxy.SetVibranceWindowsLevel(10);
+
+            IntPtr desktop = GetDesktopWindow();
+            string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+            SetHdrState(gameDeviceName, HdrDisplayState.Hdr);
+
+            InvokeAmdOnWinEventHook(proxy, desktop, "TestHdrA3");
+
+            int writtenLevel = adapter.SetSaturationOnDisplayLevels.Count > 0 ? adapter.SetSaturationOnDisplayLevels[0] : int.MinValue;
+            checklist.Check(writtenLevel == 40, string.Format(
+                "A3 (AMD apply): writes the resolved HdrIngameLevel (40), not the raw IngameLevel (80), got {0}", writtenLevel));
+
+            HdrStateTracker.ResetForTests(null);
+        }
+
+        // A4. ToggleForegroundProfile's own write must resolve the level too, not just
+        // OnWinEventHook's automatic apply branch - checked against BOTH affectPrimaryMonitorOnly
+        // branches, since AMD's toggle (unlike NVIDIA's) genuinely differs between them.
+        private static void CheckAmdToggleUsesResolvedLevel(Checklist checklist)
+        {
+            foreach (bool affectPrimaryMonitorOnly in new[] { true, false })
+            {
+                ProfileToggleHelper.ResetForTests();
+                FakeAmdAdapter adapter = new FakeAmdAdapter();
+                ApplicationSetting matchingSetting = new ApplicationSetting();
+                matchingSetting.Name = "TestHdrA4";
+                matchingSetting.IngameLevel = 80;
+                matchingSetting.HdrIngameLevel = 35;
+                List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+                AmdDynamicVibranceProxy proxy = BuildAmdProxy(adapter, settings);
+                proxy.SetAffectPrimaryMonitorOnly(affectPrimaryMonitorOnly);
+                proxy.SetVibranceWindowsLevel(10);
+                ProfileToggleHelper.SetSuppressed("TestHdrA4", true);
+
+                IntPtr desktop = GetDesktopWindow();
+                string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+                SetHdrState(gameDeviceName, HdrDisplayState.Hdr);
+
+                ProfileToggleResult result = proxy.ToggleForegroundProfile(desktop, "TestHdrA4", null);
+
+                int writtenLevel = adapter.SetSaturationOnDisplayLevels.Count > 0 ? adapter.SetSaturationOnDisplayLevels[0] : int.MinValue;
+                checklist.Check(result == ProfileToggleResult.ToggledOn && writtenLevel == 35, string.Format(
+                    "A4 (AMD toggle, affectPrimaryMonitorOnly={0}): writes the resolved HdrIngameLevel (35), not the raw IngameLevel (80), got result={1} level={2}",
+                    affectPrimaryMonitorOnly, result, writtenLevel));
+
+                HdrStateTracker.ResetForTests(null);
+                ProfileToggleHelper.ResetForTests();
+            }
+        }
+
+        // A5. RecheckForegroundHdrLevel's AMD side - same property as W4, against
+        // ApplyResolvedGameLevel instead of ApplyGameVibranceLevel.
+        private static void CheckAmdRecheckAppliesOnDetectedTransition(Checklist checklist)
+        {
+            FakeAmdAdapter adapter = new FakeAmdAdapter();
+            ApplicationSetting matchingSetting = new ApplicationSetting();
+            matchingSetting.Name = "TestHdrA5";
+            matchingSetting.IngameLevel = 80;
+            matchingSetting.HdrIngameLevel = 25;
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { matchingSetting };
+
+            AmdDynamicVibranceProxy proxy = BuildAmdProxy(adapter, settings);
+            proxy.SetAffectPrimaryMonitorOnly(true);
+            proxy.SetVibranceWindowsLevel(10);
+
+            IntPtr desktop = GetDesktopWindow();
+            string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
+
+            FakeHdrStateReader fake = new FakeHdrStateReader();
+            fake.NextResult = OneDisplay(gameDeviceName, HdrDisplayState.Sdr, true);
+            HdrStateTracker.ResetForTests(fake);
+            HdrStateTracker.RefreshAndDetectChange();
+
+            proxy.RecheckForegroundHdrLevel(desktop, "TestHdrA5", null);
+            int writesWhileSdr = adapter.SetSaturationOnDisplayLevels.Count;
+            int levelWhileSdr = writesWhileSdr > 0 ? adapter.SetSaturationOnDisplayLevels[writesWhileSdr - 1] : int.MinValue;
+
+            fake.NextResult = OneDisplay(gameDeviceName, HdrDisplayState.Hdr, true);
+            bool changed = HdrStateTracker.RefreshAndDetectChange();
+
+            proxy.RecheckForegroundHdrLevel(desktop, "TestHdrA5", null);
+            int levelWhileHdr = adapter.SetSaturationOnDisplayLevels.Count > 0
+                ? adapter.SetSaturationOnDisplayLevels[adapter.SetSaturationOnDisplayLevels.Count - 1] : int.MinValue;
+
+            checklist.Check(changed && levelWhileSdr == 80 && levelWhileHdr == 25, string.Format(
+                "A5 (AMD recheck): a detected Sdr->Hdr transition re-applies from IngameLevel (80) to HdrIngameLevel (25), got changed={0} levelWhileSdr={1} levelWhileHdr={2}",
+                changed, levelWhileSdr, levelWhileHdr));
+
+            HdrStateTracker.ResetForTests(null);
+        }
+
+        private static object NewNvidiaInstance()
+        {
+            return FormatterServices.GetUninitializedObject(typeof(NvidiaDynamicVibranceProxy));
+        }
+
+        private static void InvokeNvidiaOnWinEventHook(IntPtr handle, string processName)
+        {
+            MethodInfo onWinEventHook = typeof(NvidiaDynamicVibranceProxy).GetMethod(
+                "OnWinEventHook", BindingFlags.NonPublic | BindingFlags.Static);
+            WinEventHookEventArgs args = new WinEventHookEventArgs
+            {
+                Handle = handle,
+                ProcessName = processName,
+                ProcessImagePath = null
+            };
+            onWinEventHook.Invoke(null, new object[] { null, args });
+        }
+
+        private static ProfileToggleResult InvokeNvidiaToggle(IntPtr hWnd, string processName, string processImagePath)
+        {
+            MethodInfo m = typeof(NvidiaDynamicVibranceProxy).GetMethod("ToggleForegroundProfile");
+            return (ProfileToggleResult)m.Invoke(NewNvidiaInstance(), new object[] { hWnd, processName, processImagePath });
+        }
+
+        private static AmdDynamicVibranceProxy BuildAmdProxy(FakeAmdAdapter adapter, List<ApplicationSetting> settings)
+        {
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> windowsResolutionSettings =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            AmdDynamicVibranceProxy proxy = new AmdDynamicVibranceProxy(adapter, settings, windowsResolutionSettings);
+            proxy.SetNeverChangeColorSettings(true);
+            proxy.SetNeverSwitchResolution(true);
+            return proxy;
+        }
+
+        private static void InvokeAmdOnWinEventHook(AmdDynamicVibranceProxy proxy, IntPtr handle, string processName)
+        {
+            MethodInfo onWinEventHook = typeof(AmdDynamicVibranceProxy).GetMethod(
+                "OnWinEventHook", BindingFlags.NonPublic | BindingFlags.Instance);
+            WinEventHookEventArgs args = new WinEventHookEventArgs
+            {
+                Handle = handle,
+                ProcessName = processName,
+                ProcessImagePath = null
+            };
+            onWinEventHook.Invoke(proxy, new object[] { null, args });
+        }
+
+        // Mirrors VibranceRestoreFixture.FakeNvidiaVibranceDevice - records every (deviceName ->
+        // handle) resolution and every (handle -> level) write, so the real apply/toggle/recheck
+        // code is driven for real against it, never reimplemented here. A separate copy rather than
+        // a shared one: that class's own copy is private to VibranceRestoreFixture, and this one
+        // adds LevelFor (below) purely as a convenience for reading back what a device believes its
+        // level is, which none of that fixture's own checks needed.
+        private class FakeNvidiaVibranceDevice : INvidiaVibranceDevice
+        {
+            private readonly Dictionary<string, int> _handlesByDeviceName = new Dictionary<string, int>();
+            private readonly Dictionary<int, int> _levelsByHandle = new Dictionary<int, int>();
+            private int _nextHandle = 1;
+
+            public int HandleFor(string deviceName)
+            {
+                return ResolveOrAssign(deviceName);
+            }
+
+            // The level this fake currently believes deviceName's display is at, or int.MinValue
+            // if nothing has ever been written to it.
+            public int LevelFor(string deviceName)
+            {
+                int level;
+                return _levelsByHandle.TryGetValue(ResolveOrAssign(deviceName), out level) ? level : int.MinValue;
+            }
+
+            private int ResolveOrAssign(string deviceName)
+            {
+                int handle;
+                if (!_handlesByDeviceName.TryGetValue(deviceName, out handle))
+                {
+                    handle = _nextHandle++;
+                    _handlesByDeviceName[deviceName] = handle;
+                }
+                return handle;
+            }
+
+            public bool IsWindowActive(ref IntPtr hWnd)
+            {
+                return true;
+            }
+
+            public int TryResolveDisplayHandle(string deviceName)
+            {
+                if (string.IsNullOrEmpty(deviceName))
+                {
+                    return -1;
+                }
+                return ResolveOrAssign(deviceName);
+            }
+
+            public bool IsAtLevel(int displayHandle, int level)
+            {
+                int current;
+                return _levelsByHandle.TryGetValue(displayHandle, out current) && current == level;
+            }
+
+            public bool SetLevel(int displayHandle, int level)
+            {
+                _levelsByHandle[displayHandle] = level;
+                return true;
+            }
+        }
+
+        // Everything IAmdAdapter exposes, none of it touching real hardware - mirrors
+        // VibranceRestoreFixture.FakeAmdAdapter/StabilityFixture.FakeAmdAdapter, trimmed to what
+        // this file's own checks need (a per-call level/name log, no all-displays call log since
+        // nothing here exercises the affectPrimaryMonitorOnly==false apply branch's own write).
+        private class FakeAmdAdapter : IAmdAdapter
+        {
+            public int SetSaturationOnAllDisplaysCallCount;
+
+            public readonly List<int> SetSaturationOnDisplayLevels = new List<int>();
+            public readonly List<string> SetSaturationOnDisplayNames = new List<string>();
+
+            public void SetSaturationOnAllDisplays(int vibranceLevel)
+            {
+                SetSaturationOnAllDisplaysCallCount++;
+            }
+
+            public bool SetSaturationOnDisplay(int vibranceLevel, string displayName)
+            {
+                SetSaturationOnDisplayLevels.Add(vibranceLevel);
+                SetSaturationOnDisplayNames.Add(displayName);
+                return true;
+            }
+
+            public bool IsAvailable()
+            {
+                return false;
+            }
+
+            public void Init()
+            {
+            }
+
+            public void Dispose()
+            {
             }
         }
 

@@ -302,7 +302,15 @@ namespace vibrance.GUI.NVIDIA
                 // below; today that is documented solely in the checkbox's tooltip, worth stating
                 // here too so a later reader does not "fix" this branch to match the restore
                 // branch's flag check.
-                if (ApplyGameVibranceLevel(_device, screen.DeviceName, applicationSetting.IngameLevel))
+                //
+                // Resolved against screen.DeviceName - the game's own screen - not IngameLevel
+                // directly (upstream #147, part 2): HdrStateTracker.GetState(screen.DeviceName)
+                // only ever changes what gets WRITTEN here; IsAtLevel below still reads back from
+                // the real display, so the resolved level and the skip decision can never disagree
+                // the way they can on AMD (see AmdDynamicVibranceProxy.ApplyResolvedGameLevel's own
+                // comment for that trap).
+                int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(applicationSetting, HdrStateTracker.GetState(screen.DeviceName));
+                if (ApplyGameVibranceLevel(_device, screen.DeviceName, resolvedIngameLevel))
                 {
                     VibranceRestoreHelper.RecordGameLevelApplied(screen.DeviceName);
                 }
@@ -615,7 +623,10 @@ namespace vibrance.GUI.NVIDIA
 
             if (decision.Action == ProfileToggleAction.ApplyGameLevel)
             {
-                if (!ApplyGameVibranceLevel(_device, deviceName, decision.Setting.IngameLevel))
+                // Resolved against deviceName - the same screen the write below targets - exactly
+                // like OnWinEventHook's own apply branch (upstream #147, part 2).
+                int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(decision.Setting, HdrStateTracker.GetState(deviceName));
+                if (!ApplyGameVibranceLevel(_device, deviceName, resolvedIngameLevel))
                 {
                     return ProfileToggleResult.WriteFailed;
                 }
@@ -630,6 +641,43 @@ namespace vibrance.GUI.NVIDIA
             }
             ProfileToggleHelper.SetSuppressed(name, true);
             return ProfileToggleResult.ToggledOff;
+        }
+
+        /// <summary>
+        /// See IVibranceProxy.RecheckForegroundHdrLevel for the full contract (upstream #147, part
+        /// 2's re-check path). Consults ProfileToggleHelper.IsSuppressed the same way the apply
+        /// branch of OnWinEventHook does - a suppressed profile has already been forced to the
+        /// Windows level and owes nothing here; re-applying its HDR level on top of that would
+        /// undo the toggle hotkey's own effect the next time HDR state happens to change while the
+        /// game is still suppressed. The caller (VibranceGUI) only ever reaches this after
+        /// confirming a real transition, so "log once per transition" needs no dedup of its own
+        /// here - see ApplyGameVibranceLevel's own return value, which is exactly what gates the
+        /// log line below.
+        /// </summary>
+        public void RecheckForegroundHdrLevel(IntPtr foregroundWindow, string processName, string processImagePath)
+        {
+            if (!_vibranceInfo.isWindowsLevelKnown)
+            {
+                return;
+            }
+
+            ApplicationSetting setting = ApplicationSettingMatcher.FindMatch(_applicationSettings, processName, processImagePath);
+            if (setting == null || ProfileToggleHelper.IsSuppressed(setting.Name))
+            {
+                return;
+            }
+
+            string deviceName = Screen.FromHandle(foregroundWindow).DeviceName;
+            HdrDisplayState state = HdrStateTracker.GetState(deviceName);
+            int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(setting, state);
+
+            if (ApplyGameVibranceLevel(_device, deviceName, resolvedIngameLevel))
+            {
+                VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+                Program.LogSafely(string.Format(
+                    "HDR state for {0} is now {1} - re-applied {2}'s ingame vibrance level ({3}).",
+                    deviceName, state, setting.Name, resolvedIngameLevel));
+            }
         }
 
         private static void LogDisplayFailureOnce(string deviceName, string message)

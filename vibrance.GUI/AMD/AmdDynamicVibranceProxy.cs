@@ -173,28 +173,16 @@ namespace vibrance.GUI.AMD
                 _gameScreen = screen;
 
                 //apply application specific saturation
-                if (_vibranceInfo.userVibranceSettingDefault != applicationSetting.IngameLevel)
-                {
-                    if (_vibranceInfo.affectPrimaryMonitorOnly)
-                    {
-                        _amdAdapter.SetSaturationOnDisplay(applicationSetting.IngameLevel, screen.DeviceName);
-                        // Only the game's own screen was written - that is the only display owing
-                        // a restore.
-                        VibranceRestoreHelper.RecordGameLevelApplied(screen.DeviceName);
-                    }
-                    else
-                    {
-                        _amdAdapter.SetSaturationOnAllDisplays(applicationSetting.IngameLevel);
-                        // This branch really did write every attached display, not just the game's
-                        // own - unlike NVIDIA's equivalent, IAmdAdapter has no per-display read-back
-                        // to confirm any of them individually, so every currently attached display
-                        // is recorded as owing a restore.
-                        foreach (Screen attachedScreen in Screen.AllScreens)
-                        {
-                            VibranceRestoreHelper.RecordGameLevelApplied(attachedScreen.DeviceName);
-                        }
-                    }
-                }
+                //
+                // Resolved once against screen.DeviceName - the game's own screen - and passed to
+                // ApplyResolvedGameLevel below, which uses that SAME resolved value for both its
+                // skip guard and its write (upstream #147, part 2). Resolving here instead of
+                // inside ApplyResolvedGameLevel matters only for the affectPrimaryMonitorOnly==false
+                // branch there: it has no single device name of its own (it broadcasts one value to
+                // every attached display), so the game's own screen is what decides which HDR
+                // state that broadcast uses - see ApplyResolvedGameLevel's own comment.
+                int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(applicationSetting, HdrStateTracker.GetState(screen.DeviceName));
+                ApplyResolvedGameLevel(resolvedIngameLevel, screen.DeviceName);
 
                 //test if a resolution change is needed
                 if (_vibranceInfo.neverChangeResolution == false && applicationSetting.IsResolutionChangeNeeded &&
@@ -255,6 +243,64 @@ namespace vibrance.GUI.AMD
                     RestoreWindowsColorSettings();
                 }
             }
+        }
+
+        /// <summary>
+        /// The write OnWinEventHook's apply branch and RecheckForegroundHdrLevel both need - the
+        /// single source both call, so the "don't rewrite the game level onto its own Windows
+        /// default" guard and the actual write can never drift apart between the two call sites
+        /// (upstream #147, part 2's most likely defect in this class). Deliberately compares
+        /// userVibranceSettingDefault against resolvedLevel, never against the raw
+        /// ApplicationSetting.IngameLevel it was resolved from: comparing against the raw value
+        /// here would leave the guard answering a question about the SDR level while the write
+        /// beside it answers a question about the HDR level, and the two would only happen to
+        /// agree by coincidence. That coincidence is not rare - it is this feature's single most
+        /// natural configuration: Windows level 100, IngameLevel 100, HdrIngameLevel 40, HDR on -
+        /// "100 != 100" is false, so a guard still comparing against IngameLevel would skip the
+        /// write and the configured HDR level would never apply, with nothing logged to say why.
+        ///
+        /// affectPrimaryMonitorOnly==false has no single device name of its own - it broadcasts
+        /// resolvedLevel to every attached display via SetSaturationOnAllDisplays. deviceName here
+        /// is still the GAME's own screen (the caller resolves once against it before reaching this
+        /// method - see OnWinEventHook's own comment), so a second monitor in a different HDR state
+        /// gets the game screen's own answer, not its own - the same "one value per game" scope
+        /// IngameLevel itself already had before this feature existed. Documented explicitly here,
+        /// not left implicit, because a reviewer could reasonably expect a per-display resolve
+        /// instead - see HdrVibranceHelper.ResolveIngameLevel's own PR 2 note for the same call.
+        ///
+        /// Returns true only when this call actually attempted a write (the guard did not skip
+        /// it) - RecheckForegroundHdrLevel uses that to decide whether its own log line is
+        /// warranted; OnWinEventHook's apply branch does not need the return value at all, exactly
+        /// as it never checked SetSaturationOnDisplay/OnAllDisplays' own bool return before this
+        /// PR (see RestoreWindowsVibranceLevel's comment on this class not having a read-back).
+        /// </summary>
+        private bool ApplyResolvedGameLevel(int resolvedLevel, string deviceName)
+        {
+            if (_vibranceInfo.userVibranceSettingDefault == resolvedLevel)
+            {
+                return false;
+            }
+
+            if (_vibranceInfo.affectPrimaryMonitorOnly)
+            {
+                _amdAdapter.SetSaturationOnDisplay(resolvedLevel, deviceName);
+                // Only the game's own screen was written - that is the only display owing a
+                // restore.
+                VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+            }
+            else
+            {
+                _amdAdapter.SetSaturationOnAllDisplays(resolvedLevel);
+                // This branch really did write every attached display, not just the game's own -
+                // unlike NVIDIA's equivalent, IAmdAdapter has no per-display read-back to confirm
+                // any of them individually, so every currently attached display is recorded as
+                // owing a restore.
+                foreach (Screen attachedScreen in Screen.AllScreens)
+                {
+                    VibranceRestoreHelper.RecordGameLevelApplied(attachedScreen.DeviceName);
+                }
+            }
+            return true;
         }
 
         // Same restore this proxy now runs from both its OnWinEventHook restore branch and
@@ -332,9 +378,13 @@ namespace vibrance.GUI.AMD
 
             if (decision.Action == ProfileToggleAction.ApplyGameLevel)
             {
+                // Resolved once against deviceName - the game's own screen - and reused by both
+                // branches below, mirroring ApplyResolvedGameLevel's own reasoning for the
+                // automatic apply branch (upstream #147, part 2).
+                int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(decision.Setting, HdrStateTracker.GetState(deviceName));
                 if (_vibranceInfo.affectPrimaryMonitorOnly)
                 {
-                    if (!_amdAdapter.SetSaturationOnDisplay(decision.Setting.IngameLevel, deviceName))
+                    if (!_amdAdapter.SetSaturationOnDisplay(resolvedIngameLevel, deviceName))
                     {
                         return ProfileToggleResult.WriteFailed;
                     }
@@ -348,7 +398,7 @@ namespace vibrance.GUI.AMD
                     // (AmdAdapter32/64.cs: "SetSaturationOnDisplay(vibranceLevel, null)"), but
                     // through the named-display overload so the new ADL_OK-based bool return
                     // survives for this method to actually check - see its own header comment.
-                    if (!_amdAdapter.SetSaturationOnDisplay(decision.Setting.IngameLevel, null))
+                    if (!_amdAdapter.SetSaturationOnDisplay(resolvedIngameLevel, null))
                     {
                         return ProfileToggleResult.WriteFailed;
                     }
@@ -382,6 +432,43 @@ namespace vibrance.GUI.AMD
             }
             ProfileToggleHelper.SetSuppressed(name, true);
             return ProfileToggleResult.ToggledOff;
+        }
+
+        /// <summary>
+        /// See IVibranceProxy.RecheckForegroundHdrLevel for the full contract (upstream #147, part
+        /// 2's re-check path). Consults ProfileToggleHelper.IsSuppressed the same way the apply
+        /// branch of OnWinEventHook does - a suppressed profile has already been forced to the
+        /// Windows level and owes nothing here; re-applying its HDR level on top of that would
+        /// undo the toggle hotkey's own effect the next time HDR state happens to change while the
+        /// game is still suppressed. The write itself goes through the exact same
+        /// ApplyResolvedGameLevel the automatic apply branch uses, so its return value is what
+        /// gates the log line below - "log once per transition" needs no dedup of its own here,
+        /// since the caller (VibranceGUI) only ever reaches this after confirming a real
+        /// transition.
+        /// </summary>
+        public void RecheckForegroundHdrLevel(IntPtr foregroundWindow, string processName, string processImagePath)
+        {
+            if (!_vibranceInfo.isWindowsLevelKnown)
+            {
+                return;
+            }
+
+            ApplicationSetting setting = ApplicationSettingMatcher.FindMatch(_applicationSettings, processName, processImagePath);
+            if (setting == null || ProfileToggleHelper.IsSuppressed(setting.Name))
+            {
+                return;
+            }
+
+            string deviceName = Screen.FromHandle(foregroundWindow).DeviceName;
+            HdrDisplayState state = HdrStateTracker.GetState(deviceName);
+            int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(setting, state);
+
+            if (ApplyResolvedGameLevel(resolvedIngameLevel, deviceName))
+            {
+                Program.LogSafely(string.Format(
+                    "HDR state for {0} is now {1} - re-applied {2}'s ingame vibrance level ({3}).",
+                    deviceName, state, setting.Name, resolvedIngameLevel));
+            }
         }
 
         private void RestoreWindowsColorSettings()

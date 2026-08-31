@@ -32,6 +32,9 @@
             this.groupBox2 = new System.Windows.Forms.GroupBox();
             this.trackBarIngameLevel = new System.Windows.Forms.TrackBar();
             this.labelIngameLevel = new System.Windows.Forms.Label();
+            this.checkBoxHdrIngameLevel = new System.Windows.Forms.CheckBox();
+            this.trackBarHdrIngameLevel = new System.Windows.Forms.TrackBar();
+            this.labelHdrIngameLevel = new System.Windows.Forms.Label();
             this.buttonSave = new System.Windows.Forms.Button();
             this.labelTitle = new System.Windows.Forms.Label();
             this.pictureBox = new System.Windows.Forms.PictureBox();
@@ -53,6 +56,7 @@
             this.buttonChangeExecutable = new System.Windows.Forms.Button();
             this.groupBox2.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.trackBarIngameLevel)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.trackBarHdrIngameLevel)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox)).BeginInit();
             this.groupBox1.SuspendLayout();
             this.groupBoxBrightness.SuspendLayout();
@@ -64,20 +68,23 @@
             this.SuspendLayout();
             // 
             // groupBox2
-            // 
+            //
             this.groupBox2.Controls.Add(this.trackBarIngameLevel);
             this.groupBox2.Controls.Add(this.labelIngameLevel);
+            this.groupBox2.Controls.Add(this.checkBoxHdrIngameLevel);
+            this.groupBox2.Controls.Add(this.trackBarHdrIngameLevel);
+            this.groupBox2.Controls.Add(this.labelHdrIngameLevel);
             this.groupBox2.Location = new System.Drawing.Point(18, 97);
             this.groupBox2.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBox2.Name = "groupBox2";
             this.groupBox2.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.groupBox2.Size = new System.Drawing.Size(369, 111);
+            this.groupBox2.Size = new System.Drawing.Size(369, 210);
             this.groupBox2.TabIndex = 13;
             this.groupBox2.TabStop = false;
             this.groupBox2.Text = "Ingame Vibrance Level";
-            // 
+            //
             // trackBarIngameLevel
-            // 
+            //
             this.trackBarIngameLevel.Location = new System.Drawing.Point(24, 35);
             this.trackBarIngameLevel.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.trackBarIngameLevel.Maximum = 63;
@@ -85,9 +92,9 @@
             this.trackBarIngameLevel.Size = new System.Drawing.Size(196, 69);
             this.trackBarIngameLevel.TabIndex = 9;
             this.trackBarIngameLevel.Scroll += new System.EventHandler(this.trackBarIngameLevel_Scroll);
-            // 
+            //
             // labelIngameLevel
-            // 
+            //
             this.labelIngameLevel.AutoSize = true;
             this.labelIngameLevel.Location = new System.Drawing.Point(224, 40);
             this.labelIngameLevel.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
@@ -95,10 +102,43 @@
             this.labelIngameLevel.Size = new System.Drawing.Size(41, 20);
             this.labelIngameLevel.TabIndex = 10;
             this.labelIngameLevel.Text = "50%";
-            // 
+            //
+            // checkBoxHdrIngameLevel
+            //
+            this.checkBoxHdrIngameLevel.AutoSize = true;
+            this.checkBoxHdrIngameLevel.Location = new System.Drawing.Point(24, 108);
+            this.checkBoxHdrIngameLevel.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxHdrIngameLevel.Name = "checkBoxHdrIngameLevel";
+            this.checkBoxHdrIngameLevel.Size = new System.Drawing.Size(184, 24);
+            this.checkBoxHdrIngameLevel.TabIndex = 11;
+            this.checkBoxHdrIngameLevel.Text = "Use a different level in HDR";
+            this.checkBoxHdrIngameLevel.UseVisualStyleBackColor = true;
+            this.checkBoxHdrIngameLevel.CheckedChanged += new System.EventHandler(this.checkBoxHdrIngameLevel_CheckedChanged);
+            //
+            // trackBarHdrIngameLevel
+            //
+            this.trackBarHdrIngameLevel.Enabled = false;
+            this.trackBarHdrIngameLevel.Location = new System.Drawing.Point(24, 136);
+            this.trackBarHdrIngameLevel.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.trackBarHdrIngameLevel.Maximum = 63;
+            this.trackBarHdrIngameLevel.Name = "trackBarHdrIngameLevel";
+            this.trackBarHdrIngameLevel.Size = new System.Drawing.Size(196, 69);
+            this.trackBarHdrIngameLevel.TabIndex = 12;
+            this.trackBarHdrIngameLevel.Scroll += new System.EventHandler(this.trackBarHdrIngameLevel_Scroll);
+            //
+            // labelHdrIngameLevel
+            //
+            this.labelHdrIngameLevel.AutoSize = true;
+            this.labelHdrIngameLevel.Location = new System.Drawing.Point(224, 141);
+            this.labelHdrIngameLevel.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.labelHdrIngameLevel.Name = "labelHdrIngameLevel";
+            this.labelHdrIngameLevel.Size = new System.Drawing.Size(41, 20);
+            this.labelHdrIngameLevel.TabIndex = 13;
+            this.labelHdrIngameLevel.Text = "50%";
+            //
             // buttonSave
             // 
-            this.buttonSave.Location = new System.Drawing.Point(247, 807);
+            this.buttonSave.Location = new System.Drawing.Point(247, 906);
             this.buttonSave.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonSave.Name = "buttonSave";
             this.buttonSave.Size = new System.Drawing.Size(140, 37);
@@ -142,7 +182,7 @@
             this.groupBox1.Controls.Add(this.labelResolution);
             this.groupBox1.Controls.Add(this.checkBoxResolution);
             this.groupBox1.Controls.Add(this.cBoxResolution);
-            this.groupBox1.Location = new System.Drawing.Point(18, 581);
+            this.groupBox1.Location = new System.Drawing.Point(18, 680);
             this.groupBox1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBox1.Name = "groupBox1";
             this.groupBox1.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -178,7 +218,7 @@
             // 
             this.groupBoxBrightness.Controls.Add(this.trackBarBrightness);
             this.groupBoxBrightness.Controls.Add(this.labelBrightness);
-            this.groupBoxBrightness.Location = new System.Drawing.Point(18, 218);
+            this.groupBoxBrightness.Location = new System.Drawing.Point(18, 317);
             this.groupBoxBrightness.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxBrightness.Name = "groupBoxBrightness";
             this.groupBoxBrightness.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -212,7 +252,7 @@
             // 
             this.groupBoxContrast.Controls.Add(this.trackBarContrast);
             this.groupBoxContrast.Controls.Add(this.labelContrast);
-            this.groupBoxContrast.Location = new System.Drawing.Point(18, 339);
+            this.groupBoxContrast.Location = new System.Drawing.Point(18, 438);
             this.groupBoxContrast.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxContrast.Name = "groupBoxContrast";
             this.groupBoxContrast.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -246,7 +286,7 @@
             // 
             this.groupBoxGamma.Controls.Add(this.trackBarGamma);
             this.groupBoxGamma.Controls.Add(this.labelGamma);
-            this.groupBoxGamma.Location = new System.Drawing.Point(18, 460);
+            this.groupBoxGamma.Location = new System.Drawing.Point(18, 559);
             this.groupBoxGamma.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxGamma.Name = "groupBoxGamma";
             this.groupBoxGamma.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -279,7 +319,7 @@
             // 
             // buttonReset
             // 
-            this.buttonReset.Location = new System.Drawing.Point(18, 807);
+            this.buttonReset.Location = new System.Drawing.Point(18, 906);
             this.buttonReset.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonReset.Name = "buttonReset";
             this.buttonReset.Size = new System.Drawing.Size(140, 37);
@@ -293,7 +333,7 @@
             this.labelValidation.AutoSize = true;
             this.labelValidation.Font = new System.Drawing.Font("Microsoft Sans Serif", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.labelValidation.ForeColor = System.Drawing.Color.Red;
-            this.labelValidation.Location = new System.Drawing.Point(14, 717);
+            this.labelValidation.Location = new System.Drawing.Point(14, 816);
             this.labelValidation.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelValidation.Name = "labelValidation";
             this.labelValidation.Size = new System.Drawing.Size(0, 20);
@@ -301,7 +341,7 @@
             // 
             // buttonChangeExecutable
             // 
-            this.buttonChangeExecutable.Location = new System.Drawing.Point(18, 760);
+            this.buttonChangeExecutable.Location = new System.Drawing.Point(18, 859);
             this.buttonChangeExecutable.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonChangeExecutable.Name = "buttonChangeExecutable";
             this.buttonChangeExecutable.Size = new System.Drawing.Size(369, 37);
@@ -314,7 +354,7 @@
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(144F, 144F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
-            this.ClientSize = new System.Drawing.Size(405, 858);
+            this.ClientSize = new System.Drawing.Size(405, 957);
             this.Controls.Add(this.buttonChangeExecutable);
             this.Controls.Add(this.labelValidation);
             this.Controls.Add(this.buttonReset);
@@ -336,6 +376,7 @@
             this.groupBox2.ResumeLayout(false);
             this.groupBox2.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.trackBarIngameLevel)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.trackBarHdrIngameLevel)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox)).EndInit();
             this.groupBox1.ResumeLayout(false);
             this.groupBox1.PerformLayout();
@@ -358,6 +399,9 @@
         private System.Windows.Forms.GroupBox groupBox2;
         private System.Windows.Forms.TrackBar trackBarIngameLevel;
         private System.Windows.Forms.Label labelIngameLevel;
+        private System.Windows.Forms.CheckBox checkBoxHdrIngameLevel;
+        private System.Windows.Forms.TrackBar trackBarHdrIngameLevel;
+        private System.Windows.Forms.Label labelHdrIngameLevel;
         private System.Windows.Forms.Button buttonSave;
         private System.Windows.Forms.Label labelTitle;
         private System.Windows.Forms.PictureBox pictureBox;
