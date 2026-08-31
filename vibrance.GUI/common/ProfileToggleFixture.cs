@@ -1154,6 +1154,10 @@ namespace vibrance.GUI.common
             CheckResolveListItemAppearancesOnNullAvailableTagsReturnsEmpty(checklist);
             CheckResolveListItemAppearancesOnNullSettingsReturnsEmpty(checklist);
             CheckResolveListItemAppearancesSkipsNullFileName(checklist);
+            CheckApplyToggleRepaintAppliesEveryRowSharingTheName(checklist);
+            CheckApplyToggleRepaintSkipsARowWithNoLiveItem(checklist);
+            CheckApplyToggleRepaintContentMatchesDescribeListItem(checklist);
+            CheckApplyToggleRepaintReflectsSuppressionState(checklist);
 
             checklist.Lines.Add(string.Empty);
         }
@@ -1670,6 +1674,142 @@ namespace vibrance.GUI.common
             checklist.Check(!threw && result != null && result.Count == 0,
                 string.Format("P7: a matching setting with a null FileName is skipped, not dereferenced, got threw={0} count={1}",
                     threw, result == null ? -1 : result.Count));
+        }
+
+        /// <summary>
+        /// The fake IApplicationListRows Q1-Q4 below drive VibranceGUI.ApplyToggleRepaint through
+        /// - a Dictionary of tag to last-applied appearance, nothing ListView-shaped (no item
+        /// ordering, no image indices, no selection state). GetTags returns exactly the tags each
+        /// check wires up front; ApplyAppearance just records what it was handed. Deliberately
+        /// kept that thin: a fake that grew any WinForms-shaped behaviour would make these checks
+        /// verify a simulation of ListView instead of ApplyToggleRepaint's own logic.
+        /// </summary>
+        private sealed class FakeApplicationListRows : IApplicationListRows
+        {
+            private readonly HashSet<string> _tags;
+            internal readonly Dictionary<string, ApplicationListItemAppearance> Applied =
+                new Dictionary<string, ApplicationListItemAppearance>(StringComparer.OrdinalIgnoreCase);
+
+            internal FakeApplicationListRows(HashSet<string> tags)
+            {
+                _tags = tags;
+            }
+
+            public HashSet<string> GetTags()
+            {
+                return _tags;
+            }
+
+            public void ApplyAppearance(ApplicationListItemAppearance appearance)
+            {
+                Applied[appearance.Tag] = appearance;
+            }
+        }
+
+        // Q1-Q4. VibranceGUI.ApplyToggleRepaint - the orchestration behind
+        // RefreshToggledListItemAppearance that P1-P7 above cannot reach: ResolveListItemAppearances
+        // only proves what SHOULD be applied, never that a caller actually applies every entry it
+        // returns. Reverting ApplyToggleRepaint's own loop to push only appearances[0] passes every
+        // M/O/P check unchanged, because none of them call ApplyToggleRepaint itself - only these do.
+
+        // Q1. Two settings share the toggled Name (distinct FileName), both tags present in rows -
+        // both must actually be applied, not just resolved. Mutation this guards: pushing only
+        // appearances[0] (the single-row revert the architect asked to prove fails now), or
+        // breaking out of the loop early.
+        private static void CheckApplyToggleRepaintAppliesEveryRowSharingTheName(Checklist checklist)
+        {
+            ApplicationSetting first = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            ApplicationSetting second = new ApplicationSetting { Name = "game", FileName = @"D:\B\game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { first, second };
+            FakeApplicationListRows rows = new FakeApplicationListRows(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { first.FileName, second.FileName });
+
+            VibranceGUI.ApplyToggleRepaint(settings, "game", rows);
+
+            checklist.Check(rows.Applied.Count == 2 && rows.Applied.ContainsKey(first.FileName) && rows.Applied.ContainsKey(second.FileName),
+                string.Format("Q1: two settings sharing one Name, both with a live row, both actually get applied (not just resolved), got count={0}", rows.Applied.Count));
+        }
+
+        // Q2. Companion to Q1: a setting whose Name matches but whose tag is not among
+        // rows.GetTags() must never reach ApplyAppearance at all. Mutation this guards: bypassing
+        // ResolveListItemAppearances' own availableTags filter and applying to every setting
+        // sharing the Name directly, rather than only the ones actually resolved.
+        private static void CheckApplyToggleRepaintSkipsARowWithNoLiveItem(Checklist checklist)
+        {
+            ApplicationSetting onScreen = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            ApplicationSetting notYetCreated = new ApplicationSetting { Name = "game", FileName = @"D:\B\game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { onScreen, notYetCreated };
+            FakeApplicationListRows rows = new FakeApplicationListRows(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { onScreen.FileName });
+
+            VibranceGUI.ApplyToggleRepaint(settings, "game", rows);
+
+            checklist.Check(rows.Applied.Count == 1 && rows.Applied.ContainsKey(onScreen.FileName),
+                string.Format("Q2: a setting matching by Name but absent from rows.GetTags() is never applied, got count={0}", rows.Applied.Count));
+        }
+
+        // Q3. What actually lands in Applied must match DescribeListItem's own decision for that
+        // setting's flags - not some other value smuggled through the seam. Mutation this guards:
+        // ApplyToggleRepaint passing the wrong appearance (e.g. always appearances[0]) to
+        // rows.ApplyAppearance inside the loop.
+        private static void CheckApplyToggleRepaintContentMatchesDescribeListItem(Checklist checklist)
+        {
+            ApplicationSetting setting = new ApplicationSetting { Name = "TestApplyRepaintGame", FileName = @"D:\A\TestApplyRepaintGame.exe", IsExecutableUnconfirmed = true };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { setting };
+            FakeApplicationListRows rows = new FakeApplicationListRows(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { setting.FileName });
+
+            ProfileToggleHelper.SetSuppressed("TestApplyRepaintGame", false);
+            VibranceGUI.ApplyToggleRepaint(settings, "TestApplyRepaintGame", rows);
+
+            string expectedText;
+            Color expectedColor;
+            string expectedToolTip;
+            VibranceGUI.DescribeListItem("TestApplyRepaintGame", true, false, out expectedText, out expectedColor, out expectedToolTip);
+
+            ApplicationListItemAppearance applied;
+            bool found = rows.Applied.TryGetValue(setting.FileName, out applied);
+            bool ok = found && applied.Text == expectedText && applied.ForeColor == expectedColor && applied.ToolTip == expectedToolTip;
+            checklist.Check(ok,
+                string.Format("Q3: what actually gets applied matches DescribeListItem's own decision, got text=\"{0}\" foreColor={1}",
+                    found ? applied.Text : "<none>", found ? applied.ForeColor.ToString() : "<none>"));
+
+            ProfileToggleHelper.ResetForTests();
+        }
+
+        // Q4. A suppressed profile's applied appearance must differ from the same profile
+        // unsuppressed, exercised through the full seam this time rather than
+        // ResolveListItemAppearances alone (P4). Mutation this guards: reading the suppression
+        // state once outside the loop instead of ProfileToggleHelper.IsSuppressed fresh for every
+        // applied row.
+        private static void CheckApplyToggleRepaintReflectsSuppressionState(Checklist checklist)
+        {
+            ApplicationSetting setting = new ApplicationSetting { Name = "TestApplyRepaintSuppressGame", FileName = @"D:\A\TestApplyRepaintSuppressGame.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { setting };
+
+            ProfileToggleHelper.SetSuppressed("TestApplyRepaintSuppressGame", false);
+            FakeApplicationListRows unsuppressedRows = new FakeApplicationListRows(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { setting.FileName });
+            VibranceGUI.ApplyToggleRepaint(settings, "TestApplyRepaintSuppressGame", unsuppressedRows);
+
+            ProfileToggleHelper.SetSuppressed("TestApplyRepaintSuppressGame", true);
+            FakeApplicationListRows suppressedRows = new FakeApplicationListRows(
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { setting.FileName });
+            VibranceGUI.ApplyToggleRepaint(settings, "TestApplyRepaintSuppressGame", suppressedRows);
+
+            ApplicationListItemAppearance unsuppressedApplied;
+            ApplicationListItemAppearance suppressedApplied;
+            bool foundUnsuppressed = unsuppressedRows.Applied.TryGetValue(setting.FileName, out unsuppressedApplied);
+            bool foundSuppressed = suppressedRows.Applied.TryGetValue(setting.FileName, out suppressedApplied);
+
+            bool ok = foundUnsuppressed && foundSuppressed &&
+                      unsuppressedApplied.Text != suppressedApplied.Text &&
+                      unsuppressedApplied.ForeColor != suppressedApplied.ForeColor;
+            checklist.Check(ok,
+                string.Format("Q4: a suppressed profile's applied appearance differs from the same profile unsuppressed, got unsuppressedText=\"{0}\" suppressedText=\"{1}\"",
+                    foundUnsuppressed ? unsuppressedApplied.Text : "<none>", foundSuppressed ? suppressedApplied.Text : "<none>"));
+
+            ProfileToggleHelper.ResetForTests();
         }
 
         private static void InvokeNvidiaOnWinEventHook(string processName, IntPtr handle)
