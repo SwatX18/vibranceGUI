@@ -179,6 +179,7 @@
     <Compile Include="NVIDIA\NvidiaDynamicVibranceProxy.cs" />
     <Compile Include="NVIDIA\NvidiaTypes.cs" />
     <Compile Include="common\RegistryController.cs" />
+    <Compile Include="common\ILogSink.cs" />
     <Compile Include="common\VibranceGUI.cs">
       <SubType>Form</SubType>
     </Compile>
