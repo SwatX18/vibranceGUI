@@ -1147,6 +1147,13 @@ namespace vibrance.GUI.common
             CheckFindApplicationSettingsByNameOnNullSettingsReturnsEmpty(checklist);
             CheckFindApplicationSettingsByNameOnNullOrEmptyNameReturnsEmpty(checklist);
             CheckFindApplicationSettingsByNameSkipsNullEntries(checklist);
+            CheckResolveListItemAppearancesReturnsEveryProfileSharingTheName(checklist);
+            CheckResolveListItemAppearancesOmitsARowWithNoLiveItem(checklist);
+            CheckResolveListItemAppearancesContentMatchesDescribeListItem(checklist);
+            CheckResolveListItemAppearancesReflectsSuppressionState(checklist);
+            CheckResolveListItemAppearancesOnNullAvailableTagsReturnsEmpty(checklist);
+            CheckResolveListItemAppearancesOnNullSettingsReturnsEmpty(checklist);
+            CheckResolveListItemAppearancesSkipsNullFileName(checklist);
 
             checklist.Lines.Add(string.Empty);
         }
@@ -1483,6 +1490,185 @@ namespace vibrance.GUI.common
 
             checklist.Check(!threw && result != null && result.Count == 1 && result[0] == target,
                 string.Format("O7: a null entry in the settings list is skipped, not dereferenced, got threw={0} count={1}",
+                    threw, result == null ? -1 : result.Count));
+        }
+
+        // P1-P7. VibranceGUI.ResolveListItemAppearances - the whole repaint decision behind
+        // RefreshToggledListItemAppearance, not just which settings share a Name (O1-O7 above)
+        // but, for each one, whether a live row exists for it at all and, if so, exactly what
+        // that row becomes. This is the wiring FindApplicationSettingsByName and DescribeListItem
+        // were never exercised through TOGETHER before this method existed: reverting
+        // RefreshToggledListItemAppearance's own loop to repaint only the single FindMatch result
+        // used to pass every check in this file, because nothing called the combination the real
+        // bug lived in. Called directly here, the same real method
+        // RefreshToggledListItemAppearance calls - no reflection, no Form.
+
+        // P1. Two settings share the toggled Name (distinct FileName) and BOTH have a live row
+        // (both tags present in availableTags) - both must come back, not just the one
+        // ApplicationSettingMatcher.FindMatch would have resolved. Mutation this guards: an early
+        // return the moment one appearance is produced, or resolving only toRepaint[0].
+        private static void CheckResolveListItemAppearancesReturnsEveryProfileSharingTheName(Checklist checklist)
+        {
+            ApplicationSetting first = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            ApplicationSetting second = new ApplicationSetting { Name = "game", FileName = @"D:\B\game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { first, second };
+            HashSet<string> tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { first.FileName, second.FileName };
+
+            List<ApplicationListItemAppearance> result = VibranceGUI.ResolveListItemAppearances(settings, "game", tags);
+
+            bool ok = result.Count == 2 &&
+                      result.Exists(a => a.Tag == first.FileName) &&
+                      result.Exists(a => a.Tag == second.FileName);
+            checklist.Check(ok,
+                string.Format("P1: two settings sharing one Name, both with a live row, both produce an appearance, got count={0}", result.Count));
+        }
+
+        // P2. Companion to P1: a setting whose Name matches but whose tag is NOT among
+        // availableTags (no ListViewItem for it yet) produces NO entry - this is the lvi == null
+        // case RefreshToggledListItemAppearance used to test inline, decided here instead now.
+        // Mutation this guards: dropping the availableTags check entirely, which would hand
+        // RefreshToggledListItemAppearance a Tag that FindApplicationListItem can never resolve -
+        // harmless there only because of ITS OWN separate null check, which is not what this
+        // check pins.
+        private static void CheckResolveListItemAppearancesOmitsARowWithNoLiveItem(Checklist checklist)
+        {
+            ApplicationSetting onScreen = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            ApplicationSetting notYetCreated = new ApplicationSetting { Name = "game", FileName = @"D:\B\game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { onScreen, notYetCreated };
+            HashSet<string> tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { onScreen.FileName };
+
+            List<ApplicationListItemAppearance> result = VibranceGUI.ResolveListItemAppearances(settings, "game", tags);
+
+            checklist.Check(result.Count == 1 && result[0].Tag == onScreen.FileName,
+                string.Format("P2: a setting matching by Name but absent from availableTags produces no entry, got count={0}", result.Count));
+        }
+
+        // P3. The content of a produced appearance must be exactly what DescribeListItem itself
+        // computes for that setting's own flags - not a hand-copied mirror of M1-M9's logic.
+        // Mutation this guards: passing the wrong isUnconfirmed/isSuppressed pair into
+        // DescribeListItem, or composing Text/ForeColor/ToolTip some other way than that call.
+        private static void CheckResolveListItemAppearancesContentMatchesDescribeListItem(Checklist checklist)
+        {
+            ApplicationSetting setting = new ApplicationSetting { Name = "TestResolveGame", FileName = @"D:\A\TestResolveGame.exe", IsExecutableUnconfirmed = true };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { setting };
+            HashSet<string> tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { setting.FileName };
+
+            ProfileToggleHelper.SetSuppressed("TestResolveGame", false);
+            List<ApplicationListItemAppearance> result = VibranceGUI.ResolveListItemAppearances(settings, "TestResolveGame", tags);
+
+            string expectedText;
+            Color expectedColor;
+            string expectedToolTip;
+            VibranceGUI.DescribeListItem("TestResolveGame", true, false, out expectedText, out expectedColor, out expectedToolTip);
+
+            bool ok = result.Count == 1 &&
+                      result[0].Text == expectedText &&
+                      result[0].ForeColor == expectedColor &&
+                      result[0].ToolTip == expectedToolTip;
+            checklist.Check(ok,
+                string.Format("P3: an appearance's Text/ForeColor/ToolTip match DescribeListItem's own decision for that setting's flags, got text=\"{0}\" foreColor={1}",
+                    result.Count > 0 ? result[0].Text : "<none>", result.Count > 0 ? result[0].ForeColor.ToString() : "<none>"));
+
+            ProfileToggleHelper.ResetForTests();
+        }
+
+        // P4. A suppressed profile's appearance must differ from the same profile unsuppressed -
+        // exercising ResolveListItemAppearances' own call to ProfileToggleHelper.IsSuppressed
+        // (read fresh, never cached) rather than a snapshot taken once outside the loop. Mutation
+        // this guards: hardcoding isSuppressed (either literal) into the DescribeListItem call.
+        private static void CheckResolveListItemAppearancesReflectsSuppressionState(Checklist checklist)
+        {
+            ApplicationSetting setting = new ApplicationSetting { Name = "TestResolveSuppressGame", FileName = @"D:\A\TestResolveSuppressGame.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { setting };
+            HashSet<string> tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { setting.FileName };
+
+            ProfileToggleHelper.SetSuppressed("TestResolveSuppressGame", false);
+            List<ApplicationListItemAppearance> unsuppressed = VibranceGUI.ResolveListItemAppearances(settings, "TestResolveSuppressGame", tags);
+
+            ProfileToggleHelper.SetSuppressed("TestResolveSuppressGame", true);
+            List<ApplicationListItemAppearance> suppressed = VibranceGUI.ResolveListItemAppearances(settings, "TestResolveSuppressGame", tags);
+
+            bool ok = unsuppressed.Count == 1 && suppressed.Count == 1 &&
+                      unsuppressed[0].Text != suppressed[0].Text &&
+                      unsuppressed[0].ForeColor != suppressed[0].ForeColor;
+            checklist.Check(ok,
+                string.Format("P4: a suppressed profile's appearance differs from the same profile unsuppressed, got unsuppressedText=\"{0}\" suppressedText=\"{1}\"",
+                    unsuppressed.Count > 0 ? unsuppressed[0].Text : "<none>", suppressed.Count > 0 ? suppressed[0].Text : "<none>"));
+
+            ProfileToggleHelper.ResetForTests();
+        }
+
+        // P5. A null availableTags never throws and yields no appearances - GetApplicationListItemTags
+        // always hands back a real HashSet, but nothing here should crash, or resolve every match
+        // by some default-permissive behaviour, if that ever stops being true.
+        private static void CheckResolveListItemAppearancesOnNullAvailableTagsReturnsEmpty(Checklist checklist)
+        {
+            ApplicationSetting setting = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { setting };
+
+            bool threw = false;
+            List<ApplicationListItemAppearance> result = null;
+            try
+            {
+                result = VibranceGUI.ResolveListItemAppearances(settings, "game", null);
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            checklist.Check(!threw && result != null && result.Count == 0,
+                string.Format("P5: a null availableTags never throws and returns an empty (not null) list, got threw={0} result={1}",
+                    threw, result == null ? "null" : "count=" + result.Count));
+        }
+
+        // P6. A null settings list (the same startup window FindApplicationSettingsByName's own
+        // O5 already covers) must not throw flowing through this extra layer either.
+        private static void CheckResolveListItemAppearancesOnNullSettingsReturnsEmpty(Checklist checklist)
+        {
+            bool threw = false;
+            List<ApplicationListItemAppearance> result = null;
+            try
+            {
+                result = VibranceGUI.ResolveListItemAppearances(null, "game", new HashSet<string>());
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            checklist.Check(!threw && result != null && result.Count == 0,
+                string.Format("P6: a null settings list never throws and returns an empty (not null) list, got threw={0} result={1}",
+                    threw, result == null ? "null" : "count=" + result.Count));
+        }
+
+        // P7. A setting whose Name matches but whose own FileName is null or empty must be
+        // skipped, never matched against availableTags at all - even in the one case that check
+        // could otherwise (wrongly) succeed: availableTags itself containing string.Empty (a
+        // ListViewItem whose Tag somehow ended up ""). Mutation this guards: dropping the
+        // FileName guard and relying on availableTags.Contains alone - HashSet&lt;string&gt;.Contains(null)
+        // returns false harmlessly (proven separately: that half of this guard is not load-bearing
+        // on its own), but Contains(string.Empty) against a set that legitimately holds "" is not,
+        // which is why this check pins string.Empty rather than null.
+        private static void CheckResolveListItemAppearancesSkipsNullFileName(Checklist checklist)
+        {
+            ApplicationSetting blankFileName = new ApplicationSetting { Name = "game", FileName = string.Empty };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { blankFileName };
+            HashSet<string> tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { string.Empty };
+
+            bool threw = false;
+            List<ApplicationListItemAppearance> result = null;
+            try
+            {
+                result = VibranceGUI.ResolveListItemAppearances(settings, "game", tags);
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            checklist.Check(!threw && result != null && result.Count == 0,
+                string.Format("P7: a matching setting with a null FileName is skipped, not dereferenced, got threw={0} count={1}",
                     threw, result == null ? -1 : result.Count));
         }
 
