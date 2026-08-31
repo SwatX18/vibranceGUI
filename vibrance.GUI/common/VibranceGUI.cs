@@ -33,6 +33,25 @@ namespace vibrance.GUI.common
         internal string ToolTip;
     }
 
+    /// <summary>
+    /// The two operations ApplyToggleRepaint needs against the application list's rows - the set
+    /// of tags (ApplicationSetting.FileName) currently on screen, and pushing one decided
+    /// appearance onto the row with a matching tag. Exists so ApplyToggleRepaint can run against
+    /// a real listApplications through VibranceGUI's own nested ApplicationListRows (see that
+    /// class) or a fake ProfileToggleFixture drives directly - a Dictionary&lt;string,
+    /// ApplicationListItemAppearance&gt; of tag to last-applied appearance is enough, nothing
+    /// ListView-shaped, because a Form cannot be built fixture-side (its constructor calls
+    /// getProxy(...)). Deliberately exactly these two operations: FindApplicationListItem's other
+    /// caller (OnForegroundChangedConfirmExecutable) does not go through this interface, because
+    /// its own per-FileName lookup for a single row is a different, already-covered concern (see
+    /// that method's own comment).
+    /// </summary>
+    internal interface IApplicationListRows
+    {
+        HashSet<string> GetTags();
+        void ApplyAppearance(ApplicationListItemAppearance appearance);
+    }
+
     public partial class VibranceGUI : Form
     {
         private GraphicsAdapter _graphicsAdapter;
@@ -875,20 +894,16 @@ namespace vibrance.GUI.common
         /// so a single hotkey press can suppress every ApplicationSetting that shares that Name at
         /// once - two entries whose executables merely happen to share a bare file name, e.g.
         /// D:\A\game.exe and D:\B\game.exe (both "game" via VibranceSettings.
-        /// resolveApplicationName), toggle together. ResolveListItemAppearances below is the
-        /// whole decision - which of those rows actually has a live ListViewItem AND what each
-        /// one should become - so what is left here is deliberately mechanical: collect the tags
-        /// currently on screen (the one input a fixture cannot supply, see
-        /// GetApplicationListItemTags), hand them off with the toggled Name, then for each
-        /// appearance that comes back, look the row up by its Tag and assign the three properties
-        /// already decided for it. A row whose tag was not on screen never appears in that list at
-        /// all - see ResolveListItemAppearances' own comment for why that is not an error: the
-        /// item picks up the current suppression state on its own the moment
-        /// ApplyApplicationListItemAppearance creates it, because that method reads
-        /// ProfileToggleHelper.IsSuppressed fresh every time rather than from a snapshot. The null
-        /// check below is a defensive mirror of that same fact (the ListView could only fall out
-        /// of sync with the tag set gathered a few lines above via reentrancy, which nothing on
-        /// this UI-thread-only path does), not a second policy.
+        /// resolveApplicationName), toggle together.
+        ///
+        /// Everything past the two guards below - which of those rows actually has a live
+        /// ListViewItem, what each one should become, and pushing that onto the row - is
+        /// ApplyToggleRepaint, given the real application list through the nested
+        /// ApplicationListRows adapter (see both their own comments). That split is what lets
+        /// ProfileToggleFixture drive the WHOLE decide-then-apply pipeline through a fake
+        /// IApplicationListRows instead of stopping at ResolveListItemAppearances' pure decision
+        /// the way it used to: reverting ApplyToggleRepaint's own loop to repaint a single row now
+        /// fails a check there, where it used to fail nothing.
         /// </summary>
         private void RefreshToggledListItemAppearance(ProfileToggleResult result, string processName, string processImagePath)
         {
@@ -903,12 +918,52 @@ namespace vibrance.GUI.common
                 return;
             }
 
-            List<ApplicationListItemAppearance> appearances =
-                ResolveListItemAppearances(_applicationSettings, setting.Name, GetApplicationListItemTags());
-            for (int i = 0; i < appearances.Count; i++)
+            ApplyToggleRepaint(_applicationSettings, setting.Name, new ApplicationListRows(this));
+        }
+
+        /// <summary>
+        /// The real IApplicationListRows - a thin wrapper over this Form's own listApplications,
+        /// nothing more. GetTags is verbatim the old GetApplicationListItemTags body: the set of
+        /// tags (ApplicationSetting.FileName) currently on screen, gathered with the same null
+        /// guard on Tag and the same StringComparer.OrdinalIgnoreCase FindApplicationListItem
+        /// itself compares by, so the two can never disagree about which tags exist.
+        /// ApplyAppearance is FindApplicationListItem plus the same three-property assignment
+        /// ApplyApplicationListItemAppearance makes for a freshly created item. The null check
+        /// there is a defensive mirror of the fact that ApplyToggleRepaint only ever hands this an
+        /// appearance whose Tag came from this same GetTags call a moment earlier (see
+        /// ResolveListItemAppearances' own availableTags filter) - it could only fall out of sync
+        /// via reentrancy, which nothing on this UI-thread-only path does.
+        ///
+        /// Nested (rather than top-level) so it can reach listApplications and
+        /// FindApplicationListItem directly, the same access ApplyApplicationListItemAppearance
+        /// and the old GetApplicationListItemTags had as instance members of VibranceGUI itself.
+        /// </summary>
+        private sealed class ApplicationListRows : IApplicationListRows
+        {
+            private readonly VibranceGUI _owner;
+
+            internal ApplicationListRows(VibranceGUI owner)
             {
-                ApplicationListItemAppearance appearance = appearances[i];
-                ListViewItem lvi = FindApplicationListItem(appearance.Tag);
+                _owner = owner;
+            }
+
+            public HashSet<string> GetTags()
+            {
+                HashSet<string> tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (ListViewItem lvi in _owner.listApplications.Items)
+                {
+                    if (lvi.Tag != null)
+                    {
+                        tags.Add(lvi.Tag.ToString());
+                    }
+                }
+
+                return tags;
+            }
+
+            public void ApplyAppearance(ApplicationListItemAppearance appearance)
+            {
+                ListViewItem lvi = _owner.FindApplicationListItem(appearance.Tag);
                 if (lvi != null)
                 {
                     lvi.Text = appearance.Text;
@@ -916,29 +971,6 @@ namespace vibrance.GUI.common
                     lvi.ToolTipText = appearance.ToolTip;
                 }
             }
-        }
-
-        /// <summary>
-        /// The set of tags (ApplicationSetting.FileName) currently on screen in listApplications -
-        /// the one input ResolveListItemAppearances needs that a fixture cannot supply on its own,
-        /// because it comes from a live ListView.Items and this codebase has no Form-free way to
-        /// build one (VibranceGUI's own constructor calls getProxy(...)). Mirrors
-        /// FindApplicationListItem's own comparison exactly - same null guard on Tag, same
-        /// StringComparison.OrdinalIgnoreCase (via StringComparer.OrdinalIgnoreCase here) - so the
-        /// two can never disagree about which tags exist.
-        /// </summary>
-        private HashSet<string> GetApplicationListItemTags()
-        {
-            HashSet<string> tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (ListViewItem lvi in this.listApplications.Items)
-            {
-                if (lvi.Tag != null)
-                {
-                    tags.Add(lvi.Tag.ToString());
-                }
-            }
-
-            return tags;
         }
 
         /// <summary>
@@ -991,12 +1023,11 @@ namespace vibrance.GUI.common
         /// No device, no Screen, no ListView - a List&lt;ApplicationSetting&gt;, a name and a set
         /// of tags in, the appearances out - so ProfileToggleFixture can pin the real repaint
         /// decision (which rows change AND what each one becomes) without constructing a real
-        /// Form. What is deliberately NOT covered by pinning this method alone is availableTags
-        /// itself, which has to come from a live listApplications.Items (see
-        /// GetApplicationListItemTags) - and the two-line lookup-then-assign in
-        /// RefreshToggledListItemAppearance that turns a returned Tag back into a ListViewItem.
-        /// Neither of those is a decision; both are exercised for real only by constructing an
-        /// actual Form, which nothing in this fixture does.
+        /// Form. ApplyToggleRepaint below is the layer above this one that turns these appearances
+        /// into actual row writes, through IApplicationListRows rather than a live
+        /// listApplications.Items directly - see its own comment for why that split needed to
+        /// happen too, not just this one: this method alone was never enough to prove every
+        /// returned appearance actually gets applied.
         /// </summary>
         internal static List<ApplicationListItemAppearance> ResolveListItemAppearances(
             List<ApplicationSetting> settings, string toggledName, HashSet<string> availableTags)
@@ -1019,6 +1050,34 @@ namespace vibrance.GUI.common
             }
 
             return appearances;
+        }
+
+        /// <summary>
+        /// The whole orchestration behind RefreshToggledListItemAppearance: resolve the repaint
+        /// decision through ResolveListItemAppearances above, against whatever rows reports as
+        /// currently on screen, then push every appearance that comes back onto that same rows.
+        /// Deliberately takes the seam rather than a live listApplications.Items directly -
+        /// rows.GetTags() IS availableTags, so every appearance ResolveListItemAppearances hands
+        /// back already carries a Tag rows itself reported a moment earlier; the loop here has
+        /// nothing left to decide, only to apply.
+        ///
+        /// This is the layer ResolveListItemAppearances' own comment calls out as not covered by
+        /// pinning that method alone: the lookup-then-assign that used to sit inline in
+        /// RefreshToggledListItemAppearance. The real caller (RefreshToggledListItemAppearance)
+        /// reaches this through the real ApplicationListRows adapter over this Form's own
+        /// listApplications; ProfileToggleFixture calls it directly with a fake IApplicationListRows
+        /// - a Dictionary&lt;string, ApplicationListItemAppearance&gt; of tag to last-applied
+        /// appearance, nothing ListView-shaped - instead of constructing a Form (its constructor
+        /// calls getProxy(...)), so it can pin that every resolved appearance actually gets
+        /// applied, not just that ResolveListItemAppearances decided it should be.
+        /// </summary>
+        internal static void ApplyToggleRepaint(List<ApplicationSetting> settings, string toggledName, IApplicationListRows rows)
+        {
+            List<ApplicationListItemAppearance> appearances = ResolveListItemAppearances(settings, toggledName, rows.GetTags());
+            for (int i = 0; i < appearances.Count; i++)
+            {
+                rows.ApplyAppearance(appearances[i]);
+            }
         }
 
         /// <summary>
