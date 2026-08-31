@@ -34,15 +34,60 @@ namespace vibrance.GUI
         private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
+        private const string CliSelfTestMessageBoxCaption = "vibranceGUI command line self test";
+        private const string HelpMessageBoxCaption = "vibranceGUI command line options";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
         [STAThread]
         static void Main(string[] args)
         {
+            // Dispatched before the single-instance mutex below, unlike --selftest-* further down:
+            // --help has no state to protect and no reason to depend on being the only running
+            // instance - upstream #120's report opens with "where can I find command lines", so
+            // this has to work even while vibranceGUI is already running in the tray, not bounce
+            // off "You can run vibranceGUI only once at a time!" first.
+            if (CliOptions.IsHelpRequested(args))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, CliOptions.BuildHelpLines().ToArray()),
+                    HelpMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Syntax only (see CliOptions.ParseSetVibranceLevel's own comment) - and deliberately
+            // ahead of the mutex too: a malformed --set-vibrance (missing value, not a number) is a
+            // scripting mistake independent of whether another instance happens to be running, and
+            // must be reported the same way either way, not swallowed by "only once at a time"
+            // whenever a second instance happens to be the one that hits it.
+            SetVibranceParseResult vibranceRequest = CliOptions.ParseSetVibranceLevel(args);
+            if (vibranceRequest.Status == SetVibranceParseStatus.MissingValue)
+            {
+                MessageBox.Show(CliOptions.SetVibranceFlag + " needs a value, e.g. " + CliOptions.SetVibranceFlag + " 50.",
+                    MessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            if (vibranceRequest.Status == SetVibranceParseStatus.NotANumber)
+            {
+                MessageBox.Show(CliOptions.SetVibranceFlag + " needs a whole number, e.g. " + CliOptions.SetVibranceFlag + " 50.",
+                    MessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
             bool result = false;
             Mutex mutex = new Mutex(true, "vibranceGUI~Mutex", out result);
             if (!result)
             {
+                // A recognised --set-vibrance hands its request to the already-running instance
+                // through VibranceCliRelay instead of showing the dialog below - see that class's
+                // own header comment for why a window message, not a pipe or the INI file. Falls
+                // through to the exact same dialog as any other second launch when there is
+                // nothing to relay (no flag given) or relaying itself could not find a window (the
+                // mutex says an instance exists but none could be located - safest to say the same
+                // thing as always rather than guess further).
+                if (vibranceRequest.Status == SetVibranceParseStatus.Recognized &&
+                    VibranceCliRelay.TryRelay(vibranceRequest.Level))
+                {
+                    return;
+                }
                 MessageBox.Show("You can run vibranceGUI only once at a time!", MessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -172,6 +217,19 @@ namespace vibrance.GUI
                 return;
             }
 
+            // Same placement again: CliOptions is pure argv-in, decision-out, and
+            // VibranceCliRelay.TryRelayTo is driven against a throwaway window and this process's
+            // own id, never a second real vibranceGUI process - see CliOptionsFixture's own header
+            // comment for why. Neither one needs a driver, a running game or a settings file, so -
+            // like --selftest-matching - this stays runnable on a machine GetAdapter() cannot
+            // resolve.
+            if (args.Contains("--selftest-cli"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, CliOptionsFixture.Run().ToArray()),
+                    CliSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             // Unlike every self test above, this one DOES touch real hardware, and is the only one
             // that does so without asking first - --selftest-gamma-display below also touches real
             // hardware, but only after its own confirmation prompt. See HdrVibranceFixture's own
@@ -238,13 +296,16 @@ namespace vibrance.GUI
                 Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy = (x, y) => new AmdDynamicVibranceProxy(Environment.Is64BitOperatingSystem
                     ? new AmdAdapter64()
                     : (IAmdAdapter)new AmdAdapter32(), x, y);
+                int? amdCliVibranceLevelOverride = ResolveCliVibranceOverride(vibranceRequest, GraphicsAdapter.Amd,
+                    AmdDynamicVibranceProxy.AmdMinLevel, AmdDynamicVibranceProxy.AmdMaxLevel);
                 vibranceGui = new VibranceGUI(getProxy,
                     GraphicsAdapter.Amd,
                     AmdDynamicVibranceProxy.AmdDefaultLevel,
                     AmdDynamicVibranceProxy.AmdMinLevel,
                     AmdDynamicVibranceProxy.AmdMaxLevel,
                     AmdDynamicVibranceProxy.AmdDefaultLevel,
-                    isForcedAmdAdapterExecution);
+                    isForcedAmdAdapterExecution,
+                    amdCliVibranceLevelOverride);
             }
             else if (effectiveAdapter == GraphicsAdapter.Nvidia)
             {
@@ -256,6 +317,8 @@ namespace vibrance.GUI
                     nvidiaAdapterName);
                 Marshal.PrelinkAll(typeof(NvidiaDynamicVibranceProxy));
 
+                int? nvidiaCliVibranceLevelOverride = ResolveCliVibranceOverride(vibranceRequest, GraphicsAdapter.Nvidia,
+                    NvidiaDynamicVibranceProxy.NvapiDefaultLevel, NvidiaDynamicVibranceProxy.NvapiMaxLevel);
                 vibranceGui = new VibranceGUI(
                     (x, y) => new NvidiaDynamicVibranceProxy(x, y),
                     GraphicsAdapter.Nvidia,
@@ -263,7 +326,8 @@ namespace vibrance.GUI
                     NvidiaDynamicVibranceProxy.NvapiDefaultLevel,
                     NvidiaDynamicVibranceProxy.NvapiMaxLevel,
                     NvidiaDynamicVibranceProxy.NvapiDefaultLevel,
-                    isForcedNvidiaAdapterExecution);
+                    isForcedNvidiaAdapterExecution,
+                    nvidiaCliVibranceLevelOverride);
             }
             else if (effectiveAdapter == GraphicsAdapter.Unknown)
             {
@@ -291,6 +355,34 @@ namespace vibrance.GUI
             Application.Run(vibranceGui);
 
             GC.KeepAlive(mutex);
+        }
+
+        /// <summary>
+        /// The vendor half CliOptions.ParseSetVibranceLevel deliberately leaves out (see that
+        /// method's own comment) - called once per adapter branch below, right where that
+        /// branch's own real min/max are already in scope for the VibranceGUI constructor call a
+        /// few lines later. Returns null for "nothing to apply", covering both "no --set-vibrance
+        /// was given" and "one was given but rejected" - callers never need to tell those two
+        /// apart, both mean VibranceGUI starts exactly as it would have without this feature.
+        /// The MessageBox here, not a silent clamp: upstream #120 asks for an explicit flag over a
+        /// bare number specifically so a typo is never indistinguishable from "worked" - clamping
+        /// an out-of-range value to the nearest bound would apply a level the user never actually
+        /// asked for while looking exactly as successful as one they did.
+        /// </summary>
+        static int? ResolveCliVibranceOverride(SetVibranceParseResult request, GraphicsAdapter adapter, int minLevel, int maxLevel)
+        {
+            if (request.Status != SetVibranceParseStatus.Recognized)
+            {
+                return null;
+            }
+            if (CliOptions.IsVibranceLevelInRange(request.Level, minLevel, maxLevel))
+            {
+                return request.Level;
+            }
+            MessageBox.Show(string.Format("Ignoring {0} {1}: the valid range for {2} is {3}-{4}.",
+                CliOptions.SetVibranceFlag, request.Level, adapter.ToString().ToUpper(), minLevel, maxLevel),
+                MessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
         }
 
         /// <summary>
