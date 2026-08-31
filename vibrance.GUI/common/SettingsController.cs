@@ -333,29 +333,58 @@ namespace vibrance.GUI.common
                 Convert.ToUInt32(szValueGammaWindowsLevel.Capacity),
                 _fileName);
 
-            try
-            {
-                vibranceWindowsLevel = int.Parse(szValueInactive.ToString());
-                affectPrimaryMonitorOnly = bool.Parse(szValueAffectPrimaryMonitorOnly.ToString());
-                neverSwitchResolution = bool.Parse(szValueNeverSwitchResolution.ToString());
-                neverChangeColorSettings = bool.Parse(szValueNeverChangeColorSettings.ToString());
-                brightnessWindowsLevel = int.Parse(szValueBrightnessWindowsLevel.ToString());
-                contrastWindowsLevel = int.Parse(szValueContrastWindowsLevel.ToString());
-                gammaWindowsLevel = int.Parse(szValueGammaWindowsLevel.ToString());
-            }
-            catch (Exception)
+            // Each value is parsed on its own and falls back to its own documented default (the
+            // same default GetPrivateProfileString itself would have supplied for a missing key -
+            // see the table above each read) rather than one try/catch resetting all seven. A typo
+            // in a single key must never take the other six down with it, and - critically - must
+            // never reach applicationSettings: that list comes from a separate XML file with its
+            // own try/catch below, and emptying a user's entire configured-game list over an
+            // unrelated INI typo is the defect this replaces.
+            if (!int.TryParse(szValueInactive.ToString(), out vibranceWindowsLevel))
             {
                 vibranceWindowsLevel = defaultLevel;
-                affectPrimaryMonitorOnly = true;
-                applicationSettings = new List<ApplicationSetting>();
-                neverSwitchResolution = true;
-                neverChangeColorSettings = true;
-                brightnessWindowsLevel = 50;
-                contrastWindowsLevel = 50;
-                gammaWindowsLevel = 100;
-                return;
+                LogSettingsParseFailure(SzKeyNameInactive, szValueInactive.ToString(), vibranceWindowsLevel.ToString());
             }
 
+            if (!bool.TryParse(szValueAffectPrimaryMonitorOnly.ToString(), out affectPrimaryMonitorOnly))
+            {
+                affectPrimaryMonitorOnly = true;
+                LogSettingsParseFailure(SzKeyNameAffectPrimaryMonitorOnly, szValueAffectPrimaryMonitorOnly.ToString(), affectPrimaryMonitorOnly.ToString());
+            }
+
+            if (!bool.TryParse(szValueNeverSwitchResolution.ToString(), out neverSwitchResolution))
+            {
+                neverSwitchResolution = true;
+                LogSettingsParseFailure(SzKeyNameNeverSwitchResolution, szValueNeverSwitchResolution.ToString(), neverSwitchResolution.ToString());
+            }
+
+            if (!bool.TryParse(szValueNeverChangeColorSettings.ToString(), out neverChangeColorSettings))
+            {
+                neverChangeColorSettings = true;
+                LogSettingsParseFailure(SzKeyNameNeverChangeColorSettings, szValueNeverChangeColorSettings.ToString(), neverChangeColorSettings.ToString());
+            }
+
+            if (!int.TryParse(szValueBrightnessWindowsLevel.ToString(), out brightnessWindowsLevel))
+            {
+                brightnessWindowsLevel = 50;
+                LogSettingsParseFailure(SzKeyNameBrightnessWindowsLevel, szValueBrightnessWindowsLevel.ToString(), brightnessWindowsLevel.ToString());
+            }
+
+            if (!int.TryParse(szValueContrastWindowsLevel.ToString(), out contrastWindowsLevel))
+            {
+                contrastWindowsLevel = 50;
+                LogSettingsParseFailure(SzKeyNameContrastWindowsLevel, szValueContrastWindowsLevel.ToString(), contrastWindowsLevel.ToString());
+            }
+
+            if (!int.TryParse(szValueGammaWindowsLevel.ToString(), out gammaWindowsLevel))
+            {
+                gammaWindowsLevel = 100;
+                LogSettingsParseFailure(SzKeyNameGammaWindowsLevel, szValueGammaWindowsLevel.ToString(), gammaWindowsLevel.ToString());
+            }
+
+            // Unchanged: still clamps a successfully-parsed but out-of-range level. Harmless when
+            // vibranceWindowsLevel was just defaulted above instead, since defaultLevel is always
+            // within [defaultLevel, maxLevel] by construction.
             if (vibranceWindowsLevel < defaultLevel || vibranceWindowsLevel > maxLevel)
                 vibranceWindowsLevel = defaultLevel;
 
@@ -375,6 +404,14 @@ namespace vibrance.GUI.common
         private bool IsFileExisting(string szFilename)
         {
             return File.Exists(szFilename);
+        }
+
+        // One call per failed key, made where the failure happens, rather than one call summarising
+        // the whole ReadVibranceSettings invocation - matches DeviceGammaRampHelper/ResolutionHelper's
+        // convention of a dedicated Program.LogSafely message per specific failure.
+        private static void LogSettingsParseFailure(string keyName, string rawValue, string fallbackValue)
+        {
+            Program.LogSafely(string.Format("Failed to parse the \"{0}\" setting (\"{1}\") from the settings INI, falling back to {2}.", keyName, rawValue, fallbackValue));
         }
     }
 }
