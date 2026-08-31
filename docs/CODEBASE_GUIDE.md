@@ -1563,20 +1563,85 @@ code and no legacy-key handling anywhere: old files either parse or they do not.
 
 ### 9.2 File formats
 
-**`vibranceGUI.ini`** — one section, `[Settings]` (`SettingsController.cs:31`, `SzSectionName`):
+**`vibranceGUI.ini`** — one section, `[Settings]` (`SettingsController.cs:31`, `SzSectionName`), and
+eleven keys, declared together at `:32-42`. The table below is the complete set: it accounts for every
+`SzKeyName*` constant, all eleven `GetPrivateProfileString` calls and all eight
+`WritePrivateProfileString` calls, and those two P/Invokes appear in no other file. The first eight
+keys are read in one pass by `ReadVibranceSettings` and written in one pass by `SetVibranceSettings`
+(`:70-76`); the last three are read and written one at a time, each through the single-key writer
+`SetVibranceSetting` (`:103`), because each is needed outside that pass
+([§9.3](#93-write-and-read-paths)).
 
-| Key | Constant | Written at | Read at | Meaning |
-|---|---|---|---|---|
-| `inactiveValue` | `SzKeyNameInactive` (`:31`) | `:47` | `:273-278` (`ReadVibranceSettings`) | the Windows/desktop level, as an integer string |
-| `refreshRate` | `SzKeyNameRefreshRate` (`:32`) | never | `:280-286` (`ReadVibranceSettings`) | **read into a buffer and never used** — dead |
-| `affectPrimaryMonitorOnly` | `:33` | `:48` | `:288-294` (`ReadVibranceSettings`), default `"false"` | `bool.Parse`d |
-| `neverSwitchResolution` | `:34` | `:49` | `:296-302` (`ReadVibranceSettings`), default `"false"` | `bool.Parse`d |
+| Key | Constant | Written at | Read at | Default when the key is absent | Meaning |
+|---|---|---|---|---|---|
+| `inactiveValue` | `SzKeyNameInactive` (`:32`) | `:70` | `:273-278` (`ReadVibranceSettings`) | `""` (`szDefault`, `:270`) — not a usable default; see below | the Windows/desktop level, as an integer string |
+| `refreshRate` | `SzKeyNameRefreshRate` (`:33`) | **never** | `:280-286` (`ReadVibranceSettings`) | `""` (`szDefault`, `:270`) | **read into a buffer and never used** — dead |
+| `affectPrimaryMonitorOnly` | `SzKeyNameAffectPrimaryMonitorOnly` (`:34`) | `:71` | `:288-294` (`ReadVibranceSettings`) | **`"true"`** (`:291`) | `bool.Parse`d; `true` = only the primary display is touched |
+| `neverSwitchResolution` | `SzKeyNameNeverSwitchResolution` (`:35`) | `:72` | `:296-302` (`ReadVibranceSettings`) | **`"true"`** (`:299`) | `bool.Parse`d; `true` = per-game resolution switching is **off** |
+| `neverChangeColorSettings` | `SzKeyNameNeverChangeColorSettings` (`:36`) | `:73` | `:304-310` (`ReadVibranceSettings`) | **`"true"`** (`:307`) | `bool.Parse`d; `true` = brightness/contrast/gamma are **never touched** |
+| `brightnessWindowsLevel` | `SzKeyNameBrightnessWindowsLevel` (`:37`) | `:74` | `:312-318` (`ReadVibranceSettings`) | `"50"` (`:315`) | desktop brightness, as an integer string |
+| `contrastWindowsLevel` | `SzKeyNameContrastWindowsLevel` (`:38`) | `:75` | `:320-326` (`ReadVibranceSettings`) | `"50"` (`:323`) | desktop contrast, as an integer string |
+| `gammaWindowsLevel` | `SzKeyNameGammaWindowsLevel` (`:39`) | `:76` | `:328-334` (`ReadVibranceSettings`) | `"100"` (`:331`) | desktop gamma, as an integer string |
+| `graphicsAdapter` | `SzKeyNameGraphicsAdapter` (`:40`) | `:153` (`SetGraphicsAdapterPreference`) | `:122-128` (`ReadGraphicsAdapterPreference`) | `""` (`:125`) → `Unknown` | `"Nvidia"` or `"Amd"`, the vendor picked in the both-drivers dialog; the writer rejects every other value (`:148-151`) |
+| `toggleHotkey` | `SzKeyNameToggleHotkey` (`:41`) | `:189` (`SetToggleHotkey`) | `:171-177` (`ReadToggleHotkey`) | `""` (`:174`) → no binding | the toggle hotkey's canonical text, e.g. `Ctrl+Alt+F9` |
+| `toggleHotkeyEnabled` | `SzKeyNameToggleHotkeyEnabled` (`:42`) | `:223` (`SetToggleHotkeyEnabled`) | `:205-211` (`ReadToggleHotkeyEnabled`) | **`"False"`** (`:208`) → disabled | `bool.TryParse`d, so an unparseable value is `false` too (`:214`) |
+
+**Every boolean here defaults to the feature being off**, and the two `never…` keys are double
+negatives, so the literal in the code reads backwards from the behaviour. On a machine with no INI at
+all, this is what the user actually gets:
+
+| Key absent | Value used | What that means |
+|---|---|---|
+| `affectPrimaryMonitorOnly` | `true` | only the primary display is touched |
+| `neverSwitchResolution` | `true` | per-game resolution switching **never runs** |
+| `neverChangeColorSettings` | `true` | per-game brightness/contrast/gamma **never run** |
+| `toggleHotkeyEnabled` | `false` | the profile-toggle hotkey is **not** registered |
+
+`neverChangeColorSettings` is the one most easily read backwards. It guards the group box labelled
+"Color Settings (EXPERIMENTAL)" (`VibranceGUI.Designer.cs:463`, `groupBoxColorSettings`); its checkbox
+is labelled "Never change color settings" and ships **ticked** (`:352-353`,
+`checkBoxNeverChangeColorSettings`), with the three trackbars shipping disabled to match
+(`:490,526,561`). Plainly: **the colour feature is off until the user unticks that box**, so anything
+written on the assumption that it is live by default describes a code path that cannot fire.
+
+**The same defaults are hardcoded twice more, and the two copies disagree.** `:257-268` supplies them
+when either file is missing; `:346-357` supplies them when any parse throws. The missing-file branch
+uses `affectPrimaryMonitorOnly = true` (`:260`), matching the reader's `:291`, but the parse-failure
+branch uses **`false`** (`:349`) — the only place in the file where that setting's default is not
+`true`. Both branches agree with the reader on `neverSwitchResolution` and `neverChangeColorSettings`
+(`true` at `:262-263` and `:351-352`) and on `50`/`50`/`100`.
+
+**A missing `inactiveValue` throws away every other value in the same pass.** Its default is the empty
+string, `int.Parse("")` throws, and the catch replaces all seven parsed settings *and* empties the
+application list without ever reading the XML (`:346-357`, `ReadVibranceSettings`). Hand-editing one
+key out of the INI silently resets the rest.
+
+A file the app has written at those defaults looks like this. Booleans come from `bool.ToString()`, so
+they are capitalised on disk (`VibranceGUI.cs:1274-1276`, `SaveVibranceSettings`) while the reader's
+fallbacks above are lowercase literals; `bool.Parse` accepts either:
 
 ```ini
 [Settings]
 inactiveValue=0
-affectPrimaryMonitorOnly=false
-neverSwitchResolution=false
+affectPrimaryMonitorOnly=True
+neverSwitchResolution=True
+neverChangeColorSettings=True
+brightnessWindowsLevel=50
+contrastWindowsLevel=50
+gammaWindowsLevel=100
+```
+
+`inactiveValue=0` is the NVIDIA default level; on AMD it is `100` ([§9.4](#94-value-clamping-on-load)).
+The remaining three keys are absent until something writes them — the vendor choice only when the
+both-drivers dialog is answered with "remember" ticked (`Program.cs:321-325`,
+`AskUserForGraphicsAdapter`), the two hotkey keys only when the hotkey controls are used
+(`VibranceGUI.cs:693,710`), which bypass the five-second debounce and write immediately. All three
+land in the same `[Settings]` section:
+
+```ini
+graphicsAdapter=Nvidia
+toggleHotkey=Ctrl+Alt+F9
+toggleHotkeyEnabled=True
 ```
 
 **`applicationData.xml`** — `XmlSerializer(typeof(List<ApplicationSetting>))`, producing a root
@@ -1609,8 +1674,8 @@ identity-ish fields: `Name` is the runtime match key, `FileName` is the de-dupli
 
 ### 9.3 Write and read paths
 
-**Write** — `SettingsController.SetVibranceSettings` (`:62-94`): `PrepareFile()`, then three
-`WritePrivateProfileString` calls, then `XmlWriter.Create` (truncating), `Serialize`, `Flush`, `Close`.
+**Write** — `SettingsController.SetVibranceSettings` (`:62-94`): `PrepareFile()`, then seven
+`WritePrivateProfileString` calls (`:70-76`), then `XmlWriter.Create` (truncating), `Serialize`, `Flush`, `Close`.
 
 - Any exception in the XML block returns `false` (`:88-91`, `SetVibranceSettings`) **and leaves a truncated or empty
   `applicationData.xml`** — the writer is not in a `using`, so a mid-serialise failure both leaks the
@@ -1629,9 +1694,9 @@ identity-ish fields: `Name` is the runtime match key, `FileName` is the de-dupli
    (`:251-255`, `ReadVibranceSettings` → `AMD/AmdDynamicVibranceProxy.cs:15-17`), which replaced the
    two literals and the `// todo` that used to sit beside them without changing either number.
 2. `if (!IsFileExisting(ini) || !IsFileExisting(xml))` → return all defaults (`:257-268`, `ReadVibranceSettings`). Note the
-   **logical OR**: deleting only `applicationData.xml` also resets the vibrance level and both
-   checkboxes.
-3. Read the four INI values into 1024-char buffers.
+   **logical OR**: deleting only `applicationData.xml` also resets the vibrance level and all
+   three checkboxes.
+3. Read the eight INI values into 1024-char buffers.
 4. `int.Parse` / `bool.Parse` inside a `try`; **any** parse failure yields all defaults, an empty list
    and an early return (`:336-357`, `ReadVibranceSettings`).
 5. Clamp the Windows level ([§9.4](#94-value-clamping-on-load)).
@@ -1679,7 +1744,7 @@ Everything is under `HKCU`, so no elevation is needed. Two subtleties:
 - `CheckedChanged` also fires on **programmatic** assignment, and `ReadVibranceSettings` assigns
   `checkBoxAutostart.Checked` during startup (`:1185`, `ReadVibranceSettings`) — so a user who moved the executable sees an
   unexplained "Updated Autostart Path!" balloon on launch. Self-healing, but confusing. The same
-  re-entrancy applies to the other two checkboxes (`:1210-1211`, `ReadVibranceSettings`), which schedules a settings save five
+  re-entrancy applies to the other three checkboxes (`:1210-1212`, `ReadVibranceSettings`), which schedules a settings save five
   seconds after every launch.
 - `RegistryController` reuses one `RegistryKey` **field** across all four methods
   (`RegistryController.cs:10`) and opens the key writable even for read-only checks (`:59`). Two
@@ -1698,8 +1763,13 @@ private void settingsBackgroundWorker_DoWork(object sender, DoWorkEventArgs e)
 }
 ```
 
-It is kicked off by the desktop trackbar (`:397-400`, `trackBarGamma_Scroll`) and by the two checkboxes (`:468-471` (`checkBoxPrimaryMonitorOnly_CheckedChanged`),
-`:482-485`, `checkBoxNeverChangeResolutions_CheckedChanged`), each guarded by `if (!IsBusy)`. `ForceSaveVibranceSettings` (`:409-429`) marshals three
+It is kicked off by all four trackbars (`:367-370`, `trackBarWindowsLevel_Scroll`; `:377-380`,
+`trackBarBrightness_Scroll`; `:388-391`, `trackBarContrast_Scroll`; `:397-400`, `trackBarGamma_Scroll`),
+by all three checkboxes (`:468-471`, `checkBoxPrimaryMonitorOnly_CheckedChanged`; `:482-485`,
+`checkBoxNeverChangeResolutions_CheckedChanged`; `:540-543`,
+`checkBoxNeverChangeColorSettings_CheckedChanged`) and by the executable-confirmation path
+(`:1605-1608`, `OnForegroundChangedConfirmExecutable`), each guarded by `if (!IsBusy)`.
+`ForceSaveVibranceSettings` (`:409-429`) marshals seven
 control reads back to the UI thread with `this.Invoke` and then calls `SaveVibranceSettings`. Adding,
 editing or removing a watched application saves immediately instead (`:1671` (`listApplications_DoubleClick`), `:1719`, `buttonRemoveProgram_Click`).
 
@@ -2330,7 +2400,7 @@ re-established in-process.
 | Polling-loop fossils: `shouldRun`, `sleepInterval`, `SetShouldRun`, `SetSleepInterval`, empty `HandleDvc()` | `common/Definitions.cs:27-28` (`shouldRun`); `NvidiaDynamicVibranceProxy.cs:756-759` (`SetSleepInterval`) |
 | `SetVibranceIngameLevel` / `userVibranceSettingActive` write-only pair (**D13**) | `common/IVibranceProxy.cs:36`, `common/Definitions.cs:20` (`userVibranceSettingActive`) |
 | `WinEventHookEventArgs.Process` never assigned or read; `WindowText`/`MainWindowTitle` assigned, never read — so the `GetWindowTextLength`/`GetWindowTextA` work is pointless | `common/WinEventHookEventArgs.cs:9-15` (`Process`); `common/WinEventHook.cs:225-227` (`WinEventProc`) |
-| `SettingsController.SetVibranceSetting` never called; the `refreshRate` key is read and discarded | `common/SettingsController.cs:96-106,280-286` (`SetVibranceSetting`) |
+| The `refreshRate` key is read into a buffer and discarded; nothing has ever written it. (`SetVibranceSetting` itself is live — three single-key writers go through it, [§9.2](#92-file-formats)) | `common/SettingsController.cs:33,280-286` (`SzKeyNameRefreshRate`) |
 | `ResolutionHelper.ChangeResolution` — **deleted** on `work/resolution-change`, along with its `ChangeDisplaySettings` P/Invoke, not merely dead; the no-arg `EnumerateSupportedResolutionModes()` is still present and still never called | `common/ResolutionHelper.cs:147-150` (`_notifiedFailures`) |
 | `VibranceGUI.Log(string)` never called — and it writes to a *different* place than `Log(Exception)` (CWD-relative `vibranceGUI_log.txt` vs `%APPDATA%\vibranceGUI.log`) | `VibranceGUI.cs:1152-1167` (`Log`) |
 | The `ProgressPercentage == 2` branch ("NVAPI Unloaded: …") is unreachable; only `ReportProgress(1)` is ever called | `VibranceGUI.cs:331,438-441` (`backgroundWorker_DoWork`) |
