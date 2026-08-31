@@ -346,7 +346,7 @@ namespace vibrance.GUI.common
             catch (Exception)
             {
                 vibranceWindowsLevel = defaultLevel;
-                affectPrimaryMonitorOnly = false;
+                affectPrimaryMonitorOnly = true;
                 applicationSettings = new List<ApplicationSetting>();
                 neverSwitchResolution = true;
                 neverChangeColorSettings = true;
