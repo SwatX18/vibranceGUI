@@ -1502,6 +1502,10 @@ namespace vibrance.GUI.common
             CheckSettingsMissingKeysReadDefaults(checklist);
             CheckSettingsCorruptValuesDoNotThrow(checklist);
             CheckSettingsVibranceFallbackParity(checklist);
+            CheckSettingsPartialParseFailureLeavesOtherSixIntact(checklist);
+            CheckSettingsPartialParseFailurePreservesConfiguredGames(checklist);
+            CheckSettingsMissingInactiveValueDefaultsWithoutLosingRest(checklist);
+            CheckSettingsAllValuesUnparseableStillDefaultsAndReadsXml(checklist);
 
             checklist.Lines.Add(string.Empty);
         }
@@ -1723,11 +1727,245 @@ namespace vibrance.GUI.common
         // boilerplate.
         private static void WriteEmptyApplicationSettingsXml(string path)
         {
+            WriteApplicationSettingsXml(path, new List<ApplicationSetting>());
+        }
+
+        // ------------------------------------------------------------------
+        // S5-S8. Regression coverage for ReadVibranceSettings' partial-parse defect: a single
+        // corrupt/missing INI key used to reset all seven values to defaults, empty
+        // applicationSettings, and return before the XML read ever ran - discarding the user's
+        // entire configured-game list over one unrelated typo. All four checks below drive the
+        // real ReadVibranceSettings through real temp files, never a copy of its defaulting.
+        // ------------------------------------------------------------------
+
+        // Holds all eight ReadVibranceSettings outputs together so each check below can read them
+        // by name instead of juggling eight separate out-variables - not a reimplementation of any
+        // defaulting/parsing decision, just a container for what the real method actually returned.
+        private class VibranceSettingsSnapshot
+        {
+            public int VibranceWindowsLevel;
+            public bool AffectPrimaryMonitorOnly;
+            public bool NeverSwitchResolution;
+            public bool NeverChangeColorSettings;
+            public List<ApplicationSetting> ApplicationSettings = new List<ApplicationSetting>();
+            public int BrightnessWindowsLevel;
+            public int ContrastWindowsLevel;
+            public int GammaWindowsLevel;
+        }
+
+        private static VibranceSettingsSnapshot ReadVibranceSettingsSnapshot(SettingsController controller, GraphicsAdapter adapter)
+        {
+            VibranceSettingsSnapshot snapshot = new VibranceSettingsSnapshot();
+            controller.ReadVibranceSettings(adapter, out snapshot.VibranceWindowsLevel, out snapshot.AffectPrimaryMonitorOnly,
+                out snapshot.NeverSwitchResolution, out snapshot.NeverChangeColorSettings, out snapshot.ApplicationSettings,
+                out snapshot.BrightnessWindowsLevel, out snapshot.ContrastWindowsLevel, out snapshot.GammaWindowsLevel);
+            return snapshot;
+        }
+
+        // Same serialization boilerplate as WriteEmptyApplicationSettingsXml, generalised to any
+        // list so S6-S8 below can pin a real, non-empty configured-game list surviving the round
+        // trip - not just an empty one.
+        private static void WriteApplicationSettingsXml(string path, List<ApplicationSetting> settings)
+        {
             System.Xml.XmlWriter writer = System.Xml.XmlWriter.Create(path);
             System.Xml.Serialization.XmlSerializer serializer = new System.Xml.Serialization.XmlSerializer(typeof(List<ApplicationSetting>));
-            serializer.Serialize(writer, new List<ApplicationSetting>());
+            serializer.Serialize(writer, settings);
             writer.Flush();
             writer.Close();
+        }
+
+        private static List<ApplicationSetting> MakeConfiguredGames(int count)
+        {
+            List<ApplicationSetting> games = new List<ApplicationSetting>();
+            for (int i = 0; i < count; i++)
+            {
+                games.Add(new ApplicationSetting(
+                    "Test Game " + i, "C:\\Games\\testgame" + i + ".exe", 30, null, false, 50, 50, 100));
+            }
+            return games;
+        }
+
+        // S5. Mutation this guards: reintroduce a single try/catch around all seven parses (or any
+        // change that lets one corrupt key's fallback leak into a sibling key that parsed fine).
+        // Six of the seven values are set to distinct, deliberately non-default numbers/bools so a
+        // reset-to-defaults cannot masquerade as a pass; only contrastWindowsLevel is corrupted.
+        private static void CheckSettingsPartialParseFailureLeavesOtherSixIntact(Checklist checklist)
+        {
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                controller.SetVibranceSetting("inactiveValue", "42");
+                controller.SetVibranceSetting("affectPrimaryMonitorOnly", "False");
+                controller.SetVibranceSetting("neverSwitchResolution", "False");
+                controller.SetVibranceSetting("neverChangeColorSettings", "False");
+                controller.SetVibranceSetting("brightnessWindowsLevel", "77");
+                controller.SetVibranceSetting("contrastWindowsLevel", "NotANumber");
+                controller.SetVibranceSetting("gammaWindowsLevel", "33");
+                WriteApplicationSettingsXml(tempXml, MakeConfiguredGames(1));
+
+                VibranceSettingsSnapshot snapshot = ReadVibranceSettingsSnapshot(controller, GraphicsAdapter.Nvidia);
+
+                bool ok = snapshot.VibranceWindowsLevel == 42 &&
+                    snapshot.AffectPrimaryMonitorOnly == false &&
+                    snapshot.NeverSwitchResolution == false &&
+                    snapshot.NeverChangeColorSettings == false &&
+                    snapshot.BrightnessWindowsLevel == 77 &&
+                    snapshot.ContrastWindowsLevel == 50 &&
+                    snapshot.GammaWindowsLevel == 33;
+
+                checklist.Check(ok,
+                    string.Format("S5: one corrupt value (contrastWindowsLevel) falls back to its own default (50) while the other six keep their file values, got vibranceWindowsLevel={0} affectPrimaryMonitorOnly={1} neverSwitchResolution={2} neverChangeColorSettings={3} brightnessWindowsLevel={4} contrastWindowsLevel={5} gammaWindowsLevel={6}",
+                        snapshot.VibranceWindowsLevel, snapshot.AffectPrimaryMonitorOnly, snapshot.NeverSwitchResolution, snapshot.NeverChangeColorSettings, snapshot.BrightnessWindowsLevel, snapshot.ContrastWindowsLevel, snapshot.GammaWindowsLevel));
+            }
+            finally
+            {
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // S6. Mutation this guards: the "return" inside the old parse-failure block short-circuiting
+        // before the XML read ever ran - the core of the reported defect. A corrupt INI value must
+        // never prevent SettingsController from even attempting to read applicationData.xml, since
+        // that file holds the user's entire configured-game list and has its own, separate
+        // try/catch. Two games, not one, so a count mix-up cannot masquerade as a pass.
+        private static void CheckSettingsPartialParseFailurePreservesConfiguredGames(Checklist checklist)
+        {
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                controller.SetVibranceSetting("inactiveValue", "10");
+                controller.SetVibranceSetting("affectPrimaryMonitorOnly", "true");
+                controller.SetVibranceSetting("neverSwitchResolution", "true");
+                controller.SetVibranceSetting("neverChangeColorSettings", "true");
+                controller.SetVibranceSetting("brightnessWindowsLevel", "50");
+                controller.SetVibranceSetting("contrastWindowsLevel", "50");
+                controller.SetVibranceSetting("gammaWindowsLevel", "NotANumber");
+                List<ApplicationSetting> configuredGames = MakeConfiguredGames(2);
+                WriteApplicationSettingsXml(tempXml, configuredGames);
+
+                VibranceSettingsSnapshot snapshot = ReadVibranceSettingsSnapshot(controller, GraphicsAdapter.Nvidia);
+
+                bool ok = snapshot.ApplicationSettings != null &&
+                    snapshot.ApplicationSettings.Count == configuredGames.Count &&
+                    snapshot.ApplicationSettings[0].FileName == configuredGames[0].FileName &&
+                    snapshot.ApplicationSettings[1].FileName == configuredGames[1].FileName;
+
+                checklist.Check(ok,
+                    string.Format("S6: a single corrupt INI value (gammaWindowsLevel) never empties or skips reading the configured-game list, got count={0} (expected {1})",
+                        snapshot.ApplicationSettings == null ? -1 : snapshot.ApplicationSettings.Count, configuredGames.Count));
+            }
+            finally
+            {
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // S7. Mutation this guards: int.Parse("") throwing on a simply-absent inactiveValue key
+        // (its own GetPrivateProfileString default is "", not "0") taking down the other six
+        // values and the game list with it - the sharpest trigger for the whole defect, since
+        // every other key's own absent-key default ("true"/"50"/"100") already parses cleanly.
+        private static void CheckSettingsMissingInactiveValueDefaultsWithoutLosingRest(Checklist checklist)
+        {
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                // inactiveValue itself is never written, so GetPrivateProfileString falls back to
+                // "" for it - int.TryParse("") must fail cleanly and default to defaultLevel, not
+                // throw and not disturb anything below.
+                controller.SetVibranceSetting("affectPrimaryMonitorOnly", "False");
+                controller.SetVibranceSetting("neverSwitchResolution", "False");
+                controller.SetVibranceSetting("neverChangeColorSettings", "False");
+                controller.SetVibranceSetting("brightnessWindowsLevel", "77");
+                controller.SetVibranceSetting("contrastWindowsLevel", "88");
+                controller.SetVibranceSetting("gammaWindowsLevel", "33");
+                List<ApplicationSetting> configuredGames = MakeConfiguredGames(1);
+                WriteApplicationSettingsXml(tempXml, configuredGames);
+
+                bool threw = false;
+                VibranceSettingsSnapshot snapshot = new VibranceSettingsSnapshot();
+                try
+                {
+                    snapshot = ReadVibranceSettingsSnapshot(controller, GraphicsAdapter.Nvidia);
+                }
+                catch (Exception)
+                {
+                    threw = true;
+                }
+
+                bool ok = !threw &&
+                    snapshot.VibranceWindowsLevel == NvidiaDynamicVibranceProxy.NvapiDefaultLevel &&
+                    snapshot.AffectPrimaryMonitorOnly == false &&
+                    snapshot.NeverSwitchResolution == false &&
+                    snapshot.NeverChangeColorSettings == false &&
+                    snapshot.BrightnessWindowsLevel == 77 &&
+                    snapshot.ContrastWindowsLevel == 88 &&
+                    snapshot.GammaWindowsLevel == 33 &&
+                    snapshot.ApplicationSettings != null &&
+                    snapshot.ApplicationSettings.Count == configuredGames.Count;
+
+                checklist.Check(ok,
+                    string.Format("S7: a missing inactiveValue key (int.Parse(\"\") is the sharpest trigger) never throws and defaults only that value, got threw={0} vibranceWindowsLevel={1} affectPrimaryMonitorOnly={2} neverSwitchResolution={3} neverChangeColorSettings={4} brightnessWindowsLevel={5} contrastWindowsLevel={6} gammaWindowsLevel={7} gameCount={8}",
+                        threw, snapshot.VibranceWindowsLevel, snapshot.AffectPrimaryMonitorOnly, snapshot.NeverSwitchResolution, snapshot.NeverChangeColorSettings, snapshot.BrightnessWindowsLevel, snapshot.ContrastWindowsLevel, snapshot.GammaWindowsLevel,
+                        snapshot.ApplicationSettings == null ? -1 : snapshot.ApplicationSettings.Count));
+            }
+            finally
+            {
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // S8. Mutation this guards: any per-value fallback that doesn't match the corresponding
+        // missing-file default at :257-268, or any change that stops the XML read from running once
+        // every INI value has failed to parse - the "all seven fail at once" end of the scenario S6
+        // pins for a single value.
+        private static void CheckSettingsAllValuesUnparseableStillDefaultsAndReadsXml(Checklist checklist)
+        {
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                controller.SetVibranceSetting("inactiveValue", "NotANumber");
+                controller.SetVibranceSetting("affectPrimaryMonitorOnly", "NotABool");
+                controller.SetVibranceSetting("neverSwitchResolution", "NotABool");
+                controller.SetVibranceSetting("neverChangeColorSettings", "NotABool");
+                controller.SetVibranceSetting("brightnessWindowsLevel", "NotANumber");
+                controller.SetVibranceSetting("contrastWindowsLevel", "NotANumber");
+                controller.SetVibranceSetting("gammaWindowsLevel", "NotANumber");
+                List<ApplicationSetting> configuredGames = MakeConfiguredGames(1);
+                WriteApplicationSettingsXml(tempXml, configuredGames);
+
+                VibranceSettingsSnapshot snapshot = ReadVibranceSettingsSnapshot(controller, GraphicsAdapter.Nvidia);
+
+                bool ok = snapshot.VibranceWindowsLevel == NvidiaDynamicVibranceProxy.NvapiDefaultLevel &&
+                    snapshot.AffectPrimaryMonitorOnly == true &&
+                    snapshot.NeverSwitchResolution == true &&
+                    snapshot.NeverChangeColorSettings == true &&
+                    snapshot.BrightnessWindowsLevel == 50 &&
+                    snapshot.ContrastWindowsLevel == 50 &&
+                    snapshot.GammaWindowsLevel == 100 &&
+                    snapshot.ApplicationSettings != null &&
+                    snapshot.ApplicationSettings.Count == configuredGames.Count;
+
+                checklist.Check(ok,
+                    string.Format("S8: all seven values unparseable still yields every documented default AND still reads applicationData.xml, got vibranceWindowsLevel={0} affectPrimaryMonitorOnly={1} neverSwitchResolution={2} neverChangeColorSettings={3} brightnessWindowsLevel={4} contrastWindowsLevel={5} gammaWindowsLevel={6} gameCount={7}",
+                        snapshot.VibranceWindowsLevel, snapshot.AffectPrimaryMonitorOnly, snapshot.NeverSwitchResolution, snapshot.NeverChangeColorSettings, snapshot.BrightnessWindowsLevel, snapshot.ContrastWindowsLevel, snapshot.GammaWindowsLevel,
+                        snapshot.ApplicationSettings == null ? -1 : snapshot.ApplicationSettings.Count));
+            }
+            finally
+            {
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
         }
 
         // Records every (deviceName -> handle) resolution and every (handle -> level) write this
