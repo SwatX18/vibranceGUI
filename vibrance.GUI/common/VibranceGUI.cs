@@ -851,11 +851,21 @@ namespace vibrance.GUI.common
         /// the constructor's original (empty) list. That never actually mismatches the setting
         /// resolved here: an empty list can only make Decide return None, and
         /// ShouldRefreshListItemForToggleResult below already excludes that outcome, so this
-        /// method never gets past its own gate while the two references disagree. A
-        /// lookup miss on the ListViewItem side (the matched profile's item does not exist yet) is
-        /// silently skipped, not an error: the item picks up the current suppression state on its
-        /// own the moment ApplyApplicationListItemAppearance creates it, because that method reads
-        /// ProfileToggleHelper.IsSuppressed fresh every time rather than from a snapshot.
+        /// method never gets past its own gate while the two references disagree.
+        ///
+        /// The repaint itself is keyed by Name, not by the one setting FindMatch happened to
+        /// resolve: ProfileToggleHelper's suppression set is keyed by Name (see its own comment),
+        /// so a single hotkey press can suppress every ApplicationSetting that shares that Name at
+        /// once - two entries whose executables merely happen to share a bare file name, e.g.
+        /// D:\A\game.exe and D:\B\game.exe (both "game" via VibranceSettings.
+        /// resolveApplicationName), toggle together. FindApplicationSettingsByName below turns
+        /// "one resolved setting" into "every row whose suppression state just changed";
+        /// repainting only the resolved setting's own row would leave any other same-Name row
+        /// showing a stale marker. A lookup miss on the ListViewItem side (a matched profile's
+        /// item does not exist yet) is silently skipped per row, not an error: the item picks up
+        /// the current suppression state on its own the moment ApplyApplicationListItemAppearance
+        /// creates it, because that method reads ProfileToggleHelper.IsSuppressed fresh every time
+        /// rather than from a snapshot.
         /// </summary>
         private void RefreshToggledListItemAppearance(ProfileToggleResult result, string processName, string processImagePath)
         {
@@ -870,11 +880,49 @@ namespace vibrance.GUI.common
                 return;
             }
 
-            ListViewItem lvi = FindApplicationListItem(setting.FileName);
-            if (lvi != null)
+            List<ApplicationSetting> toRepaint = FindApplicationSettingsByName(_applicationSettings, setting.Name);
+            for (int i = 0; i < toRepaint.Count; i++)
             {
-                ApplyApplicationListItemAppearance(lvi, setting);
+                ApplicationSetting matched = toRepaint[i];
+                ListViewItem lvi = FindApplicationListItem(matched.FileName);
+                if (lvi != null)
+                {
+                    ApplyApplicationListItemAppearance(lvi, matched);
+                }
             }
+        }
+
+        /// <summary>
+        /// The decision behind RefreshToggledListItemAppearance's repaint: every ApplicationSetting
+        /// in settings whose Name matches name, compared through ProfileToggleHelper.NameComparer -
+        /// the exact comparer the suppression set itself is keyed by, so this can never select a
+        /// different set of rows than the set of profiles whose suppression state the hotkey just
+        /// changed. See ProfileToggleHelper's own field comment for why two settings CAN share one
+        /// Name, and why that makes this a list rather than a single match.
+        ///
+        /// No device, no Screen, no ListView - a List&lt;ApplicationSetting&gt; in, the matching
+        /// subset out, so ProfileToggleFixture can pin this without constructing a real Form (its
+        /// constructor calls getProxy(...)), the same reason DescribeListItem above is a pure
+        /// static rather than inlined into ApplyApplicationListItemAppearance.
+        /// </summary>
+        internal static List<ApplicationSetting> FindApplicationSettingsByName(List<ApplicationSetting> settings, string name)
+        {
+            List<ApplicationSetting> matches = new List<ApplicationSetting>();
+            if (settings == null || string.IsNullOrEmpty(name))
+            {
+                return matches;
+            }
+
+            for (int i = 0; i < settings.Count; i++)
+            {
+                ApplicationSetting setting = settings[i];
+                if (setting != null && ProfileToggleHelper.NameComparer.Equals(setting.Name, name))
+                {
+                    matches.Add(setting);
+                }
+            }
+
+            return matches;
         }
 
         /// <summary>

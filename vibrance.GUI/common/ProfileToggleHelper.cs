@@ -65,8 +65,23 @@ namespace vibrance.GUI.common
         // keeps happening for a suppressed game (see the "restore branch stays ungated" note in
         // both proxies' OnWinEventHook) while the apply-on-alt-tab-in does not. Two different
         // lifetimes, so two different pieces of state.
+        //
+        // NameComparer is the single source for that OrdinalIgnoreCase choice - the HashSet below
+        // is built from it rather than restating StringComparer.OrdinalIgnoreCase inline, and
+        // VibranceGUI.FindApplicationSettingsByName (the list-repaint decision behind
+        // RefreshToggledListItemAppearance) compares through this same field rather than a second
+        // copy of its own. Two different ApplicationSetting entries CAN legitimately share one
+        // Name - VibranceSettings.resolveApplicationName is Path.GetFileNameWithoutExtension of
+        // whatever executable the user picked, and nothing stops two installs (a demo and the
+        // full game, two store copies, two unrelated games literally called "game.exe") from
+        // producing the same bare file name - so a toggle keyed by Name suppresses BOTH at once,
+        // and every row for that Name has to repaint together or one of them goes stale. If this
+        // comparer and that one ever disagree, the set of rows repainted stops matching the set of
+        // profiles actually suppressed - the bug this all exists to close, back in a subtler form.
+        internal static readonly StringComparer NameComparer = StringComparer.OrdinalIgnoreCase;
+
         private static readonly HashSet<string> _suppressedProfileNames =
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            new HashSet<string>(NameComparer);
 
         internal static bool IsSuppressed(string name)
         {

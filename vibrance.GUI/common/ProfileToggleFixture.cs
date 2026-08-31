@@ -1112,10 +1112,13 @@ namespace vibrance.GUI.common
 
         // ------------------------------------------------------------------
         // Application list marker - VibranceGUI.DescribeListItem (the pure decision
-        // ApplyApplicationListItemAppearance turns into ListViewItem.Text/ForeColor/ToolTipText)
-        // and VibranceGUI.ShouldRefreshListItemForToggleResult (the gate
-        // RefreshToggledListItemAppearance opens on). Both are internal statics called directly -
-        // no reflection, no Form: ApplyApplicationListItemAppearance and
+        // ApplyApplicationListItemAppearance turns into ListViewItem.Text/ForeColor/ToolTipText),
+        // VibranceGUI.ShouldRefreshListItemForToggleResult (the gate
+        // RefreshToggledListItemAppearance opens on), and VibranceGUI.FindApplicationSettingsByName
+        // (the decision behind that same method's repaint - which of possibly SEVERAL settings
+        // sharing one Name need their row redrawn, see that method's own comment for why two
+        // settings can share a Name at all). All three are internal statics called directly - no
+        // reflection, no Form: ApplyApplicationListItemAppearance and
         // RefreshToggledListItemAppearance themselves need a real ListView on a real Form
         // (VibranceGUI's own constructor calls getProxy(...)), which is exactly why the decision
         // each one makes is pulled out into something a fixture CAN reach - the real gate, not a
@@ -1124,7 +1127,7 @@ namespace vibrance.GUI.common
 
         private static void RunListItemMarkerChecks(Checklist checklist)
         {
-            checklist.Lines.Add("Application list marker (VibranceGUI.DescribeListItem / ShouldRefreshListItemForToggleResult, real methods, no reflection):");
+            checklist.Lines.Add("Application list marker (VibranceGUI.DescribeListItem / ShouldRefreshListItemForToggleResult / FindApplicationSettingsByName, real methods, no reflection):");
 
             CheckDescribeListItemNeitherFlag(checklist);
             CheckDescribeListItemUnconfirmedOnly(checklist);
@@ -1136,6 +1139,13 @@ namespace vibrance.GUI.common
             CheckDescribeListItemNullNameDoesNotThrow(checklist);
             CheckMarkerSuffixesAreDistinct(checklist);
             CheckShouldRefreshOnlyOnConfirmedToggles(checklist);
+            CheckFindApplicationSettingsByNameReturnsOnlyTheMatchingOne(checklist);
+            CheckFindApplicationSettingsByNameReturnsEveryProfileSharingTheName(checklist);
+            CheckFindApplicationSettingsByNameExcludesADifferentName(checklist);
+            CheckFindApplicationSettingsByNameIsCaseInsensitive(checklist);
+            CheckFindApplicationSettingsByNameOnNullSettingsReturnsEmpty(checklist);
+            CheckFindApplicationSettingsByNameOnNullOrEmptyNameReturnsEmpty(checklist);
+            CheckFindApplicationSettingsByNameSkipsNullEntries(checklist);
 
             checklist.Lines.Add(string.Empty);
         }
@@ -1311,6 +1321,168 @@ namespace vibrance.GUI.common
             checklist.Check(onOk && offOk && noneOk && engineNotReadyOk && writeFailedOk,
                 string.Format("N1-N3: refresh fires for ToggledOn/ToggledOff only, never for NoConfiguredGameInForeground/EngineNotReady/WriteFailed, got ToggledOn={0} ToggledOff={1} NoConfiguredGameInForeground={2} EngineNotReady={3} WriteFailed={4}",
                     onOk, offOk, noneOk, engineNotReadyOk, writeFailedOk));
+        }
+
+        // O1-O7. VibranceGUI.FindApplicationSettingsByName - the decision behind
+        // RefreshToggledListItemAppearance's repaint. Two ApplicationSetting entries CAN share one
+        // Name: Name is Path.GetFileNameWithoutExtension of whatever executable the user picked
+        // (VibranceSettings.resolveApplicationName), and nothing stops two installs - a demo and
+        // the full game, two store copies, two unrelated games - from producing the same bare file
+        // name while their FileName (the full path) stays distinct. ProfileToggleHelper's
+        // suppression set is keyed by that Name, so one hotkey press suppresses every entry that
+        // shares it; this function is what turns "the one setting ApplicationSettingMatcher.
+        // FindMatch resolved" into "every row whose suppression state just changed together with
+        // it" - the fix for the defect where only the resolved row repainted and any other
+        // same-Name row went stale.
+
+        // O1. The common case: one setting has the toggled Name, a second has a different one.
+        // Mutation this guards: returning every setting regardless of Name (e.g. the guard clause
+        // deleted), or comparing the wrong field (FileName instead of Name).
+        private static void CheckFindApplicationSettingsByNameReturnsOnlyTheMatchingOne(Checklist checklist)
+        {
+            ApplicationSetting target = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            ApplicationSetting other = new ApplicationSetting { Name = "otherGame", FileName = @"D:\B\otherGame.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { target, other };
+
+            List<ApplicationSetting> result = VibranceGUI.FindApplicationSettingsByName(settings, "game");
+
+            checklist.Check(result.Count == 1 && result[0] == target,
+                string.Format("O1: only the setting whose Name matches is returned, got count={0} containsTarget={1}",
+                    result.Count, result.Contains(target)));
+        }
+
+        // O2. The defect itself: TWO settings share the toggled Name (distinct FileName, as two
+        // installs of a same-named executable would be) - both must come back, not just the one
+        // ApplicationSettingMatcher.FindMatch happened to resolve. Mutation this guards: an early
+        // "return" the moment one match is found instead of continuing the loop - exactly the bug
+        // RefreshToggledListItemAppearance used to have via FindMatch's own single-result contract.
+        private static void CheckFindApplicationSettingsByNameReturnsEveryProfileSharingTheName(Checklist checklist)
+        {
+            ApplicationSetting first = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            ApplicationSetting second = new ApplicationSetting { Name = "game", FileName = @"D:\B\game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { first, second };
+
+            List<ApplicationSetting> result = VibranceGUI.FindApplicationSettingsByName(settings, "game");
+
+            checklist.Check(result.Count == 2 && result.Contains(first) && result.Contains(second),
+                string.Format("O2: two settings sharing one Name (distinct FileName) both come back, got count={0} containsFirst={1} containsSecond={2}",
+                    result.Count, result.Contains(first), result.Contains(second)));
+        }
+
+        // O3. Companion to O2 - a third, unrelated setting must NOT be swept in alongside the two
+        // that share the toggled Name. Mutation this guards: the loop's condition dropped
+        // entirely (returning the whole list unfiltered) - undetectable by O2 alone, since O2's
+        // two settings legitimately share a Name and a "return everything" bug would still pass
+        // O1 if settings only ever held two entries, but not once a third, non-matching one is
+        // added to the same list.
+        private static void CheckFindApplicationSettingsByNameExcludesADifferentName(Checklist checklist)
+        {
+            ApplicationSetting first = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            ApplicationSetting second = new ApplicationSetting { Name = "game", FileName = @"D:\B\game.exe" };
+            ApplicationSetting unrelated = new ApplicationSetting { Name = "otherGame", FileName = @"D:\C\otherGame.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { first, second, unrelated };
+
+            List<ApplicationSetting> result = VibranceGUI.FindApplicationSettingsByName(settings, "game");
+
+            checklist.Check(result.Count == 2 && !result.Contains(unrelated),
+                string.Format("O3: a differently-named setting in the same list is excluded, got count={0} containsUnrelated={1}",
+                    result.Count, result.Contains(unrelated)));
+        }
+
+        // O4. The comparison must be case-insensitive, exactly like ProfileToggleHelper's own
+        // suppression set (NameMatches, ApplicationSettingMatcher.cs:89-94) - and, per
+        // ProfileToggleHelper.NameComparer's own comment, derived from that SAME comparer rather
+        // than a second, independent one. Mutation this guards: comparing with
+        // StringComparison.Ordinal (or plain "==") instead of ProfileToggleHelper.NameComparer.
+        private static void CheckFindApplicationSettingsByNameIsCaseInsensitive(Checklist checklist)
+        {
+            ApplicationSetting setting = new ApplicationSetting { Name = "Game", FileName = @"D:\A\Game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { setting };
+
+            List<ApplicationSetting> result = VibranceGUI.FindApplicationSettingsByName(settings, "GAME");
+
+            checklist.Check(result.Count == 1 && result[0] == setting,
+                string.Format("O4: Name comparison is case-insensitive (stored \"Game\", toggled \"GAME\"), got count={0}", result.Count));
+        }
+
+        // O5. A null settings list (the empty-startup-list window RefreshToggledListItemAppearance's
+        // own comment describes) never throws and yields an empty, non-null list rather than null -
+        // the caller's for loop would NullReferenceException on a null return.
+        private static void CheckFindApplicationSettingsByNameOnNullSettingsReturnsEmpty(Checklist checklist)
+        {
+            bool threw = false;
+            List<ApplicationSetting> result = null;
+            try
+            {
+                result = VibranceGUI.FindApplicationSettingsByName(null, "game");
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            checklist.Check(!threw && result != null && result.Count == 0,
+                string.Format("O5: a null settings list never throws and returns an empty (not null) list, got threw={0} result={1}",
+                    threw, result == null ? "null" : "count=" + result.Count));
+        }
+
+        // O6. A null or empty toggled name (IsSuppressed itself already refuses both - see
+        // ProfileToggleHelper.IsSuppressed) must not match a setting whose own Name happens to be
+        // null or empty, and must not throw doing the comparison.
+        private static void CheckFindApplicationSettingsByNameOnNullOrEmptyNameReturnsEmpty(Checklist checklist)
+        {
+            ApplicationSetting blankNamed = new ApplicationSetting { Name = null, FileName = @"D:\A\blank.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { blankNamed };
+
+            bool threwOnNull = false;
+            bool threwOnEmpty = false;
+            List<ApplicationSetting> resultForNull = null;
+            List<ApplicationSetting> resultForEmpty = null;
+            try
+            {
+                resultForNull = VibranceGUI.FindApplicationSettingsByName(settings, null);
+            }
+            catch (Exception)
+            {
+                threwOnNull = true;
+            }
+
+            try
+            {
+                resultForEmpty = VibranceGUI.FindApplicationSettingsByName(settings, string.Empty);
+            }
+            catch (Exception)
+            {
+                threwOnEmpty = true;
+            }
+
+            checklist.Check(!threwOnNull && !threwOnEmpty && resultForNull.Count == 0 && resultForEmpty.Count == 0,
+                string.Format("O6: a null or empty toggled name never throws and never matches a null-Name setting, got threwOnNull={0} threwOnEmpty={1} countForNull={2} countForEmpty={3}",
+                    threwOnNull, threwOnEmpty, resultForNull == null ? -1 : resultForNull.Count, resultForEmpty == null ? -1 : resultForEmpty.Count));
+        }
+
+        // O7. Defensive: a null entry inside the settings list (never produced by
+        // SettingsController today, but ApplicationSettingMatcher.FindMatch itself already guards
+        // the same way - see its own filter null-check) must be skipped, not dereferenced.
+        private static void CheckFindApplicationSettingsByNameSkipsNullEntries(Checklist checklist)
+        {
+            ApplicationSetting target = new ApplicationSetting { Name = "game", FileName = @"D:\A\game.exe" };
+            List<ApplicationSetting> settings = new List<ApplicationSetting> { null, target };
+
+            bool threw = false;
+            List<ApplicationSetting> result = null;
+            try
+            {
+                result = VibranceGUI.FindApplicationSettingsByName(settings, "game");
+            }
+            catch (Exception)
+            {
+                threw = true;
+            }
+
+            checklist.Check(!threw && result != null && result.Count == 1 && result[0] == target,
+                string.Format("O7: a null entry in the settings list is skipped, not dereferenced, got threw={0} count={1}",
+                    threw, result == null ? -1 : result.Count));
         }
 
         private static void InvokeNvidiaOnWinEventHook(string processName, IntPtr handle)
