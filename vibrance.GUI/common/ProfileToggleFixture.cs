@@ -45,6 +45,7 @@ namespace vibrance.GUI.common
             RunSuppressionCleanupChecks(checklist);
             RunListItemMarkerChecks(checklist);
             RunSettingsChecks(checklist);
+            RunLoggingChecks(checklist);
 
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
@@ -2137,6 +2138,208 @@ namespace vibrance.GUI.common
             {
                 DeleteFileIfExists(tempIni);
                 DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // LogSink - the seam VibranceGUI.Log(string)/Log(Exception) now delegate to instead of
+        // opening %APPDATA%\vibranceGUI\vibranceGUI.log directly (see ILogSink.cs). L1/L2 pin
+        // SettingsController's parse-failure logging above (LogSettingsParseFailure) by content -
+        // S1-S8 above only ever pinned the seven returned VALUES, never what got logged about a
+        // failed one, so a wrong key name, a swapped raw-value/fallback argument, or a missing
+        // call could regress silently. L3 pins the property Program.LogSafely exists for:
+        // DeviceGammaRampHelper's WinEvent-reachable restore path must never throw back into a
+        // native callback frame, even when the sink underneath VibranceGUI.Log is itself broken.
+        // ------------------------------------------------------------------
+
+        private static void RunLoggingChecks(Checklist checklist)
+        {
+            checklist.Lines.Add("LogSink (temp INI, RecordingLogSink/ThrowingLogSink fakes, never the real vibranceGUI.log):");
+
+            CheckSettingsParseFailureLogsSingleKeyContent(checklist);
+            CheckSettingsParseFailureLogsEverySpecificFailure(checklist);
+            CheckLogSinkNeverThrowsAcrossLogSafely(checklist);
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // L1. Mutation this guards: LogSettingsParseFailure's format string dropping the key name,
+        // logging the fallback instead of the raw bad value (or vice versa), or logging more than
+        // once for one failed key.
+        private static void CheckSettingsParseFailureLogsSingleKeyContent(Checklist checklist)
+        {
+            ILogSink previousSink = LogSink.Current;
+            RecordingLogSink recordingSink = new RecordingLogSink();
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                LogSink.Current = recordingSink;
+
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                controller.SetVibranceSetting("inactiveValue", "42");
+                controller.SetVibranceSetting("affectPrimaryMonitorOnly", "False");
+                controller.SetVibranceSetting("neverSwitchResolution", "False");
+                controller.SetVibranceSetting("neverChangeColorSettings", "False");
+                controller.SetVibranceSetting("brightnessWindowsLevel", "77");
+                controller.SetVibranceSetting("contrastWindowsLevel", "88");
+                controller.SetVibranceSetting("gammaWindowsLevel", "NotANumber");
+                WriteApplicationSettingsXml(tempXml, MakeConfiguredGames(1));
+
+                ReadVibranceSettingsSnapshot(controller, GraphicsAdapter.Nvidia);
+
+                const string expected = "Failed to parse the \"gammaWindowsLevel\" setting (\"NotANumber\") from the settings INI, falling back to 100.";
+                bool ok = recordingSink.Messages.Count == 1 && recordingSink.Messages[0] == expected;
+
+                checklist.Check(ok,
+                    string.Format("L1: a single corrupt gammaWindowsLevel logs exactly one line naming the key, the raw value and the fallback verbatim, got count={0} message=\"{1}\" (expected \"{2}\")",
+                        recordingSink.Messages.Count, recordingSink.Messages.Count > 0 ? recordingSink.Messages[0] : "<none>", expected));
+            }
+            finally
+            {
+                LogSink.Current = previousSink;
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // L2. Mutation this guards: any one of the seven LogSettingsParseFailure call sites in
+        // ReadVibranceSettings (SettingsController.cs) using the wrong key constant or the wrong
+        // fallback variable - each of the seven keys is corrupted at once specifically so a
+        // copy-pasted line still logging a sibling key's name cannot hide behind the others.
+        private static void CheckSettingsParseFailureLogsEverySpecificFailure(Checklist checklist)
+        {
+            ILogSink previousSink = LogSink.Current;
+            RecordingLogSink recordingSink = new RecordingLogSink();
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                LogSink.Current = recordingSink;
+
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                controller.SetVibranceSetting("inactiveValue", "NotANumber");
+                controller.SetVibranceSetting("affectPrimaryMonitorOnly", "NotABool");
+                controller.SetVibranceSetting("neverSwitchResolution", "NotABool");
+                controller.SetVibranceSetting("neverChangeColorSettings", "NotABool");
+                controller.SetVibranceSetting("brightnessWindowsLevel", "NotANumber");
+                controller.SetVibranceSetting("contrastWindowsLevel", "NotANumber");
+                controller.SetVibranceSetting("gammaWindowsLevel", "NotANumber");
+                WriteApplicationSettingsXml(tempXml, MakeConfiguredGames(1));
+
+                ReadVibranceSettingsSnapshot(controller, GraphicsAdapter.Nvidia);
+
+                List<string> expected = new List<string>
+                {
+                    "Failed to parse the \"inactiveValue\" setting (\"NotANumber\") from the settings INI, falling back to " + NvidiaDynamicVibranceProxy.NvapiDefaultLevel + ".",
+                    "Failed to parse the \"affectPrimaryMonitorOnly\" setting (\"NotABool\") from the settings INI, falling back to True.",
+                    "Failed to parse the \"neverSwitchResolution\" setting (\"NotABool\") from the settings INI, falling back to True.",
+                    "Failed to parse the \"neverChangeColorSettings\" setting (\"NotABool\") from the settings INI, falling back to True.",
+                    "Failed to parse the \"brightnessWindowsLevel\" setting (\"NotANumber\") from the settings INI, falling back to 50.",
+                    "Failed to parse the \"contrastWindowsLevel\" setting (\"NotANumber\") from the settings INI, falling back to 50.",
+                    "Failed to parse the \"gammaWindowsLevel\" setting (\"NotANumber\") from the settings INI, falling back to 100."
+                };
+
+                bool ok = recordingSink.Messages.Count == expected.Count;
+                if (ok)
+                {
+                    foreach (string line in expected)
+                    {
+                        if (!recordingSink.Messages.Contains(line))
+                        {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+
+                checklist.Check(ok,
+                    string.Format("L2: all seven parse failures each log their own key, raw value and fallback rather than a shared/generic line, got {0} message(s): {1}",
+                        recordingSink.Messages.Count, string.Join(" | ", recordingSink.Messages.ToArray())));
+            }
+            finally
+            {
+                LogSink.Current = previousSink;
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // L3. Mutation this guards: dropping Program.LogSafely's own try/catch (Program.cs), which
+        // is what keeps DeviceGammaRampHelper's WinEvent-reachable restore path from throwing back
+        // into a native callback frame when the log write underneath it fails. The direct
+        // VibranceGUI.Log probe first proves ThrowingLogSink is actually reached through the seam
+        // (so a broken LogSink.Current wire-up cannot make this pass vacuously); only then does the
+        // LogSafely probe assert the wrapper swallows exactly the same failure.
+        private static void CheckLogSinkNeverThrowsAcrossLogSafely(Checklist checklist)
+        {
+            ILogSink previousSink = LogSink.Current;
+            try
+            {
+                LogSink.Current = new ThrowingLogSink();
+
+                bool directCallThrew = false;
+                try
+                {
+                    VibranceGUI.Log("L3 direct probe - must reach the fake sink and throw");
+                }
+                catch (Exception)
+                {
+                    directCallThrew = true;
+                }
+
+                bool safeCallThrew = false;
+                try
+                {
+                    Program.LogSafely("L3 safe probe - must reach the fake sink without throwing");
+                }
+                catch (Exception)
+                {
+                    safeCallThrew = true;
+                }
+
+                checklist.Check(directCallThrew && !safeCallThrew,
+                    string.Format("L3: a throwing ILogSink still throws through the bare VibranceGUI.Log facade (proving the fake is really wired in) but never throws through Program.LogSafely, got directCallThrew={0} safeCallThrew={1}",
+                        directCallThrew, safeCallThrew));
+            }
+            finally
+            {
+                LogSink.Current = previousSink;
+            }
+        }
+
+        // RecordingLogSink's fixed content for L1/L2 above - never touches the real
+        // vibranceGUI.log, and records the exact string VibranceGUI.Log(string) was called with
+        // (LogSettingsParseFailure never logs an Exception, so Write(Exception) is exercised only
+        // for interface completeness).
+        private class RecordingLogSink : ILogSink
+        {
+            public readonly List<string> Messages = new List<string>();
+
+            public void Write(string message)
+            {
+                Messages.Add(message);
+            }
+
+            public void Write(Exception ex)
+            {
+                Messages.Add(ex.ToString());
+            }
+        }
+
+        // L3's fake - throws from both overloads so a check can prove Program.LogSafely's own
+        // try/catch still shields its caller even when the sink underneath VibranceGUI.Log is
+        // itself the thing failing, not just a broken File.AppendText the way it always could.
+        private class ThrowingLogSink : ILogSink
+        {
+            public void Write(string message)
+            {
+                throw new InvalidOperationException("ThrowingLogSink: Write(string) always throws.");
+            }
+
+            public void Write(Exception ex)
+            {
+                throw new InvalidOperationException("ThrowingLogSink: Write(Exception) always throws.");
             }
         }
 

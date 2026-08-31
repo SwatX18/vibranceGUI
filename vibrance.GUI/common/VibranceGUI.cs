@@ -1197,33 +1197,20 @@ namespace vibrance.GUI.common
             this.notifyIcon.ShowBalloonTip(250);
         }
 
+        // Both overloads now delegate to LogSink.Current instead of opening
+        // %APPDATA%\vibranceGUI\vibranceGUI.log directly - see ILogSink.cs. This facade's own
+        // signature is unchanged, so none of the existing VibranceGUI.Log call sites across the
+        // rest of this codebase need to change; only RealLogSink (the default LogSink.Current)
+        // still touches that file, byte for byte identically to what this method used to do
+        // itself.
         public static void Log(Exception ex)
         {
-            using (StreamWriter w = File.AppendText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "vibranceGUI\\vibranceGUI.log")))
-            {
-                w.Write("\r\nLog Entry : ");
-                w.WriteLine("{0} {1}", DateTime.Now.ToLongTimeString(),
-                    DateTime.Now.ToLongDateString());
-                w.WriteLine("Exception Found:\nType: {0}", ex.GetType().FullName);
-                w.WriteLine("Message: {0}", ex.Message);
-                w.WriteLine("Source: {0}", ex.Source);
-                w.WriteLine("Stacktrace: {0}", ex.StackTrace);
-                w.WriteLine("Exception String: {0}", ex.ToString());
-
-                w.WriteLine("-------------------------------");
-            }
+            LogSink.Current.Write(ex);
         }
 
         public static void Log(string msg)
         {
-            using (StreamWriter w = File.AppendText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "vibranceGUI\\vibranceGUI.log")))
-            {
-                w.Write("\r\nLog Entry : ");
-                w.WriteLine("{0} {1}", DateTime.Now.ToLongTimeString(),
-                    DateTime.Now.ToLongDateString());
-                w.WriteLine(msg);
-                w.WriteLine("-------------------------------");
-            }
+            LogSink.Current.Write(msg);
         }
 
         private void ReadVibranceSettings(out int vibranceWindowsLevel, out bool affectPrimaryMonitorOnly, out bool neverSwitchResolution,
