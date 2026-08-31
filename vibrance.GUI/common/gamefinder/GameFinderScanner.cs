@@ -18,14 +18,19 @@ namespace vibrance.GUI.common.gamefinder
         }
 
         // The single registration point for a new store: Steam, then Epic, then the Uninstall
-        // registry. The registry source comes last because it is the broadest: a game owned on
-        // Steam or Epic that also registers an uninstall entry keeps the row its own store made.
+        // registry, then Start Menu/desktop shortcuts. The registry source comes third because it
+        // is the broadest of the three store-aware sources: a game owned on Steam or Epic that
+        // also registers an uninstall entry keeps the row its own store made. Shortcuts come last
+        // of all - it is the least curated source here (no publisher allowlist, no store
+        // metadata), so it only ever gets to contribute an executable that none of the three
+        // sources above it already found.
         public static List<IGameLibrarySource> CreateDefaultSources()
         {
             List<IGameLibrarySource> sources = new List<IGameLibrarySource>();
             sources.Add(new SteamLibrarySource());
             sources.Add(new EpicLibrarySource());
             sources.Add(new UninstallRegistrySource());
+            sources.Add(new StartMenuShortcutSource());
             return sources;
         }
 

@@ -319,7 +319,11 @@ namespace vibrance.GUI.common
             }
             else if (_foundCount == 0)
             {
-                labelProgress.Text = "No games found. Only Steam and Epic libraries are scanned.";
+                // Deliberately does not enumerate sources by name - that list has already gone
+                // stale once (this used to say "Only Steam and Epic", years after EA, Battle.net,
+                // Rockstar, Ubisoft and the Uninstall registry all shipped). A general description
+                // cannot go stale the same way a specific one inevitably does as sources are added.
+                labelProgress.Text = "No games found. vibranceGUI scans installed games and Start Menu/desktop shortcuts.";
             }
             else
             {
@@ -456,6 +460,10 @@ namespace vibrance.GUI.common
                     // The Uninstall registry knows the publisher, not the store the user bought it
                     // from. "Installed" says only what was actually observed.
                     return "Installed";
+                case GameSource.Shortcut:
+                    // Not a store at all - a Start Menu or desktop .lnk. "Shortcut" says only
+                    // what was actually observed, same reasoning as "Installed" above.
+                    return "Shortcut";
                 default:
                     return "Steam";
             }
@@ -492,9 +500,12 @@ namespace vibrance.GUI.common
             }
             else if (candidate.Confidence == ExecutableConfidence.Guessed)
             {
+                // Was Steam-specific text until StartMenuShortcutSource also started reporting
+                // Guessed rows: a shortcut names one exact file, but nothing curates it the way a
+                // store's own metadata does, so it is no more certain than Steam's ranked guess.
                 tip += Environment.NewLine
-                    + "Steam does not say which file starts this game, so this is the most likely one. "
-                    + "You can change it later from the game's settings.";
+                    + "This source does not say for certain which file starts this game, so this "
+                    + "is the most likely one. You can change it later from the game's settings.";
             }
             return tip;
         }

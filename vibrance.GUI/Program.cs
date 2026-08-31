@@ -24,6 +24,7 @@ namespace vibrance.GUI
         private const string ErrorGraphicsAdapterAmbiguous = "Both NVIDIA and AMD graphic drivers have been found on your system. This can happen when you recently switched your graphic card and did not uninstall the old drivers. Make sure to uninstall unused graphic drivers to keep your system safe and stable. Use the program \"Display Driver Uninstaller\" to uninstall your old drivers!\n\nIn case you want to do it manually: The related files are located in your Windows folder and are called \"nvapi.dll\" (NVIDIA) and \"atiadlxx.dll\" (AMD) and \"atiadlxy.dll\" (AMD). You are free to rename/delete the files that you no longer need but proceed with caution!\n\nPress Yes to open \"Display Driver Uninstaller\" download website in your Browser now.\nPress No to quit vibranceGUI.";
         private const string MessageBoxCaption = "vibranceGUI Error";
         private const string SelfTestMessageBoxCaption = "vibranceGUI game finder self test";
+        private const string ShortcutSelfTestMessageBoxCaption = "vibranceGUI shortcut game finder self test";
         private const string GpuSelfTestMessageBoxCaption = "vibranceGUI graphics adapter self test";
         private const string MatchingSelfTestMessageBoxCaption = "vibranceGUI foreground matching self test";
         private const string StabilitySelfTestMessageBoxCaption = "vibranceGUI stability fixes self test";
@@ -73,6 +74,16 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, ExecutablePickerFixture.Run().ToArray()),
                     SelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement, same reason: StartMenuShortcutSourceFixture drives filtering, dedupe
+            // and confidence entirely through a fake IShortcutResolver, so it needs no real Start
+            // Menu, no COM and no driver either.
+            if (args.Contains("--selftest-shortcuts"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, StartMenuShortcutSourceFixture.Run().ToArray()),
+                    ShortcutSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
