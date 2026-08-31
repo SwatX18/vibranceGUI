@@ -177,6 +177,7 @@
     <Compile Include="common\IHdrStateReader.cs" />
     <Compile Include="common\HdrVibranceHelper.cs" />
     <Compile Include="common\HdrStateTracker.cs" />
+    <Compile Include="common\HdrRecheckTimer.cs" />
     <Compile Include="common\HdrVibranceFixture.cs" />
     <Compile Include="NVIDIA\NvidiaDynamicVibranceProxy.cs" />
     <Compile Include="NVIDIA\NvidiaTypes.cs" />

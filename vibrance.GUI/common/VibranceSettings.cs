@@ -24,6 +24,13 @@ namespace vibrance.GUI.common
         private string _labelTitlePrefix;
         // Only set when we extracted the icon ourselves, the initial image belongs to the list views image list
         private Image _extractedIconImage;
+        // Whether trackBarHdrIngameLevel already holds a value worth keeping - either loaded from
+        // a real ApplicationSetting.HdrIngameLevel, or set once already by the user ticking the
+        // checkbox in this dialog session. Gates the "start from the current SDR level, not 0"
+        // mirroring in checkBoxHdrIngameLevel_CheckedChanged: without it, unchecking and
+        // re-checking the box within the same session would clobber a value the user (or the
+        // saved profile) already set.
+        private bool _hdrLevelHasBeenSet;
 
         public VibranceSettings(IVibranceProxy v, int minValue, int maxValue, int defaultValue, ListViewItem sender, ApplicationSetting setting, List<ResolutionModeWrapper> supportedResolutionList, GraphicsAdapter graphicsAdapter)
         {
@@ -32,6 +39,13 @@ namespace vibrance.GUI.common
             this.trackBarIngameLevel.Minimum = minValue;
             this.trackBarIngameLevel.Maximum = maxValue;
             this.trackBarIngameLevel.Value = defaultValue;
+            // HDR ingame level trackbar (upstream #147, part 2) shares the SDR one's vendor range -
+            // Minimum/Maximum have to be set before Value for the same reason as the three lines
+            // above: AMD's Maximum is 300, and TrackBar.Value throws if assigned before the range
+            // that admits it exists.
+            this.trackBarHdrIngameLevel.Minimum = minValue;
+            this.trackBarHdrIngameLevel.Maximum = maxValue;
+            this.trackBarHdrIngameLevel.Value = defaultValue;
             this._sender = sender;
             this._graphicsAdapter = graphicsAdapter;
             this._v = v;
@@ -40,6 +54,7 @@ namespace vibrance.GUI.common
             this._isExecutableUnconfirmed = setting != null && setting.IsExecutableUnconfirmed;
             this._labelTitlePrefix = this.labelTitle.Text;
             labelIngameLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, trackBarIngameLevel.Value);
+            labelHdrIngameLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, trackBarHdrIngameLevel.Value);
             reloadTitle();
             this.pictureBox.Image = this._sender.ListView.LargeImageList.Images[this._sender.ImageIndex];
             this.cBoxResolution.DataSource = supportedResolutionList;
@@ -69,8 +84,26 @@ namespace vibrance.GUI.common
                 this.trackBarGamma.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarGamma, setting.Gamma);
                 this.cBoxResolution.SelectedItem = setting.ResolutionSettings;
                 this.checkBoxResolution.Checked = setting.IsResolutionChangeNeeded;
+
+                // Separate SDR/HDR vibrance level (upstream #147). HasSeparateHdrLevel
+                // distinguishes a real configured level from HdrLevelUnset, the only value a
+                // pre-v2.7 profile can ever have (ApplicationSetting.HdrIngameLevel's own
+                // comment). Unset starts the HDR trackbar mirroring the just-loaded SDR level
+                // rather than 0 - exactly what ticking the checkbox fresh does below - so turning
+                // HDR on for the first time always starts from where the game's SDR level already
+                // is, never from the bottom of the range.
+                bool hasSeparateHdrLevel = HdrVibranceHelper.HasSeparateHdrLevel(setting.HdrIngameLevel);
+                this.trackBarHdrIngameLevel.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarHdrIngameLevel,
+                    hasSeparateHdrLevel ? setting.HdrIngameLevel : this.trackBarIngameLevel.Value);
+                this.checkBoxHdrIngameLevel.Checked = hasSeparateHdrLevel;
+                _hdrLevelHasBeenSet = hasSeparateHdrLevel;
+
                 reloadTrackbarLabels();
             }
+            // Outside the block above so a brand new entry (setting == null) also ends up with the
+            // trackbar disabled to match the checkbox's own unchecked default, not just whatever
+            // Enabled the designer happened to leave it at.
+            this.trackBarHdrIngameLevel.Enabled = this.checkBoxHdrIngameLevel.Checked;
         }
 
         private void trackBarIngameLevel_Scroll(object sender, EventArgs e)
@@ -78,6 +111,33 @@ namespace vibrance.GUI.common
             _v.SetVibranceIngameLevel(trackBarIngameLevel.Value);
             labelIngameLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, trackBarIngameLevel.Value);
             validateIngameValues();
+        }
+
+        // Deliberately does NOT call _v.SetVibranceIngameLevel - that call belongs solely to the
+        // SDR trackbar above (trackBarIngameLevel_Scroll). There is no vendor-proxy hook for a
+        // distinct "HDR preview" value, and this dialog never applies a live device write from
+        // either trackbar regardless of which one moves; only Save persists to the settings file,
+        // and the eventual write happens later, through the resolved level each proxy's own apply
+        // site now reads (upstream #147, part 2).
+        private void trackBarHdrIngameLevel_Scroll(object sender, EventArgs e)
+        {
+            labelHdrIngameLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, trackBarHdrIngameLevel.Value);
+        }
+
+        private void checkBoxHdrIngameLevel_CheckedChanged(object sender, EventArgs e)
+        {
+            this.trackBarHdrIngameLevel.Enabled = this.checkBoxHdrIngameLevel.Checked;
+            if (this.checkBoxHdrIngameLevel.Checked && !_hdrLevelHasBeenSet)
+            {
+                // First time this profile's HDR level is turned on - never loaded a real value and
+                // never checked before in this dialog session - so it starts from the SDR level
+                // already on screen, not from the bottom of the trackbar's range. A later
+                // uncheck/re-check within the same session leaves whatever the user set alone (see
+                // _hdrLevelHasBeenSet's own comment).
+                this.trackBarHdrIngameLevel.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarHdrIngameLevel, this.trackBarIngameLevel.Value);
+                _hdrLevelHasBeenSet = true;
+                trackBarHdrIngameLevel_Scroll(null, null);
+            }
         }
 
         private void trackBarBrightness_Scroll(object sender, EventArgs e)
@@ -112,6 +172,13 @@ namespace vibrance.GUI.common
             // The constructor above knows nothing about these two, they have to be assigned afterwards
             setting.InstallDirectory = _installDirectory;
             setting.IsExecutableUnconfirmed = _isExecutableUnconfirmed;
+            // HdrLevelUnset unless the checkbox is actually ticked - an unticked box must never
+            // leave behind whatever value the trackbar happens to be showing. HasSeparateHdrLevel
+            // would otherwise treat that stale value as a real configured level the next time this
+            // profile is read (see HdrVibranceHelper.ResolveIngameLevel).
+            setting.HdrIngameLevel = this.checkBoxHdrIngameLevel.Checked
+                ? this.trackBarHdrIngameLevel.Value
+                : HdrVibranceHelper.HdrLevelUnset;
             return setting;
         }
 
@@ -234,6 +301,14 @@ namespace vibrance.GUI.common
             this.checkBoxResolution.Checked = false;
             this.cBoxResolution.SelectedIndex = 0;
 
+            // Reset clears any separate HDR level back to "none configured" (HdrLevelUnset, via
+            // GetApplicationSetting reading the unchecked checkbox) rather than leaving a stale
+            // trackbar value a later re-check would silently resurrect.
+            this.checkBoxHdrIngameLevel.Checked = false;
+            this.trackBarHdrIngameLevel.Enabled = false;
+            this.trackBarHdrIngameLevel.Value = this._vibranceDefaultValue;
+            _hdrLevelHasBeenSet = false;
+
             reloadTrackbarLabels();
         }
 
@@ -241,6 +316,7 @@ namespace vibrance.GUI.common
         {
             // Fake a scroll event, to reload the label which tells the percentage
             trackBarIngameLevel_Scroll(null, null);
+            trackBarHdrIngameLevel_Scroll(null, null);
             trackBarBrightness_Scroll(null, null);
             trackBarContrast_Scroll(null, null);
             trackBarGamma_Scroll(null, null);

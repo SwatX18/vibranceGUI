@@ -91,6 +91,21 @@ namespace vibrance.GUI.common
         private readonly ResolutionAdoptionDebouncer _resolutionAdoptionDebouncer =
             new ResolutionAdoptionDebouncer(new FormsResolutionAdoptionTimer());
 
+        // Upstream #147 part 2's HDR re-check poll - the backstop for a game already holding a
+        // level when Windows' own HDR state changes under it with no foreground event to notice
+        // by. Started once, in the constructor, and left running for the app's whole lifetime;
+        // OnHdrRecheckTick's own gate on VibranceRestoreHelper.HoldingCount, not stopping this
+        // timer, is what keeps an idle tick cheap - see HdrRecheckTimer.cs's own header comment.
+        private readonly IHdrRecheckTimer _hdrRecheckTimer = new FormsHdrRecheckTimer();
+
+        // Chosen, not measured, exactly like ResolutionAdoptionDebouncer.DebounceIntervalMs beside
+        // it - this repository's own constraints rule out timing a real HDR toggle on this
+        // machine (see this branch's own header: no real display's HDR state may be toggled).
+        // 2000ms keeps a genuine HDR flip noticeable within a couple of seconds without adding a
+        // second QueryDisplayConfig sweep on top of HdrStateTracker's own 1000ms cache TTL on
+        // every single tick.
+        private const int HdrRecheckIntervalMs = 2000;
+
         private readonly bool _isForcedExecution;
 
         // Upstream #120's --set-vibrance, already range-checked against this exact vendor's
@@ -216,6 +231,9 @@ namespace vibrance.GUI.common
             // fault at shutdown.
             ResolutionHelper.ResolutionChangeFailed += OnResolutionChangeFailed;
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+            // Upstream #147 part 2 - see _hdrRecheckTimer's own field comment for why this keeps
+            // running (never Stop()'d again) until CleanUp().
+            _hdrRecheckTimer.Start(HdrRecheckIntervalMs, OnHdrRecheckTick);
 
             _applicationSettings = new List<ApplicationSetting>();
             _v = getProxy(_applicationSettings, _windowsResolutionSettings);
@@ -1280,6 +1298,9 @@ namespace vibrance.GUI.common
                 // its own regardless - this stops one already in flight from firing after the form
                 // is disposed (see ResolutionAdoptionDebouncer.Cancel's own comment).
                 _resolutionAdoptionDebouncer.Cancel();
+                // Upstream #147 part 2 - stops the HDR re-check poll from ticking after this form
+                // is disposed, the same reason _resolutionAdoptionDebouncer is cancelled above.
+                _hdrRecheckTimer.Stop();
                 // One of the three layers that guarantee the toggle hotkey is unregistered - see
                 // HotkeyRegistration's own header comment. Idempotent: OnHandleDestroyed (below,
                 // via the form's own Dispose chain) may already have done this.
@@ -1373,6 +1394,21 @@ namespace vibrance.GUI.common
                 return;
             }
 
+            // Upstream #147 part 2's fast path. Whether Windows raises DisplaySettingsChanged for
+            // an HDR toggle at all is exactly what cannot be verified on this machine (see
+            // OnHdrRecheckTick's own header comment) - this call costs nothing extra on the
+            // notifications it does NOT apply to, since OnHdrRecheckTick's own
+            // VibranceRestoreHelper.HoldingCount gate makes it exactly as cheap as any other bare
+            // DisplaySettingsChanged this method already receives for an unrelated reason (a
+            // resolution change, a monitor hot-plug). Deliberately NOT routed through
+            // _resolutionAdoptionDebouncer below - that debounce exists purely to guard against a
+            // game's own foreign resolution MODE being adopted as the user's desktop mode; this
+            // recheck shares none of that hazard (HdrStateTracker.RefreshAndDetectChange only ever
+            // compares against what this process itself already believed, and only ever narrows a
+            // game's own resolved level toward what Windows is currently reporting - there is
+            // nothing here for a debounce to protect against).
+            OnHdrRecheckTick();
+
             // showFailureDialog: false - a MessageBox popping up on every hot-plug or resolution
             // change, potentially over a fullscreen game, is exactly the modal-on-the-callback-
             // thread mistake this whole fix removes. The constructor's own one-time build above
@@ -1400,6 +1436,52 @@ namespace vibrance.GUI.common
                 }
                 RebuildWindowsResolutionSettings(false);
             });
+        }
+
+        /// <summary>
+        /// Upstream #147 part 2's HDR re-check - the fast path (immediately above, from
+        /// OnDisplaySettingsChanged) and the poll backstop (_hdrRecheckTimer, started once in the
+        /// constructor) both call this exact same method, so there is exactly one place that
+        /// decides "does anything need re-checking right now", never two copies of the same gate
+        /// that could drift apart.
+        ///
+        /// Gated on VibranceRestoreHelper.HoldingCount FIRST, before anything HDR-specific runs at
+        /// all - an idle tick (no game currently holds a level anywhere) costs exactly this one
+        /// property read and a comparison, never HdrStateTracker's own QueryDisplayConfig sweep.
+        /// Upstream #156 was a real performance bug from doing too much work too often on the UI
+        /// thread; this is the same lesson applied to a brand new recurring timer instead of an
+        /// existing one.
+        ///
+        /// _foregroundWindowReader mirrors OnToggleHotkeyPressed's own use of it immediately below
+        /// this method in the file - a failed foreground read here is the same kind of silent
+        /// no-op that one already treats it as.
+        /// </summary>
+        private void OnHdrRecheckTick()
+        {
+            if (VibranceRestoreHelper.HoldingCount == 0)
+            {
+                return;
+            }
+
+            if (!HdrStateTracker.RefreshAndDetectChange())
+            {
+                return;
+            }
+
+            if (_v == null || !_v.GetVibranceInfo().isInitialized)
+            {
+                return;
+            }
+
+            IntPtr hWnd;
+            string processName;
+            string processImagePath;
+            if (!_foregroundWindowReader.TryGetForeground(out hWnd, out processName, out processImagePath))
+            {
+                return;
+            }
+
+            _v.RecheckForegroundHdrLevel(hWnd, processName, processImagePath);
         }
 
         /// <summary>
