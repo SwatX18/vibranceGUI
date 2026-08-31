@@ -1489,8 +1489,9 @@ namespace vibrance.GUI.common
 
         // ------------------------------------------------------------------
         // Settings round trip - a temp INI/XML pair, deleted in a finally, NEVER the user's real
-        // "%APPDATA%\vibranceGUI\vibranceGUI.ini". Both keys: toggleHotkey (canonical text) and
-        // toggleHotkeyEnabled (bool).
+        // "%APPDATA%\vibranceGUI\vibranceGUI.ini". Both toggle-hotkey keys (toggleHotkey,
+        // toggleHotkeyEnabled), plus ReadVibranceSettings' own affectPrimaryMonitorOnly fallback
+        // parity below.
         // ------------------------------------------------------------------
 
         private static void RunSettingsChecks(Checklist checklist)
@@ -1500,6 +1501,7 @@ namespace vibrance.GUI.common
             CheckSettingsRoundTripBothKeys(checklist);
             CheckSettingsMissingKeysReadDefaults(checklist);
             CheckSettingsCorruptValuesDoNotThrow(checklist);
+            CheckSettingsVibranceFallbackParity(checklist);
 
             checklist.Lines.Add(string.Empty);
         }
@@ -1613,6 +1615,119 @@ namespace vibrance.GUI.common
                 DeleteFileIfExists(tempIni);
                 DeleteFileIfExists(tempXml);
             }
+        }
+
+        // S4. Mutation this guards: let ReadVibranceSettings' missing-file fallback (:257-268)
+        // and its parse-failure fallback (:346-357) set affectPrimaryMonitorOnly to different
+        // values, or let either one drift from GetPrivateProfileString's own "true" default for
+        // the key when it is simply absent (:291-294) - the ordinary, no-exception path. This is
+        // the exact shape of the bug this pins: 62541a6 swept every OTHER default in this method
+        // to "true"/"50"/"100" in both fallback blocks and updated the missing-file block's
+        // affectPrimaryMonitorOnly to match, but missed the parse-failure block's - so a corrupt
+        // INI silently applied vibrance to every monitor while a missing one applied it only to
+        // the primary. Drives the real ReadVibranceSettings against real temp files for all three
+        // paths - never a copy of its own defaulting logic.
+        private static void CheckSettingsVibranceFallbackParity(Checklist checklist)
+        {
+            bool missingFiles = ReadAffectPrimaryMonitorOnlyWithMissingFiles();
+            bool absentKey = ReadAffectPrimaryMonitorOnlyWithKeyAbsent();
+            bool corruptValue = ReadAffectPrimaryMonitorOnlyWithCorruptValue();
+
+            checklist.Check(missingFiles == absentKey && absentKey == corruptValue,
+                string.Format("S4: ReadVibranceSettings' affectPrimaryMonitorOnly agrees across all three paths - missing file(s), the key simply absent from an otherwise valid file (GetPrivateProfileString's own default), and a present value that fails bool.Parse - got missingFiles={0} absentKey={1} corruptValue={2}",
+                    missingFiles, absentKey, corruptValue));
+        }
+
+        private static bool ReadAffectPrimaryMonitorOnly(SettingsController controller)
+        {
+            int vibranceWindowsLevel;
+            bool affectPrimaryMonitorOnly;
+            bool neverSwitchResolution;
+            bool neverChangeColorSettings;
+            List<ApplicationSetting> applicationSettings;
+            int brightnessWindowsLevel;
+            int contrastWindowsLevel;
+            int gammaWindowsLevel;
+
+            controller.ReadVibranceSettings(GraphicsAdapter.Nvidia, out vibranceWindowsLevel, out affectPrimaryMonitorOnly,
+                out neverSwitchResolution, out neverChangeColorSettings, out applicationSettings,
+                out brightnessWindowsLevel, out contrastWindowsLevel, out gammaWindowsLevel);
+
+            return affectPrimaryMonitorOnly;
+        }
+
+        // Neither temp path is ever created - :257-268 fires because IsFileExisting fails for
+        // both.
+        private static bool ReadAffectPrimaryMonitorOnlyWithMissingFiles()
+        {
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            SettingsController controller = new SettingsController(tempIni, tempXml);
+            return ReadAffectPrimaryMonitorOnly(controller);
+        }
+
+        // Every OTHER key SetVibranceSettings would normally write is set individually instead,
+        // so the INI exists and every other field parses cleanly, but affectPrimaryMonitorOnly
+        // itself is never written - GetPrivateProfileString falls back to its own "true" default
+        // for it (:291-294), and execution never enters either fallback block at all.
+        private static bool ReadAffectPrimaryMonitorOnlyWithKeyAbsent()
+        {
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                controller.SetVibranceSetting("inactiveValue", "50");
+                controller.SetVibranceSetting("neverSwitchResolution", "true");
+                controller.SetVibranceSetting("neverChangeColorSettings", "true");
+                controller.SetVibranceSetting("brightnessWindowsLevel", "50");
+                controller.SetVibranceSetting("contrastWindowsLevel", "50");
+                controller.SetVibranceSetting("gammaWindowsLevel", "100");
+                WriteEmptyApplicationSettingsXml(tempXml);
+
+                return ReadAffectPrimaryMonitorOnly(controller);
+            }
+            finally
+            {
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // Both files exist and every other value is well formed - only affectPrimaryMonitorOnly
+        // itself fails bool.Parse, landing in the parse-failure block (:346-357) this check
+        // exists to pin.
+        private static bool ReadAffectPrimaryMonitorOnlyWithCorruptValue()
+        {
+            string tempIni = NewTempPath(".ini");
+            string tempXml = NewTempPath(".xml");
+            try
+            {
+                SettingsController controller = new SettingsController(tempIni, tempXml);
+                controller.SetVibranceSettings("50", "NotABool", "true", "true", new List<ApplicationSetting>(),
+                    "50", "50", "100");
+
+                return ReadAffectPrimaryMonitorOnly(controller);
+            }
+            finally
+            {
+                DeleteFileIfExists(tempIni);
+                DeleteFileIfExists(tempXml);
+            }
+        }
+
+        // Matches SetVibranceSettings' own XML write exactly (SettingsController.cs:80-86) so the
+        // "key absent" scenario above reaches a genuinely valid applicationData.xml without ever
+        // writing affectPrimaryMonitorOnly to the INI - not a re-implementation of
+        // SettingsController's defaulting/parsing decisions, just its own serialization
+        // boilerplate.
+        private static void WriteEmptyApplicationSettingsXml(string path)
+        {
+            System.Xml.XmlWriter writer = System.Xml.XmlWriter.Create(path);
+            System.Xml.Serialization.XmlSerializer serializer = new System.Xml.Serialization.XmlSerializer(typeof(List<ApplicationSetting>));
+            serializer.Serialize(writer, new List<ApplicationSetting>());
+            writer.Flush();
+            writer.Close();
         }
 
         // Records every (deviceName -> handle) resolution and every (handle -> level) write this
