@@ -93,6 +93,14 @@ namespace vibrance.GUI.common
 
         private readonly bool _isForcedExecution;
 
+        // Upstream #120's --set-vibrance, already range-checked against this exact vendor's
+        // min/max by Program.cs's ResolveCliVibranceOverride before this constructor ever runs -
+        // null means either the flag was absent or Program.cs already rejected it with its own
+        // MessageBox. Applied once, from backgroundWorker_DoWork, after ReadVibranceSettings has
+        // populated the trackbar from disk - see that method's own comment for why applying it
+        // any earlier would just get overwritten by the persisted value moments later.
+        private readonly int? _cliVibranceLevelOverride;
+
         // Kept in sync with _applicationSettings by RefreshUnconfirmedCache. The foreground handler runs on
         // the ui thread for every window switch, so it tests this boolean before it looks at anything else
         private bool _hasUnconfirmedEntries;
@@ -163,7 +171,8 @@ namespace vibrance.GUI.common
             int minTrackBarValue,
             int maxTrackBarValue,
             int defaultIngameValue,
-            bool isForcedExecution)
+            bool isForcedExecution,
+            int? cliVibranceLevelOverride)
         {
             _graphicsAdapter = graphicsAdapter;
             _defaultWindowsLevel = defaultWindowsLevel;
@@ -172,6 +181,7 @@ namespace vibrance.GUI.common
             _defaultIngameValue = defaultIngameValue;
             _allowVisible = true;
             _isForcedExecution = isForcedExecution;
+            _cliVibranceLevelOverride = cliVibranceLevelOverride;
 
             InitializeComponent();
 
@@ -265,7 +275,63 @@ namespace vibrance.GUI.common
             {
                 OnToggleHotkeyPressed();
             }
+            else if (VibranceCliRelay.SetVibranceLevelMessageId != 0 && m.Msg == VibranceCliRelay.SetVibranceLevelMessageId)
+            {
+                OnSetVibranceLevelRequested((int)m.WParam);
+            }
             base.WndProc(ref m);
+        }
+
+        /// <summary>
+        /// VibranceCliRelay's receiving half - the WndProc override above dispatches here on
+        /// SetVibranceLevelMessageId, sent by a second, short-lived vibranceGUI process's own
+        /// --set-vibrance (see Program.cs) once it finds this window already running instead of
+        /// showing "You can run vibranceGUI only once at a time!". Always runs on this form's own
+        /// UI thread already - unlike SystemEvents.DisplaySettingsChanged (see
+        /// OnDisplaySettingsChanged's own comment on why THAT needs InvokeRequired/BeginInvoke), a
+        /// window message is delivered by the OS to the thread that created the window, which is
+        /// this one, through WndProc directly - there is nothing to marshal, the same reason
+        /// OnToggleHotkeyPressed above needs none either.
+        ///
+        /// Range-checked here, not by the sender: the sending process never constructs a
+        /// VibranceGUI at all once it finds an instance already running, so it cannot know which
+        /// vendor is live or what its real min/max is - only this side can, and does, through
+        /// _minTrackBarValue/_maxTrackBarValue, the exact bounds trackBarWindowsLevel itself is
+        /// clamped to in the constructor. An out-of-range value is reported, not silently clamped
+        /// or silently dropped - the same "must not silently do something surprising" the startup
+        /// path (see ResolveCliVibranceOverride in Program.cs) already enforces before a value
+        /// even reaches here at all on that path.
+        /// </summary>
+        private void OnSetVibranceLevelRequested(int level)
+        {
+            if (level < _minTrackBarValue || level > _maxTrackBarValue)
+            {
+                MessageBox.Show(string.Format(
+                    "Ignored --set-vibrance {0}: the valid range for your {1} GPU is {2}-{3}.",
+                    level, _graphicsAdapter.ToString().ToUpper(), _minTrackBarValue, _maxTrackBarValue));
+                return;
+            }
+            ApplyWindowsVibranceLevel(level);
+        }
+
+        /// <summary>
+        /// Every effect of moving trackBarWindowsLevel to a specific value, factored out so a
+        /// value that never came from the trackbar itself - OnSetVibranceLevelRequested above, and
+        /// the --set-vibrance startup override applied from backgroundWorker_DoWork - goes through
+        /// the exact same path as a manual drag (see trackBarWindowsLevel_Scroll below) rather than
+        /// a hand-copied partial mirror of it. Must run on the UI thread: trackBarWindowsLevel.Value
+        /// and labelWindowsLevel.Text both require it, and both callers above already guarantee it
+        /// (WndProc is the UI thread; the startup caller marshals explicitly - see its own comment).
+        /// </summary>
+        private void ApplyWindowsVibranceLevel(int level)
+        {
+            trackBarWindowsLevel.Value = level;
+            _v.SetVibranceWindowsLevel(level);
+            labelWindowsLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, level);
+            if (!settingsBackgroundWorker.IsBusy)
+            {
+                settingsBackgroundWorker.RunWorkerAsync();
+            }
         }
 
         /// <summary>
@@ -362,6 +428,28 @@ namespace vibrance.GUI.common
                 ReadVibranceSettings(out vibranceWindowsLevel, out affectPrimaryMonitorOnly, out neverSwitchResolution, out neverChangeColorSettings, out brightnessWindowsLevel, out contrastWindowsLevel, out gammaWindowsLevel);
             }
 
+            // Applied here, after ReadVibranceSettings above has already pushed the persisted
+            // value onto the trackbar and into vibranceWindowsLevel - not in the constructor or in
+            // Program.cs before this form even exists - because anywhere earlier would just get
+            // overwritten by that same read moments later. Overwriting vibranceWindowsLevel itself
+            // (not just the trackbar) matters: the unconditional _v.SetVibranceWindowsLevel(...)
+            // call a few lines below, inside the isInitialized block, reads this exact local, and
+            // would otherwise silently undo ApplyWindowsVibranceLevel's own call to the same
+            // setter with the stale persisted value, immediately after this one applies it.
+            if (_cliVibranceLevelOverride.HasValue)
+            {
+                int overrideLevel = _cliVibranceLevelOverride.Value;
+                vibranceWindowsLevel = overrideLevel;
+                if (this.InvokeRequired)
+                {
+                    this.Invoke((MethodInvoker)delegate { ApplyWindowsVibranceLevel(overrideLevel); });
+                }
+                else
+                {
+                    ApplyWindowsVibranceLevel(overrideLevel);
+                }
+            }
+
             if (_v.GetVibranceInfo().isInitialized)
             {
                 backgroundWorker.ReportProgress(1);
@@ -398,12 +486,7 @@ namespace vibrance.GUI.common
 
         private void trackBarWindowsLevel_Scroll(object sender, EventArgs e)
         {
-            _v.SetVibranceWindowsLevel(trackBarWindowsLevel.Value);
-            labelWindowsLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, trackBarWindowsLevel.Value);
-            if (!settingsBackgroundWorker.IsBusy)
-            {
-                settingsBackgroundWorker.RunWorkerAsync();
-            }
+            ApplyWindowsVibranceLevel(trackBarWindowsLevel.Value);
         }
 
         private void trackBarBrightness_Scroll(object sender, EventArgs e)
