@@ -599,8 +599,13 @@ namespace vibrance.GUI.common.gamefinder
             return ownPath != null && string.Equals(executablePath, ownPath, StringComparison.OrdinalIgnoreCase);
         }
 
-        // Assembly.GetEntryAssembly, not WinForms' Application.ExecutablePath - this class must
-        // never reference WinForms (IGameLibrarySource's contract). Internal, not private:
+        // Assembly.GetExecutingAssembly, not WinForms' Application.ExecutablePath - this class
+        // must never reference WinForms (IGameLibrarySource's contract) - and not
+        // GetEntryAssembly, which returns null whenever there is no managed entry point: that
+        // is exactly the case when a fixture is driven by reflection from another host, which
+        // is how this suite is usually run, and it made the self-reference check report
+        // differently depending on how it was invoked. GetExecutingAssembly is this assembly,
+        // which is the executable, and is never null. Internal, not private:
         // StartMenuShortcutSourceFixture calls this directly to build its self-reference case, so
         // the fake target it feeds through FakeResolver is provably the same value IsOwnExecutable
         // itself compares against, in the same process.
@@ -608,11 +613,11 @@ namespace vibrance.GUI.common.gamefinder
         {
             try
             {
-                Assembly entryAssembly = Assembly.GetEntryAssembly();
-                if (entryAssembly == null)
+                Assembly ownAssembly = Assembly.GetExecutingAssembly();
+                if (ownAssembly == null)
                     return null;
 
-                string location = entryAssembly.Location;
+                string location = ownAssembly.Location;
                 return string.IsNullOrEmpty(location) ? null : Path.GetFullPath(location);
             }
             catch (Exception)
