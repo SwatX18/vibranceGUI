@@ -6,9 +6,10 @@
 > prior context: a contributor fixing a bug or adding a feature, and an AI coding agent that has to
 > orient itself quickly without damaging anything.
 >
-> **Provenance.** Synthesised from two full-source archaeology passes over `master` at commit
-> `919a9f2` (assembly version `2.3.1.1`, `vibrance.GUI/Properties/AssemblyInfo.cs:35-36`), performed
-> 2026-08-24, plus direct reading of the source. Statements about the prebuilt native
+> **Provenance.** Synthesised from two full-source archaeology passes over `master` as it then stood,
+> commit `919a9f2` (assembly version `2.3.1.1`), performed 2026-08-24, plus direct reading of the
+> source. It has been kept current with `master` since, and describes `79a5cbd` (version `2.6.0`,
+> `vibrance.GUI/Properties/AssemblyInfo.cs:35-36`). Statements about the prebuilt native
 > `vibranceDLL.dll` come from parsing its PE headers and hand-decoding x86 at named RVAs; they are
 > marked **VERIFIED (binary)**. Claims that could not be confirmed by execution are marked
 > **INFERENCE** or **UNCERTAIN** and must not be repeated as fact.
@@ -163,23 +164,30 @@ implementations write `VibranceInfo.userVibranceSettingActive`, and *nothing in 
 that field*. The intended live preview while dragging the ingame slider does not work
 (`NvidiaDynamicVibranceProxy.cs:751-754` (`SetVibranceIngameLevel`), `AmdDynamicVibranceProxy.cs:108-111`, `SetVibranceIngameLevel`).
 
-### 2.3 Repo-state warning: the released v2.5.0 is **not** on `master`
+### 2.3 Repo state: this is a fork, and `master` is current
 
 Read this before basing work on `master` or trying to reproduce a user's bug report.
 
-- The only tag in the repository is `v2.5.0` → commit `431d295` (2024-12-20). **It is not an ancestor
-  of `master`.** It lives on branch `feature/add-color-settings`, which is open PR #140.
-- `master` is at `919a9f2`, `AssemblyVersion 2.3.1.1`.
-- `v2.5.0` is 7 commits ahead of `master`; `master` is 2 commits ahead of `v2.5.0`.
-- Commits in `v2.5.0` and absent from `master`: `431d295` (force param for autostart path and window
-  title), `62541a6` (colour-setting handling, assorted bug fixes), `6900bac` (default
-  `neverSwitchResolution` to `true`), `438e15a` (gitignore), `a58b59f` (version bump to 2.5.0.0),
-  `e8d5d6d` (text clarity), `968b1ab` (gamma handling).
-- **Implication:** gamma/colour-settings support and the safer `neverSwitchResolution` default exist
-  *only* on that unmerged branch. Building `master` gives 2.3.1.1 behaviour, which is not what users
-  running the released binary have.
-- Other branches: `Refactoring_to_WPF` 3 ahead / 171 behind (abandoned WPF rewrite),
-  `Dynamic_VibranceGUI` 0 / 92 and `temp` 1 / 85 (stale).
+- **Work from `master`** — `79a5cbd` when this was written, building version `2.6.0`
+  (`vibrance.GUI/Properties/AssemblyInfo.cs:35-36`).
+- **Both tags are ancestors of `master`**, so nothing that was published is missing from it: `v2.5.0`
+  → `431d295` (upstream's release) and `v2.6.0` → `8609a93` (this fork's first). At `79a5cbd`,
+  `master` is 56 commits past `v2.5.0` and 16 past `v2.6.0`; neither tag is ahead of it.
+- **The colour-settings work is on `master`** — per-game gamma/brightness/contrast, the
+  `neverSwitchResolution` default of `true`, the `--force-amd` / `--force-nvidia` flags. It was
+  written upstream on `feature/add-color-settings`, which `v2.5.0` tags mid-branch; `master` took
+  that branch's *head*, `18e54cd`, three commits past the tag, through the merge `4fb598c`, which
+  reached `master` in this fork's PR #2 together with fixes for six blocking defects it carried.
+  Upstream PR #140 for the branch is still open — the code is here because the branch was merged,
+  not because that PR landed.
+- **Upstream is a different repository, and a bare `master` here never means it.** Throughout this
+  guide `master` is *this fork's*; upstream's is written `upstream/master`, and `juv/vibranceGUI`'s
+  is still at `919a9f2` / `2.3.1.1`. Unless a number is explicitly called this fork's, every `#NNN`
+  below is an upstream issue or PR that `git log` here will never show landing. The warning this
+  section replaced was not invented: its figures were all true of `upstream/master`, and it froze
+  there while this fork moved out from under it.
+- **`Refactoring_to_WPF`, `Dynamic_VibranceGUI` and `temp`** exist on both remotes, were last touched
+  between 2014 and 2016, and are more than a hundred commits behind. Nothing on them is live.
 
 ---
 
@@ -381,7 +389,7 @@ vibranceGUI/
     │           ├── CommonUtils.cs          %APPDATA% path + the NVIDIA DLL extraction (misfiled)
     │           └── NativeMethods.cs        LoadLibrary / SetDllDirectory
     │
-    └── Properties/                AssemblyInfo (version 2.3.1.1), Resources, Settings
+    └── Properties/                AssemblyInfo (version 2.6.0), Resources, Settings
 ```
 
 Three structural facts worth internalising before you edit anything:
@@ -554,7 +562,7 @@ sequenceDiagram
     H->>H: SetWinEventHook(EVENT_SYSTEM_FOREGROUND, OUTOFCONTEXT)
     F->>W: RunWorkerAsync()
     M->>M: -minimized? WindowState=Minimized, SetAllowVisible(false)
-    M->>M: Text += " (NVIDIA, 2.3.1.1)"
+    M->>M: Text += " (NVIDIA, 2.6.0)"
     M->>F: Application.Run(form)  — this thread is now the message pump
     W->>W: spin on Thread.Sleep(500) until the form handle exists
     W->>F: Invoke(ReadVibranceSettings) — load INI + XML, populate the UI
@@ -893,9 +901,9 @@ registry write on every single foreground event, forever, even though the mode h
 been achieved on every field the driver actually supports.
 
 The working user-side mitigation is still the "Never change resolutions" checkbox, which
-short-circuits every call site. It is also the default on the unmerged `feature/add-color-settings`
-branch (commit `6900bac`), which tells you what the maintainer concluded about this feature before
-this fix existed.
+short-circuits every call site. It is also the shipped default: upstream flipped it to `true` in
+`6900bac`, on `master` since `4fb598c`, which tells you what the maintainer concluded about this
+feature before this fix existed.
 
 **UNCERTAIN, still:** the root cause of a `DISP_CHANGE_BADFLAGS`-class rejection from `CDS_TEST`
 itself cannot be determined from this repository — it originates inside `user32`/the driver. The
@@ -1330,8 +1338,8 @@ mechanisms, strongest first:
 **UNCERTAIN and important:** NVIDIA replaced DVC with a newer colour-settings API on modern driver
 branches. Whether `NvAPI_SetDVCLevel` still works on current drivers is **not established anywhere in
 this repository**, and nothing in the code tracks driver versions. Open issues #149 and #156 concern
-recent driver branches; the unmerged `feature/add-color-settings` branch suggests the maintainer was
-exploring the newer API.
+recent driver branches; the `feature/add-color-settings` branch, now on `master`, suggests the
+maintainer was exploring the newer API.
 
 ---
 
@@ -1725,7 +1733,7 @@ one getter — there is no view-model, no binding and no messaging.
 ### 10.1 `VibranceGUI` — the main window
 
 `ClientSize 419×524`, `FixedSingle`, no maximise box, title `vibranceGUI` — to which `Program.cs:395` (`buildFormTitleText`)
-appends `" (NVIDIA, 2.3.1.1)"` or `" (AMD, …)"`.
+appends `" (NVIDIA, 2.6.0)"` or `" (AMD, …)"`.
 
 | Region | Controls |
 |---|---|
@@ -2254,8 +2262,9 @@ survivable today only because `CleanUp` checks `isInitialized` first.
 **including `NvAPI_GetDVCInfoEx`, which it never uses** ([§7.4](#74-the-initialisation-handshake)).
 
 **D41 — UNCERTAIN: whether `NvAPI_SetDVCLevel` still works on current NVIDIA driver branches.** Nothing
-in the repository tracks this; open issues #149 and #156 concern recent drivers, and the unmerged
-`feature/add-color-settings` branch suggests the newer colour API was being explored.
+in the repository tracks this; open issues #149 and #156 concern recent drivers, and the
+`feature/add-color-settings` branch, now on `master`, suggests the newer colour API was being
+explored.
 
 ### 12.5 Resource leaks and lifetime
 
@@ -2556,6 +2565,7 @@ Merged from both archaeology passes, de-duplicated. These are genuinely unanswer
     diagnostic step if the `DispChange` code alone turns out not to be enough (**D2**).
 12. Was the Travis pipeline ever green, and is CI intended to be restored? A GitHub Actions job on
     `windows-latest` would actually exercise this project, unlike the Linux/Mono one (**§3.7**).
-13. What is the plan for PR #140 (`feature/add-color-settings`, which carries the released `v2.5.0` tag)
-    and PR #153 (.NET 4.8 + hotkeys)? `master` currently ships older behaviour than the published
-    release (**§2.3**).
+13. Upstream PR #140 (`feature/add-color-settings`) and PR #153 (.NET 4.8 + hotkeys) are both still
+    open on `juv/vibranceGUI`. This fork merged #140's branch itself (**§2.3**) and has its own
+    profile-toggle hotkey, but still targets `v4.0` ([§3.2](#32-building)). Is the 4.8 move wanted
+    here, and does any of this fork's work go back upstream?
