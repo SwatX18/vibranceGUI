@@ -6,13 +6,15 @@ This is a fork of [juv/vibranceGUI](https://github.com/juv/vibranceGUI). Almost 
 
 ## Download
 
-**[Latest release: v2.6.0](https://github.com/SwatX18/vibranceGUI/releases)** - a zip with two files, no installer. Unzip it anywhere and run `vibrance.GUI.exe`.
+**[Latest release: v2.7.0](https://github.com/SwatX18/vibranceGUI/releases)** - a zip with two files, no installer. Unzip it anywhere and run `vibrance.GUI.exe`.
 
 The download at vibrancegui.com is the original author's build and contains none of the changes below.
 
 ## Before you download
 
-v2.6.0 is this fork's first release. I have now played one game with it, on one machine: vibrance came on while the game was running and went back to my normal level when it exited. That is the app's core behaviour rather than any of the fixes below, and it is the only thing anyone has seen this build do on real hardware - that session involved no resolution change and had the colour settings switched off, so those paths are still unexercised. The fixes in this release are backed by 338 automated checks, but those drive fakes and stubs, not a real GPU driver, display or game. Several of them were validated by reading the code and reasoning about documented driver behaviour, not by reproducing the original bug on the reporter's hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
+This fork has now been played with, rather than only tested: **vibrance applies when a game takes focus and goes back to the normal Windows level on exit, across several Counter-Strike 2 sessions on one machine.** That is the app's core behaviour, and the part most people use.
+
+It is also the *only* part anyone has watched work on real hardware. Still unexercised outside automated checks: **resolution switching**, the **colour settings** (gamma, brightness, contrast - off by default), and the **separate HDR vibrance level** added in this release, where an open question remains over whether NVIDIA's DVC does anything at all while a display is in HDR. The 515 automated checks behind these fixes drive fakes and stubs, not a real GPU driver, display or game, and several fixes were reasoned from the code and documented driver behaviour rather than reproduced on the reporter's own hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
 
 ## What is different in this fork
 
@@ -31,8 +33,11 @@ New:
 - A game finder that scans Steam, Epic, EA, Battle.net, Rockstar and Ubisoft libraries for installed games.
 - A hotkey that toggles a game's profile off and on. It uses `RegisterHotKey` rather than a keyboard hook, deliberately: a keyboard hook is the shape anti-cheat software looks for. Profiles toggled off are marked in the games list.
 - Games can be matched by install directory, not only by executable name.
+- The game finder also reads Start Menu and desktop shortcuts, so games that register no uninstall entry - portable installs, and anything not installed through a launcher - get found too.
+- Command line options (#120): `--help` lists them all, and `--set-vibrance <n>` sets the Windows level from a script or batch file, handing the request to the running instance instead of refusing to start a second one.
+- A separate vibrance level for when a display is in HDR (#147). Opt-in per game; leave the box unticked and nothing changes. See the note above about what is unverified here.
 
-The [v2.6.0 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.6.0) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
+The [v2.7.0 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.7.0) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
 
 ## Graphics card support
 
