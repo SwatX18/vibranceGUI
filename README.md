@@ -6,7 +6,7 @@ This is a fork of [juv/vibranceGUI](https://github.com/juv/vibranceGUI). Almost 
 
 ## Download
 
-**[Latest release: v2.7.0](https://github.com/SwatX18/vibranceGUI/releases)** - a zip with two files, no installer. Unzip it anywhere and run `vibrance.GUI.exe`.
+**[Latest release: v2.8.0](https://github.com/SwatX18/vibranceGUI/releases)** - a zip with two files, no installer. Unzip it anywhere and run `vibrance.GUI.exe`.
 
 The download at vibrancegui.com is the original author's build and contains none of the changes below.
 
@@ -14,7 +14,7 @@ The download at vibrancegui.com is the original author's build and contains none
 
 This fork has now been played with, rather than only tested: **vibrance applies when a game takes focus and goes back to the normal Windows level on exit, across several Counter-Strike 2 sessions on one machine.** That is the app's core behaviour, and the part most people use.
 
-It is also the *only* part anyone has watched work on real hardware. Still unexercised outside automated checks: **resolution switching**, the **colour settings** (gamma, brightness, contrast - off by default), and the **separate HDR vibrance level** added in this release, where an open question remains over whether NVIDIA's DVC does anything at all while a display is in HDR. The 515 automated checks behind these fixes drive fakes and stubs, not a real GPU driver, display or game, and several fixes were reasoned from the code and documented driver behaviour rather than reproduced on the reporter's own hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
+It is also the *only* part anyone has watched work on real hardware. Still unexercised outside automated checks: **resolution switching** (including the new restore-on-exit below), the **colour settings** (gamma, brightness, contrast - off by default), the **separate HDR vibrance level**, where an open question remains over whether NVIDIA's DVC does anything at all while a display is in HDR, and the new **apply-on-startup** behaviour. The 601 automated checks behind these fixes drive fakes and stubs, not a real GPU driver, display or game, and several fixes were reasoned from the code and documented driver behaviour rather than reproduced on the reporter's own hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
 
 ## What is different in this fork
 
@@ -24,7 +24,7 @@ Fixed:
 - A second monitor's saturation is no longer reset on every launch, and vibrance is restored to the display it was actually applied to rather than wherever focus landed (#60, #36, #144, #95).
 - Colour and gamma calibration - ICC profiles, f.lux, Night Light - survives a game exiting, instead of being overwritten with a flat ramp (#128, and likely #131).
 - Resolution changes no longer strand the desktop at a game's resolution or spam repeated error dialogs (#114, #132).
-- Mouse clicks no longer run the full foreground handler. The hook subscribed to a 21-event range that included mouse capture and never filtered by event type (#156); a slower driver-side call on R595+ drivers may be a second, separate factor.
+- Mouse clicks no longer run the full foreground handler. The hook subscribed to a 21-event range that included mouse capture and never filtered by event type (#156); a slower driver-side call on R595+ drivers may be a second, separate factor. Each real foreground change is cheaper too: the process name now comes from the executable path the app already resolves, instead of two machine-wide process enumerations and an `EnumWindows` sweep whose result nothing read.
 - A GPU with no display connected no longer sends the app into a runaway loop until it runs out of memory (#138).
 - The v2.5.0 colour settings (per-game gamma, brightness and contrast) are included, with their blocking defects fixed. Upstream tagged that feature as released but never merged it to master.
 
@@ -36,8 +36,10 @@ New:
 - The game finder also reads Start Menu and desktop shortcuts, so games that register no uninstall entry - portable installs, and anything not installed through a launcher - get found too.
 - Command line options (#120): `--help` lists them all, and `--set-vibrance <n>` sets the Windows level from a script or batch file, handing the request to the running instance instead of refusing to start a second one.
 - A separate vibrance level for when a display is in HDR (#147). Opt-in per game; leave the box unticked and nothing changes. See the note above about what is unverified here.
+- A game that is already running and already focused when vibranceGUI starts now gets its profile applied, instead of waiting until you alt-tab away and back (#81, and the last named mechanism behind #137). It only ever applies a profile on startup, never reverts one.
+- The screen resolution is put back when vibranceGUI closes while a game still holds the foreground (#98). Previously only the gamma ramp and the vibrance level were restored on exit, so a game's resolution or refresh rate could be left behind.
 
-The [v2.7.0 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.7.0) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
+The [v2.8.0 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.8.0) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
 
 ## Graphics card support
 
