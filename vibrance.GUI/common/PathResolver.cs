@@ -158,6 +158,52 @@ namespace vibrance.GUI.common
             }
         }
 
+        /// <summary>
+        /// The process name .NET itself would report for this image path, without asking Windows
+        /// for anything - it is a pure string transform, safe to call from the UI thread on every
+        /// foreground change where GetProcessById's full snapshot is not.
+        ///
+        /// This is deliberately not Path.GetFileNameWithoutExtension: that strips a trailing ".txt",
+        /// ".dat", or any other extension, where .NET's own Process.ProcessName only ever strips a
+        /// trailing ".exe". Reproducing the real rule - internally ProcessManager.GetProcessShortName -
+        /// keeps a name like "game.bin" whole and turns "my.app.exe" into "my.app" rather than "my".
+        /// </summary>
+        /// <returns>
+        /// null only when imagePath itself gives up nothing to work with (empty, or ending in a
+        /// separator) - the sole signal callers should read as "fall back to GetProcessById". An
+        /// empty base name, from the degenerate "C:\.exe", is a legitimate non-null result.
+        /// </returns>
+        public static string GetProcessNameFromImagePath(string imagePath)
+        {
+            if (string.IsNullOrEmpty(imagePath))
+            {
+                return null;
+            }
+
+            //accepting '/' as well as '\' is a deliberate, harmless divergence from .NET's own
+            //GetProcessShortName, which splits on '\' only - QueryFullProcessImageName never hands
+            //back a forward slash, so this only ever matters for the fixture's own inputs
+            int start = Math.Max(imagePath.LastIndexOf('\\'), imagePath.LastIndexOf('/')) + 1;
+            if (start == imagePath.Length)
+            {
+                //the path ends in a separator - there is no file name to report
+                return null;
+            }
+
+            //the rule is applied to the base name, not the full path, so that "C:\.exe" computes
+            //dot relative to an empty base name rather than taking a negative-length substring
+            string baseName = imagePath.Substring(start);
+            int dot = baseName.LastIndexOf('.');
+            if (dot < 0)
+            {
+                return baseName;
+            }
+
+            return string.Equals(baseName.Substring(dot), ".exe", StringComparison.OrdinalIgnoreCase)
+                ? baseName.Substring(0, dot)
+                : baseName;
+        }
+
         private static string NormalizeFinalPath(string path)
         {
             if (path.StartsWith(ExtendedLengthUncPrefix, StringComparison.Ordinal))

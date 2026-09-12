@@ -2,7 +2,6 @@
 using System.Diagnostics;
 using System.Media;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Windows.Forms;
 using vibrance.GUI.AMD;
 using vibrance.GUI.NVIDIA;
@@ -19,12 +18,6 @@ namespace vibrance.GUI.common
 
         [DllImport("user32.dll")]
         static extern bool UnhookWinEvent(IntPtr hWinEventHook);
-
-        [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-        static extern int GetWindowTextLength([In] IntPtr hWnd);
-
-        [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-        static extern int GetWindowTextA([In] IntPtr hWnd, [In, Out] StringBuilder lpString, [In] int nMaxCount);
 
         [DllImport("user32.dll", SetLastError = true)]
         static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
@@ -222,9 +215,6 @@ namespace vibrance.GUI.common
 
             uint processId;
             GetWindowThreadProcessId(hwnd, out processId);
-            int windowTextLength = GetWindowTextLength(hwnd);
-            StringBuilder sb = new StringBuilder(windowTextLength + 1);
-            GetWindowTextA(hwnd, sb, sb.Capacity);
 
             //one pid that is already in hand, three syscalls, once per foreground change. It is what
             //lets a setting match on its install directory when the stored executable name is a guess
@@ -234,29 +224,71 @@ namespace vibrance.GUI.common
                 imagePath = null;
             }
 
+            string processName = ResolveProcessName((int)processId, imagePath);
+            if (processName == null)
+            {
+                //preserves today's behaviour, where a throwing GetProcessById skipped dispatch
+                //entirely. Without this, an unreadable foreground process would still reach the
+                //match decision at NvidiaDynamicVibranceProxy.cs:268-272 /
+                //AmdDynamicVibranceProxy.cs:151-155, match nothing, and fall into the revert branch
+                //below - a visible flicker for a process that was never actually the game losing focus
+                return;
+            }
+
+            WinEventHookEventArgs e = new WinEventHookEventArgs
+            {
+                Handle = hwnd,
+                ProcessName = processName,
+                ProcessImagePath = imagePath
+            };
+
+            //dispatch sits outside any try/catch here. The old code's single try also wrapped this
+            //call, so an InvalidOperationException/ArgumentException thrown by either proxy's
+            //OnWinEventHook was silently swallowed along with the ones that try actually targeted.
+            //A handler bug of that shape now escapes into the native WinEvent callback instead
+            GetInstance().DispatchWinEventHookEvent(e);
+        }
+
+        /// <summary>
+        /// The name a setting is matched against, derived from the image path already resolved
+        /// above whenever that succeeded, so the common case never touches GetProcessById at all.
+        ///
+        /// Observed divergence: the image path comes from QueryFullProcessImageName, which reports
+        /// a process's *current* file name, while GetProcessById's ProcessName is captured once at
+        /// launch and does not follow a rename. A process whose executable is renamed while it is
+        /// still running - a self-updating launcher swapping itself out from under its own running
+        /// instance - makes the two disagree for as long as that process keeps running: the derived
+        /// name follows the rename, ProcessName would not have. Both are individually correct for
+        /// what they read; they simply stop agreeing with each other.
+        /// </summary>
+        internal static string ResolveProcessName(int processId, string imagePath)
+        {
+            return PathResolver.GetProcessNameFromImagePath(imagePath) ?? GetProcessNameById(processId);
+        }
+
+        //Process.ProcessName reads the system-wide snapshot and needs no handle, so it still answers
+        //for exactly the elevated/protected processes where PathResolver's OpenProcess is refused.
+        //Dispatching an empty name for those would make ApplicationSettingMatcher.NameMatches
+        //short-circuit on IsNullOrEmpty (ApplicationSettingMatcher.cs:92) and, with a null image
+        //path, MatchedLength returns 0 too - every elevated game would silently stop activating
+        private static string GetProcessNameById(int processId)
+        {
             try
             {
-                using (Process p = Process.GetProcessById((int)processId))
+                using (Process p = Process.GetProcessById(processId))
                 {
-                    WinEventHookEventArgs e = new WinEventHookEventArgs
-                    {
-                        Handle = hwnd,
-                        ProcessId = processId,
-                        MainWindowTitle = p.MainWindowTitle,
-                        ProcessName = p.ProcessName,
-                        ProcessImagePath = imagePath,
-                        WindowText = sb.ToString()
-                    };
-                    GetInstance().DispatchWinEventHookEvent(e);
+                    return p.ProcessName;
                 }
             }
             catch (InvalidOperationException)
             {
                 // The process property is not defined because the process has exited or it does not have an identifier.
+                return null;
             }
             catch (ArgumentException)
             {
                 // The process specified by the processId parameter is not running.
+                return null;
             }
         }
 

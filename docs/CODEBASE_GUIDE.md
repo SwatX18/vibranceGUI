@@ -15,7 +15,7 @@
 > **INFERENCE** or **UNCERTAIN** and must not be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 515 automated checks across eleven fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 534 automated checks across eleven fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -121,7 +121,7 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
 |---|---|
 | What happens when a game gains or loses focus (the heart of the app) | `vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:263-394` (`OnWinEventHook`) and `vibrance.GUI/AMD/AmdDynamicVibranceProxy.cs:146-246` (`OnWinEventHook`) |
 | How a foreground window is matched to a watched game | `ApplicationSettingMatcher.FindMatch` (`vibrance.GUI/common/ApplicationSettingMatcher.cs:47-83`), called from `NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`) / `AmdDynamicVibranceProxy.cs:152` (`OnWinEventHook`) — exact `ApplicationSetting.Name` vs `ProcessName` first, then the longest `InstallDirectory` that prefixes the process image path |
-| How foreground changes are detected at all | `vibrance.GUI/common/WinEventHook.cs` — one system-wide `SetWinEventHook` on `EVENT_SYSTEM_FOREGROUND` |
+| How foreground changes are detected at all | `vibrance.GUI/common/WinEventHook.cs` — one system-wide `SetWinEventHook` ranging `EVENT_SYSTEM_FOREGROUND`..`EVENT_SYSTEM_MINIMIZEEND`, filtered back down to those two events in `WinEventProc` |
 | Which GPU vendor is chosen, and the "both drivers found" dialog | `vibrance.GUI/common/GraphicsAdapter.cs:84-109` (`GetAdapter`) |
 | Slider ranges, defaults, level→label mapping | `vibrance.GUI/Program.cs:294-331` (`Main`) (five numbers per vendor) and `vibrance.GUI/common/SettingsController.cs:246-255` (`ReadVibranceSettings`) (a second, inconsistent copy) |
 | Settings file format, defaults, clamping | `vibrance.GUI/common/SettingsController.cs` |
@@ -143,7 +143,7 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
    a level now, and the shell never tries.
 2. **Everything runs on the UI thread — including the driver calls.** The hook is
    `WINEVENT_OUTOFCONTEXT`, so callbacks arrive through the message queue of the thread that installed
-   it, which is the WinForms UI thread (`common/WinEventHook.cs:187-190`, pumped by `Program.cs:355`, `Main`).
+   it, which is the WinForms UI thread (`common/WinEventHook.cs:180-183`, pumped by `Program.cs:355`, `Main`).
    NvAPI round-trips, ADL calls and `ChangeDisplaySettingsEx` all block the UI. **Historical note:**
    one path used to pop a modal message box from inside this very callback on a resolution-change
    failure (`common/ResolutionHelper.cs`, pre-`work/resolution-change`) — i.e. over the game that had
@@ -334,7 +334,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 515 of them across eleven
+- **There is no test project**, but there are automated checks: 534 of them across eleven
   `*Fixture.cs` files — nine in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`
   — compiled into the app and run through twelve `--selftest-*` flags dispatched early in
   `Program.cs`, before the single-instance mutex. They report through `Checklist`
@@ -419,7 +419,7 @@ vibranceGUI/
     │   │
     │   │   foreground detection
     │   ├── WinEventHook.cs            THE foreground detector (§6.2)
-    │   ├── WinEventHookEventArgs.cs   event payload; 4 of its 6 fields are dead (§11.6)
+    │   ├── WinEventHookEventArgs.cs   event payload; all 3 fields are live (§11.6)
     │   ├── GraphicsAdapter.cs         vendor enum + detection (§6.1)
     │   │
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
@@ -709,9 +709,9 @@ Every vibrance change in the program originates here.
 
 ```mermaid
 flowchart TD
-    A["User switches window<br/>Windows raises EVENT_SYSTEM_FOREGROUND"] --> B["WinEventHook.WinEventProc<br/>common/WinEventHook.cs:215-261<br/>runs on the UI thread"]
-    B --> C["GetWindowThreadProcessId + Process.GetProcessById"]
-    C -->|"process already exited<br/>InvalidOperationException / ArgumentException"| X["swallowed — NO event dispatched"]
+    A["User switches window<br/>Windows raises EVENT_SYSTEM_FOREGROUND"] --> B["WinEventHook.WinEventProc<br/>common/WinEventHook.cs:208-250<br/>runs on the UI thread"]
+    B --> C["GetWindowThreadProcessId + ResolveProcessName<br/>(PathResolver's image path first,<br/>Process.GetProcessById only as fallback)"]
+    C -->|"name still unresolved<br/>(no image path, and GetProcessById throws<br/>InvalidOperationException / ArgumentException)"| X["swallowed — NO event dispatched"]
     C --> D["raise WinEventHookHandler<br/>with ProcessName + hwnd"]
     D --> E{"_applicationSettings.Count &gt; 0 ?"}
     E -->|"no — empty list, still reverts"| K
@@ -732,13 +732,16 @@ flowchart TD
 
 The mechanism underneath:
 
-- **One hook, system-wide.** `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
-  IntPtr.Zero, _procDelegate, 0, 0, WINEVENT_OUTOFCONTEXT)` — `common/WinEventHook.cs:187-190`.
+- **One hook, spanning a range of events, not just one.** `SetWinEventHook(EVENT_SYSTEM_FOREGROUND,
+  EVENT_SYSTEM_MINIMIZEEND, IntPtr.Zero, _procDelegate, 0, 0, WINEVENT_OUTOFCONTEXT)` —
+  `common/WinEventHook.cs:180-183`. The range has run from `EVENT_SYSTEM_FOREGROUND` to
+  `EVENT_SYSTEM_MINIMIZEEND` since v2.5.0; `WinEventProc`'s own `eventType` filter (`:210-214`)
+  narrows the flood of events the range delivers back down to the two this program acts on.
   `idProcess`/`idThread` are `0`, so it observes all processes. `WINEVENT_SKIPOWNPROCESS` is *not*
   set, so vibranceGUI's own windows also raise callbacks (harmless: `vibrance.GUI` matches no game and
   the revert branch is idempotent on NVIDIA).
-- **The delegate is rooted** in an instance field (`WinEventHook.cs:183`) and the instance in a static
-  (`:181`), so the classic "GC collected my callback" crash is avoided — by luck rather than by a
+- **The delegate is rooted** in an instance field (`WinEventHook.cs:176`) and the instance in a static
+  (`:174`), so the classic "GC collected my callback" crash is avoided — by luck rather than by a
   `GCHandle`.
 - **The match rule** is one call in each proxy (`NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`),
   `AmdDynamicVibranceProxy.cs:152`, `OnWinEventHook`):
@@ -772,9 +775,16 @@ The mechanism underneath:
   `AmdDynamicVibranceProxy.cs:151-155`, `OnWinEventHook`). Deleting your last watched application
   while its game holds the foreground now restores vibrance, the resolution and the gamma ramp on
   the next foreground change (**D9**).
-- **`WinEventHookEventArgs` is mostly dead.** `MainWindowTitle`, `WindowText` and `Process`
-  (`common/WinEventHookEventArgs.cs:9-15`) are assigned (or in `Process`'s case not even that) and
-  never read. The `Process.GetProcessById` round-trip exists solely to obtain `ProcessName`.
+- **`WinEventHookEventArgs` no longer carries dead fields.** `MainWindowTitle`, `WindowText` and
+  `Process` — assigned (or, for `Process`, not even that) and never read — plus `ProcessId`, which
+  was assigned but never read either, were all deleted on `work/156-foreground-hot-path`, along
+  with the `GetWindowTextLength`/`GetWindowTextA` calls that fed the first two
+  ([§11.6](#116-wineventhookeventargs)). `ProcessName` no longer costs a `Process.GetProcessById`
+  round-trip on the common path either: `WinEventHook.ResolveProcessName` (`:264-267`) derives it
+  from the image path `PathResolver` already resolved earlier in `WinEventProc`
+  (`PathResolver.GetProcessNameFromImagePath`), and falls back to `GetProcessNameById` (`:274-293`)
+  — the old `Process.GetProcessById` round-trip, now isolated — only for the protected or elevated
+  processes an image path could not be obtained for.
 
 ### 6.3 Vendor divergence in the same flow
 
@@ -1026,7 +1036,7 @@ What is **not** done on shutdown, by omission:
   ([§9.6](#96-the-debounced-save));
 - **the screen resolution is not restored** if a game was ingame when vibranceGUI exits;
 - the extracted `%APPDATA%\vibranceGUI\vibranceDLL.dll` is not deleted;
-- `WinEventHook._instance` is not cleared (`WinEventHook.cs:181`);
+- `WinEventHook._instance` is not cleared (`WinEventHook.cs:174`);
 - on AMD, ADL is never torn down at all — `UnloadLibraryEx` unhooks and returns `true`
   (`AmdDynamicVibranceProxy.cs:113-117`, `UnloadLibraryEx`), and `IAmdAdapter.Dispose()` is never called by anyone
   ([§8.6](#86-resource-management-on-the-amd-path)).
@@ -1081,19 +1091,40 @@ Consequences you must design around:
 
 1. **Startup blind spot.** The hook fires on *transitions* only; a game already running in the
    foreground gets nothing until you alt-tab away and back.
-2. **Process-exit race** (`WinEventHook.cs:253-260`, `WinEventProc`). If the process that raised the event has exited
-   by the time `Process.GetProcessById` runs, the exception is swallowed and **no event is dispatched
-   at all**. When a game crashes or exits, the very event that would have reverted vibrance can be
+2. **Process-exit race, now confined to the fallback** (`WinEventHook.cs:274-293`, `GetProcessNameById`).
+   `ResolveProcessName` only reaches it when `PathResolver` could not resolve an image path — a
+   protected process, or one that has already exited. If the process has *also* exited by the time
+   this fallback's `Process.GetProcessById` runs, the exception is swallowed and **no event is
+   dispatched at all** (`ResolveProcessName` returns `null`, and `WinEventProc` returns early at
+   `:228-236`). When a game crashes or exits, the very event that would have reverted vibrance can be
    dropped, leaving the desktop at the ingame level until the next foreground switch. This is a
    plausible mechanism behind issue #144-style reports and part of issue #137 ("does not reliably
    detect game in foreground") — **INFERENCE**, not confirmed at runtime.
-3. **Window-text buffer race** (`:225-227`, `WinEventProc`): `GetWindowTextLength` then `GetWindowTextA` are two calls
-   and the title can change in between. Irrelevant in practice — nothing reads that text.
-4. **Stale-event double-check exists only on the revert path** (NVIDIA `:342-343` (`OnWinEventHook`), AMD `:228-229`, `OnWinEventHook`).
+3. **Stale-event double-check exists only on the revert path** (NVIDIA `:350` (`OnWinEventHook`), AMD `:216`, `OnWinEventHook`).
    The apply path has no such check.
-5. **`GetInstance()` has no lock** (`WinEventHook.cs:208-213`). Today both proxies call it from the UI
+4. **A renamed-in-place executable outlives its old name** (`WinEventHook.ResolveProcessName`,
+   `:264-267`) — **OBSERVED**, not inferred. `PathResolver`'s image path comes from
+   `QueryFullProcessImageName`, which reports a process's *current* file name; the `GetProcessNameById`
+   fallback's `Process.ProcessName` is captured once at launch and does not follow a rename. A
+   self-updating launcher that renames its own running executable — observed with Claude Code's own
+   atomic self-update, `claude.exe` renamed in place to `claude.exe.old.<timestamp>` while still
+   running — is matched by the renamed name for the **whole remaining lifetime of that process**;
+   it clears only when the renamed process exits and a fresh one starts under the canonical name,
+   not on the next foreground event. The blast radius is narrower than it sounds: a setting with an
+   `InstallDirectory` still matches by directory containment, which does not depend on the file name
+   at all, so only a hand-added, name-only setting misses, for as long as the renamed process runs.
+5. **`GetInstance()` has no lock** (`WinEventHook.cs:201-206`). Today both proxies call it from the UI
    thread, so the lazy singleton is safe; construct proxies concurrently in future and you get two
    hooks and a leaked handle.
+6. **Dispatch now sits outside any try/catch.** The old code's single `try` wrapped both the
+   `Process.GetProcessById` call and `DispatchWinEventHookEvent`, so an `InvalidOperationException`/
+   `ArgumentException` thrown by *either proxy's* `OnWinEventHook` was silently swallowed along with
+   the ones that `try` actually targeted. `GetProcessNameById`'s narrower catch (`:283-292`) now
+   covers only what its own comments describe; a handler bug of that shape escapes into the native
+   WinEvent callback and reaches `Application.ThreadException` instead — a modal dialog over a
+   fullscreen game, the same class of hazard as [§2.2](#22-five-facts-that-will-bite-you-first)
+   item 2's historical note. Kept deliberately: a narrower catch is the better design, but the
+   trade-off belongs on the record.
 
 ### 6.9 Every message the user can see, and where it comes from
 
@@ -1240,7 +1271,7 @@ as `CallingConvention.StdCall` **with no `this` argument** — see the hazard in
 | 11 | `NvSystemType getGpuSystemType(int)` `:116-121` (`getGpuSystemType`) | `int(int*)` — **native takes a pointer, C# passes an `int` by value** | Auto |
 | 12 | `int getAssociatedNvidiaDisplayHandle(string, int)` `:123-128` (`getAssociatedNvidiaDisplayHandle`) | `int(const char*, int)` | **Ansi** |
 | — | *(removed)* `bool isCsgoStarted(ref IntPtr)` | was bound and never called; **deleted** by `62541a6`, on `master` since `4fb598c`. The export itself is still in the DLL — see [§7.6](#76-what-each-native-call-really-does-verified-binary) | — |
-| — | *(removed)* `GetWindowTextLength` / `GetWindowTextA` | `user32.dll`, both dead; **deleted** by the same commit. The identically named pair in `common/WinEventHook.cs:24` (`GetWindowTextLength`) / `:27` (`GetWindowTextA`) is a different, still-live binding | — |
+| — | *(removed)* `GetWindowTextLength` / `GetWindowTextA` | `user32.dll`, both dead; **deleted** by the same commit. The identically named pair in `common/WinEventHook.cs` served the same dead purpose (an unread window title) and was deleted too, on `work/156-foreground-hot-path` | — |
 
 **The typo `enumeratePhsyicalGPUs` is in the exported symbol itself**, so it must be preserved verbatim
 in any rebinding. Do not "fix" the spelling on the C# side.
@@ -2146,9 +2177,12 @@ no `IDisposable` despite owning an `Icon`.
 
 ### 11.6 `WinEventHookEventArgs`
 
-`vibrance.GUI/common/WinEventHookEventArgs.cs` — `ProcessId`, `Process`, `WindowText`, `ProcessName`,
-`MainWindowTitle`, `Handle`. **Only `ProcessName` and `Handle` are consumed.** `Process` is never even
-assigned; `WindowText` and `MainWindowTitle` are assigned and never read.
+`vibrance.GUI/common/WinEventHookEventArgs.cs` — `ProcessName`, `ProcessImagePath`, `Handle`. All
+three are consumed. `Process`, `WindowText`, `MainWindowTitle` and `ProcessId` — `Process` never
+even assigned; `WindowText` and `MainWindowTitle` assigned and never read; `ProcessId` assigned and
+never read either — were deleted on `work/156-foreground-hot-path` along with the
+`GetWindowTextLength`/`GetWindowTextA` calls that fed the first two
+([§6.2](#62-the-foreground-change-flow--the-heart-of-the-app)).
 
 ### 11.7 Win32 types in `ResolutionHelper.cs`
 
@@ -2283,9 +2317,10 @@ only.
 (`VibranceGUI.cs:1271-1309`, `CleanUp`) is reached only from `Form1_FormClosing`, and its body is guarded by
 `_v.GetVibranceInfo().isInitialized`. A Task Manager kill, crash, or logoff leaves the panel at the
 ingame level, and **the resolution is never restored on exit at all**, even on the clean path. Separately,
-if the process that raised a foreground event has already exited when `Process.GetProcessById` runs, the
-exception is swallowed and **no event is dispatched** (`common/WinEventHook.cs:253-260`, `WinEventProc`) — so the event
-that would have reverted vibrance when a game exits can simply be lost. The third contributor,
+if `PathResolver` could not resolve an image path and the process has also exited by the time the
+`Process.GetProcessById` fallback runs, the exception is swallowed and **no event is dispatched**
+(`common/WinEventHook.cs:274-293`, `GetProcessNameById`) — so the event that would have reverted
+vibrance when a game exits can simply be lost. The third contributor,
 **D9**, is fixed. There is no persisted "we changed this, restore it next time" record anywhere.
 
 ### 12.2 Crashes and data loss
@@ -2552,8 +2587,8 @@ and read from the hook callback. Safe today only because both happen to run on t
 callbacks *do* fire during nested modal loops (`VibranceSettings.ShowDialog()` at `:1652`, `listApplications_DoubleClick`), so the proxy
 can read the list while the user is mid-edit.
 
-**D52 — `WinEventHook.GetInstance()` is a lock-free lazy singleton** (`common/WinEventHook.cs:208-213`)
-and `_instance` is never cleared after `RemoveWinEventHook` (`:181`), so the hook cannot be
+**D52 — `WinEventHook.GetInstance()` is a lock-free lazy singleton** (`common/WinEventHook.cs:201-206`)
+and `_instance` is never cleared after `RemoveWinEventHook` (`:174`), so the hook cannot be
 re-established in-process.
 
 **D53 — `out` parameters are transferred across threads via an `Invoke` lambda**
@@ -2563,10 +2598,10 @@ re-established in-process.
 
 | Item | Location |
 |---|---|
-| **D54** `WinEvent` constant block — only 2 of 71 constants used | `common/WinEventHook.cs:34-178` (144 dead lines) |
+| **D54** `WinEvent` constant block — only 2 of 71 constants used | `common/WinEventHook.cs:27-171` (145 dead lines) |
 | Polling-loop fossils: `shouldRun`, `sleepInterval`, `SetShouldRun`, `SetSleepInterval`, empty `HandleDvc()` | `common/Definitions.cs:27-28` (`shouldRun`); `NvidiaDynamicVibranceProxy.cs:804-807` (`SetSleepInterval`) |
 | `SetVibranceIngameLevel` / `userVibranceSettingActive` write-only pair (**D13**) | `common/IVibranceProxy.cs:36`, `common/Definitions.cs:20` (`userVibranceSettingActive`) |
-| `WinEventHookEventArgs.Process` never assigned or read; `WindowText`/`MainWindowTitle` assigned, never read — so the `GetWindowTextLength`/`GetWindowTextA` work is pointless | `common/WinEventHookEventArgs.cs:9-15` (`Process`); `common/WinEventHook.cs:225-227` (`WinEventProc`) |
+| **Removed:** `WinEventHookEventArgs.Process` (never assigned or read), `WindowText`/`MainWindowTitle` (assigned, never read), `ProcessId` (assigned, never read) and the `GetWindowTextLength`/`GetWindowTextA` calls that fed the first two | deleted on `work/156-foreground-hot-path`; see `common/WinEventHookEventArgs.cs`, `common/WinEventHook.cs` ([§11.6](#116-wineventhookeventargs)) |
 | The `refreshRate` key is read into a buffer and discarded; nothing has ever written it. (`SetVibranceSetting` itself is live — three single-key writers go through it, [§9.2](#92-file-formats)) | `common/SettingsController.cs:33,280-286` (`SzKeyNameRefreshRate`) |
 | `ResolutionHelper.ChangeResolution` — **deleted** on `work/resolution-change`, along with its `ChangeDisplaySettings` P/Invoke, not merely dead; the no-arg `EnumerateSupportedResolutionModes()` is still present and still never called | `common/ResolutionHelper.cs:147-150` (`_notifiedFailures`) |
 | The `ProgressPercentage == 2` branch ("NVAPI Unloaded: …") is unreachable; only `ReportProgress(1)` is ever called | `VibranceGUI.cs:331,438-441` (`backgroundWorker_DoWork`) |
@@ -2586,7 +2621,7 @@ bookkeeping, autostart, static logger and a raw `SendMessage` P/Invoke, all in o
 (`VibranceGUI.cs:1978-1991` (`SendMessage`) for the last one). `ProcessExplorer` stores its parent as `Form` and downcasts
 to `VibranceGUI` (`ProcessExplorer.cs:19,93`, `ProcessExplorer`), creating a cycle an interface would remove.
 
-**D56 — `common/` is not vendor-neutral.** `WinEventHook.cs:7-8` imports both vendor namespaces
+**D56 — `common/` is not vendor-neutral.** `WinEventHook.cs:6-7` imports both vendor namespaces
 unnecessarily; `IVibranceProxy.cs:3` and `ISettingsController.cs:2` import `vibrance.GUI.NVIDIA`;
 `SettingsController.cs:246-250` (`ReadVibranceSettings`) hard-references NVIDIA proxy constants; `GraphicsAdapter.cs:6-8` reaches
 into `AMD.vendor.adl32`/`adl64`. Meanwhile `AMD/vendor/utils/CommonUtils.cs` hosts the **NVIDIA** DLL
@@ -2634,8 +2669,11 @@ pair this used to call out is deleted from both proxies; both now call
   (`:29-30`) — intentional, but a landmine when editing.
 - **Silent `catch` blocks**: every `catch` in `RegistryController` and `SettingsController` is a bare
   `catch (Exception)` returning a value with no logging; `AdlCheckLibrary` has three empty catches
-  (`adl32/ADLCheckLibrary.cs:19-21`); `WinEventHook.RemoveWinEventHook` logs a **freshly constructed**
-  exception instead of the one it caught and has an empty `finally {}` (`common/WinEventHook.cs:202-205`, `RemoveWinEventHook`).
+  (`adl32/ADLCheckLibrary.cs:19-21`). `WinEventHook.RemoveWinEventHook` (`common/WinEventHook.cs:185-199`)
+  is not one of these: its `catch (Exception ex)` (`:195-198`) chains the original exception rather
+  than discarding it, and there is no `finally` block at all, empty or otherwise. The one exception it
+  logs fresh, with no inner exception to chain, is in the `!result` branch (`:190-193`) — legitimately
+  so, since `UnhookWinEvent` reports failure through its return value, not by throwing.
 - **Naming/i18n leftovers**: `activeProcceses` (`ProcessExplorer.cs:40`, `GetAllProcesses`), German designer comments
   (`VibranceGUI.Designer.cs:5-27`), handlers still called `Form1_*` (`VibranceGUI.cs:407-410`, `Form1_Load`).
   The German MSBuild `ErrorText` went with the `EnsureNuGetPackageBuildImports` target when the NuGet
