@@ -15,7 +15,7 @@
 > **INFERENCE** or **UNCERTAIN** and must not be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 534 automated checks across eleven fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 545 automated checks across twelve fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -334,11 +334,13 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 534 of them across eleven
-  `*Fixture.cs` files — nine in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`
-  — compiled into the app and run through twelve `--selftest-*` flags dispatched early in
-  `Program.cs`, before the single-instance mutex. They report through `Checklist`
-  (PASS/FAIL/SKIP), not a third-party assertion library, so searching for `Assert.` or
+- **There is no test project**, but there are automated checks: 545 of them across twelve
+  `*Fixture.cs` files — ten in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`
+  — compiled into the app and run through thirteen `--selftest-*` flags dispatched early in
+  `Program.cs`, but *after* the single-instance mutex (`Program.cs:77`, second-instance bail at
+  `:92`, the flags at `:119-266`), so a fixture will not run while vibranceGUI is already open.
+  They report through `Checklist` (PASS/FAIL/SKIP), not a third-party assertion library, so
+  searching for `Assert.` or
   `*Test*` finds nothing and wrongly suggests the project is untested.
 - **CI is dead.** `.travis.yml` targets travis-ci.org (shut down) with `dist: trusty`, `mono: beta`,
   `dotnet: 1.0.3`. There is no GitHub Actions workflow. Assume nothing is verified on push.
@@ -427,10 +429,11 @@ vibranceGUI/
     │   ├── GammaRestoreFixture.cs      21 checks
     │   ├── GraphicsAdapterFixture.cs   38 checks
     │   ├── HdrVibranceFixture.cs       58 checks
-    │   ├── MatchingFixture.cs          36 checks
+    │   ├── MatchingFixture.cs          55 checks
     │   ├── ProfileToggleFixture.cs     91 checks
     │   ├── ResolutionChangeFixture.cs 158 checks
     │   ├── StabilityFixture.cs          6 checks
+    │   ├── StartupForegroundFixture.cs 11 checks
     │   ├── VibranceRestoreFixture.cs   38 checks
     │   │
     │   └── gamefinder/                installed-game discovery, feeding GameFinder.cs
@@ -785,6 +788,16 @@ The mechanism underneath:
   (`PathResolver.GetProcessNameFromImagePath`), and falls back to `GetProcessNameById` (`:274-293`)
   — the old `Process.GetProcessById` round-trip, now isolated — only for the protected or elevated
   processes an image path could not be obtained for.
+- **Startup now gets a second, one-shot entry point into this same flow** (upstream #81; see
+  [§6.8](#68-known-blind-spots-in-detection) item 1). `IVibranceProxy.ApplyStartupForegroundProfile`,
+  called at most once from `VibranceGUI.backgroundWorker_DoWork` right after startup reconciles
+  `_applicationSettings` and the Windows level, drives the SAME `OnWinEventHook` a real foreground
+  event would, via a synthesised `WinEventHookEventArgs` — never a second copy of the apply logic.
+  It is apply-only **by construction**: a `null` `FindMatch` returns before ever synthesising an
+  event, so the automatic handler's own revert branch is unreachable from this entry point.
+  Marshalled onto the UI thread with `this.Invoke`, because `backgroundWorker_DoWork` runs on a
+  ThreadPool thread (the `while (!this.IsHandleCreated)` spin just above it in that method) while
+  every driver call in this flow assumes the UI thread.
 
 ### 6.3 Vendor divergence in the same flow
 
@@ -1089,8 +1102,17 @@ Consequences you must design around:
 
 ### 6.8 Known blind spots in detection
 
-1. **Startup blind spot.** The hook fires on *transitions* only; a game already running in the
-   foreground gets nothing until you alt-tab away and back.
+1. **Startup blind spot — FIXED on `work/81-startup-foreground-apply` (upstream #81, the last
+   mechanism behind #137).** The hook fires on *transitions* only, so a game already running in
+   the foreground when vibranceGUI autostarted got nothing until you alt-tabbed away and back.
+   Closed by `IVibranceProxy.ApplyStartupForegroundProfile`, called at most once from
+   `VibranceGUI.backgroundWorker_DoWork` right after startup reconciles `_applicationSettings` and
+   the Windows level, against whatever window is already foreground at that moment (see
+   [§6.2](#62-the-foreground-change-flow--the-heart-of-the-app)). Apply-only by construction: it
+   returns before ever synthesising an event when nothing matches, so it can never reach the
+   automatic handler's own revert branch — see that method's own doc comment (`IVibranceProxy.cs`)
+   for the full contract, including why its return value does not by itself mean a write landed
+   (a profile the toggle hotkey has suppressed still matches and still returns `true`).
 2. **Process-exit race, now confined to the fallback** (`WinEventHook.cs:274-293`, `GetProcessNameById`).
    `ResolveProcessName` only reaches it when `PathResolver` could not resolve an image path — a
    protected process, or one that has already exited. If the process has *also* exited by the time
@@ -2478,8 +2500,11 @@ so a profile carrying no `InstallDirectory` — every hand-added entry — still
 that name anywhere on disk. The directory pass only ever *adds* matches; it never rejects one made by
 name.
 
-**D28 — the startup blind spot.** The hook only fires on transitions, so a game already in the
-foreground when vibranceGUI starts gets nothing until the user alt-tabs away and back.
+**D28 — FIXED on `work/81-startup-foreground-apply` (upstream #81). The startup blind spot.** The
+hook only fired on transitions, so a game already in the foreground when vibranceGUI started got
+nothing until the user alt-tabbed away and back. Closed by
+`IVibranceProxy.ApplyStartupForegroundProfile` — see
+[§6.8](#68-known-blind-spots-in-detection) item 1 for the full writeup.
 
 ### 12.4 Native-boundary hazards
 
@@ -2692,7 +2717,7 @@ not that none exists.
 | #147, #143, #120 | feature requests: SDR/HDR sliders, reset keybind, command-line options | Not defects, and all three are now implemented in this fork: #143 by the toggle hotkey ([§10.5](#105-the-toggle-hotkey)), #120 by `--help` and `--set-vibrance` ([§3.6](#36-running-it)), #147 by the separate HDR level ([§6.10](#610-the-separate-hdr-level-and-noticing-hdr-change)) — whose effect on real HDR hardware is still unverified. None of the three has landed upstream. |
 | #144 | vibrance does not reset to Windows level when the program closes | **D4**. **D9**, the second contributor, is fixed (`466de41`). |
 | #138 | extreme CPU usage with no dedicated GPU | **D1**, fixed on `work/stability-pass` (`466de41`) — the loop is bounded and deduped. The mechanism was always **INFERENCE** and the symptom was never reproduced here, so read this as "mechanism removed", not "confirmed closed"; the native half is also unchanged. |
-| #137 | does not reliably detect the game in the foreground | Candidates: the dropped-event race (**D4**) and the startup blind spot (**D28**), both still open. Name-only matching (**D27**) was narrowed by `4f3fd19`, which added the `InstallDirectory` fallback aimed at exactly this report — a launcher or anti-cheat shim running from under the game's install folder now matches — but an entry added by hand still carries no directory and still matches on name alone. INFERENCE. |
+| #137 | does not reliably detect the game in the foreground | Candidates: the dropped-event race (**D4**), still open, and the startup blind spot (**D28**), fixed on `work/81-startup-foreground-apply` (upstream #81). Name-only matching (**D27**) was narrowed by `4f3fd19`, which added the `InstallDirectory` fallback aimed at exactly this report — a launcher or anti-cheat shim running from under the game's install folder now matches — but an entry added by hand still carries no directory and still matches on name alone. INFERENCE. |
 | #134 | CS2 jumps to the second monitor on alt-tab | No mechanism established. The historical candidate was the unconditional global commit call (`ChangeDisplaySettingsEx(null, ...)`) the pre-fix code ran after every staged mode change — **removed** on `work/resolution-change` (see **D2**; the new `CDS_TEST`/`CDS_UPDATEREGISTRY` sequence never touches a device other than the one it was asked about), so this hypothesis no longer applies to current `master`+this branch even though it was never confirmed either way. |
 | #133 | native GUI is bugging | No mechanism identified. |
 | #132, #114 | `DispChangeBadFlags` when changing resolution | **D2**/**D58**/**D59**, fixed on `work/resolution-change` — see [§6.4](#64-the-optional-resolution-switch). |

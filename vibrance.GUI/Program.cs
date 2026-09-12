@@ -34,6 +34,7 @@ namespace vibrance.GUI
         private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
+        private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
         private const string CliSelfTestMessageBoxCaption = "vibranceGUI command line self test";
         private const string HelpMessageBoxCaption = "vibranceGUI command line options";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
@@ -243,6 +244,18 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, HdrVibranceFixture.Run().ToArray()),
                     HdrSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: upstream #81's startup foreground apply is fully fake-driven,
+            // the same way --selftest-profiletoggle and --selftest-vibrance are - no real driver,
+            // no real game and no real WinEventHook, only the vendor proxies' own ResetForTests/
+            // BuildAmdProxy seams and per-fixture fakes copied from HdrVibranceFixture. See
+            // StartupForegroundFixture's own header comment.
+            if (args.Contains("--selftest-startup"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, StartupForegroundFixture.Run().ToArray()),
+                    StartupSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

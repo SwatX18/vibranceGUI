@@ -471,6 +471,33 @@ namespace vibrance.GUI.AMD
             }
         }
 
+        /// <summary>
+        /// See IVibranceProxy.ApplyStartupForegroundProfile for the full contract (upstream #81,
+        /// the last blind spot #137 left open). FindMatch decides everything: a null match
+        /// returns false having done nothing at all, never touching _amdAdapter,
+        /// HdrStateTracker, VibranceRestoreHelper or _gameScreen - the same statics OnWinEventHook
+        /// itself only mutates once a match exists. A match routes through OnWinEventHook itself
+        /// via a synthesised WinEventHookEventArgs, exactly as a real foreground event would, so
+        /// this gets HDR resolution (HdrVibranceHelper.ResolveIngameLevel), the suppression gate
+        /// and restore bookkeeping for free - see OnWinEventHook's own comments for all of it. No
+        /// new apply logic lives here.
+        /// </summary>
+        public bool ApplyStartupForegroundProfile(IntPtr hWnd, string processName, string processImagePath)
+        {
+            if (ApplicationSettingMatcher.FindMatch(_applicationSettings, processName, processImagePath) == null)
+            {
+                return false;
+            }
+
+            OnWinEventHook(this, new WinEventHookEventArgs
+            {
+                Handle = hWnd,
+                ProcessName = processName,
+                ProcessImagePath = processImagePath
+            });
+            return true;
+        }
+
         private void RestoreWindowsColorSettings()
         {
             //restores every screen whose gamma ramp this application actually captured a baseline
