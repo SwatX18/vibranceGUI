@@ -76,5 +76,34 @@ namespace vibrance.GUI.common
         /// nothing to change writes nothing and logs nothing.
         /// </summary>
         void RecheckForegroundHdrLevel(IntPtr foregroundWindow, string processName, string processImagePath);
+
+        /// <summary>
+        /// Upstream #81's startup path, and the last blind spot #137 left open (docs/
+        /// CODEBASE_GUIDE.md §6.8, blind spot #1): WinEventHook only ever observes a foreground
+        /// CHANGE, so a game that is already running and already focused when vibranceGUI
+        /// autostarts never reaches ApplicationSettingMatcher.FindMatch until the user alt-tabs
+        /// away and back. VibranceGUI calls this at most once, right after startup finishes
+        /// reconciling _applicationSettings and the Windows level (see that call site's own
+        /// comment for why the ordering matters), against whatever window GetForegroundWindow()
+        /// names at that moment.
+        ///
+        /// Looks up the same match ApplicationSettingMatcher.FindMatch would find for hWnd and,
+        /// only if one exists, drives the SAME automatic handler a real foreground event would -
+        /// so this gets HDR resolution, the suppression gate and restore bookkeeping for free,
+        /// with no separate apply logic of its own. No match at all is a silent no-op: this
+        /// returns false BEFORE ever synthesising an event, so the handler's own revert ("else")
+        /// branch is unreachable from this entry point by construction - there is nothing yet for
+        /// it to revert FROM, and this method must never be the thing that un-applies a game's
+        /// own vibrance level the moment vibranceGUI starts up underneath it.
+        ///
+        /// Returns true iff a matching setting was found and routed to the handler - NOT the
+        /// same thing as a write having actually landed. A profile the toggle hotkey has
+        /// suppressed (upstream #143) still matches here and still returns true, exactly as a
+        /// real foreground event would route it, but the handler's own suppression gate then
+        /// declines to write anything - deliberately not a second copy of that gate checked here
+        /// (see this method's own reasoning above). Callers that need to know whether vibrance was
+        /// actually written cannot infer it from this return value alone.
+        /// </summary>
+        bool ApplyStartupForegroundProfile(IntPtr hWnd, string processName, string processImagePath);
     }
 }

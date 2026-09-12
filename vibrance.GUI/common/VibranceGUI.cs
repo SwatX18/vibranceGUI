@@ -481,6 +481,16 @@ namespace vibrance.GUI.common
                 _v.SetNeverSwitchResolution(neverSwitchResolution);
                 _v.SetNeverChangeColorSettings(neverChangeColorSettings);
                 _v.SetWindowsColorSettings(brightnessWindowsLevel, contrastWindowsLevel, gammaWindowsLevel);
+
+                // Upstream #81, the last mechanism #137 left open: a game already running and
+                // already focused when vibranceGUI autostarts never fires a foreground CHANGE for
+                // WinEventHook to observe, so without this it sits at the Windows level until the
+                // user alt-tabs away and back. Must be the LAST statement in this block, not
+                // earlier - _applicationSettings only reaches the proxy via SetApplicationSettings
+                // above, and isWindowsLevelKnown only becomes true once SetVibranceWindowsLevel
+                // above has run; either statement running after this one would have this match
+                // against an empty list or a not-yet-known Windows level instead.
+                ApplyStartupForegroundProfile();
             }
         }
 
@@ -1482,6 +1492,52 @@ namespace vibrance.GUI.common
             }
 
             _v.RecheckForegroundHdrLevel(hWnd, processName, processImagePath);
+        }
+
+        /// <summary>
+        /// Upstream #81's startup path (see backgroundWorker_DoWork's own call site comment for
+        /// why this has to run exactly where it does). Runs once, right after the engine's own
+        /// state is fully reconciled, against whatever window happens to already be foreground.
+        ///
+        /// The Invoke marshal below is mandatory, not defensive boilerplate: this method is
+        /// called from backgroundWorker_DoWork, which runs on a ThreadPool thread (that is what
+        /// its own "while (!this.IsHandleCreated) Thread.Sleep(500);" spin exists for - see that
+        /// method). IVibranceProxy.ApplyStartupForegroundProfile drives the exact same handler a
+        /// real WinEvent foreground change would, and that handler calls Screen.FromHandle,
+        /// touches the notify icon balloon on a resolution-change failure and mutates
+        /// unsynchronised statics (HdrStateTracker, VibranceRestoreHelper, the proxy's own
+        /// _gameScreen) that every other caller only ever reaches from the UI thread - see the
+        /// guide's rule that all of this, including the driver calls themselves, runs on the UI
+        /// thread. No IsHandleCreated guard is needed - the spin above already guarantees the
+        /// handle exists before this is ever called. The InvokeRequired-then-recurse shape
+        /// mirrors backgroundWorker_DoWork's own marshalled blocks rather than
+        /// SetGuiEnabledFlag, which calls this.Invoke unconditionally with no such check.
+        /// </summary>
+        private void ApplyStartupForegroundProfile()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke((MethodInvoker)delegate { ApplyStartupForegroundProfile(); });
+                return;
+            }
+
+            IntPtr hWnd;
+            string processName;
+            string processImagePath;
+            if (!_foregroundWindowReader.TryGetForeground(out hWnd, out processName, out processImagePath))
+            {
+                return;
+            }
+
+            if (_v.ApplyStartupForegroundProfile(hWnd, processName, processImagePath))
+            {
+                // "Matched", not "applied" - true whether or not anything was actually written.
+                // ApplyStartupForegroundProfile returns true whenever a configured profile routed
+                // to the handler, including a profile the toggle hotkey has suppressed, which the
+                // handler's own gate then declines to write (see that method's own doc comment).
+                Program.LogSafely(string.Format(
+                    "{0} was already the foreground window on startup - matched its configured profile without waiting for a foreground change.", processName));
+            }
         }
 
         /// <summary>
