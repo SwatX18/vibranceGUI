@@ -1,11 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace vibrance.GUI.common
 {
     /// <summary>
-    /// The reference expectations for foreground matching, as literal data. No GUI, no processes,
-    /// no disk. Run by vibrance.GUI.exe --selftest-matching.
+    /// The reference expectations for foreground matching, as literal data. No GUI and no disk;
+    /// one check reads this process's own name to prove the GetProcessById fallback works. Run by
+    /// vibrance.GUI.exe --selftest-matching.
     ///
     /// Every failure this covers is silent. A directory that matches too much makes every window
     /// on the desktop look like a game and fires vibrance constantly; a directory that shadows a
@@ -35,6 +37,8 @@ namespace vibrance.GUI.common
             CheckContainment(checklist);
             CheckPrecedence(checklist);
             CheckSharedDirectories(checklist);
+            CheckProcessNameFromImagePath(checklist);
+            CheckResolveProcessName(checklist);
 
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
@@ -155,6 +159,76 @@ namespace vibrance.GUI.common
                 "an ordinary Steam install directory is kept");
             checklist.Check(!ApplicationSettingMatcher.IsSharedProgramDirectory(null),
                 "a null directory is not reported as shared, it is simply absent");
+        }
+
+        // The foreground hot path used to ask Windows for a process's name (Process.GetProcessById,
+        // a full snapshot) on every focus change. It now derives the name from the image path
+        // PathResolver already resolved cheaply, and only falls back to GetProcessById for the
+        // processes an image path could not be obtained for. This reproduces .NET's own
+        // ProcessManager.GetProcessShortName, which strips a trailing extension only when it is
+        // exactly ".exe" - not Path.GetFileNameWithoutExtension, which strips any extension.
+        private static void CheckProcessNameFromImagePath(Checklist checklist)
+        {
+            checklist.Lines.Add(string.Empty);
+            checklist.Lines.Add("PathResolver.GetProcessNameFromImagePath - a process name without asking Windows:");
+
+            checklist.Check(NameFromPath(@"C:\Games\cs2.exe") == "cs2", @"a plain executable loses its .exe");
+            checklist.Check(NameFromPath(@"C:\Games\my.app.exe") == "my.app", "only the final .exe is stripped");
+            checklist.Check(NameFromPath(@"C:\Games\game.exe.exe") == "game.exe",
+                "a name that already ends in .exe keeps one copy of it");
+            checklist.Check(NameFromPath(@"C:\Games\GAME.EXE") == "GAME",
+                "the extension test ignores case, the casing of the name itself is preserved");
+            checklist.Check(NameFromPath(@"C:\Games\game.bin") == "game.bin",
+                "a non-.exe extension is kept, unlike Path.GetFileNameWithoutExtension");
+            checklist.Check(NameFromPath(@"C:\Games\launcher") == "launcher", "no extension at all");
+            checklist.Check(NameFromPath(@"C:\Games\game.") == "game.",
+                "a trailing dot with nothing after it is not an extension to strip");
+            checklist.Check(NameFromPath(@"\\server\share\Game\game.exe") == "game", "a UNC path");
+            checklist.Check(NameFromPath(@"\\?\C:\g\game.exe") == "game", "an extended-length prefix");
+            checklist.Check(NameFromPath(@"C:\g/game.exe") == "game", "a forward slash is accepted as a separator too");
+
+            string degenerate = PathResolver.GetProcessNameFromImagePath(@"C:\.exe");
+            checklist.Check(degenerate != null && degenerate.Length == 0,
+                @"C:\.exe is a legitimate empty string, not the null that means ""fall back to GetProcessById""");
+
+            checklist.Check(NameFromPath(@"C:\Games\") == null, "a path ending in a separator has no file name to report");
+            checklist.Check(NameFromPath(null) == null, "a null image path");
+            checklist.Check(NameFromPath(string.Empty) == null, "an empty image path");
+        }
+
+        private static string NameFromPath(string imagePath)
+        {
+            return PathResolver.GetProcessNameFromImagePath(imagePath);
+        }
+
+        // WinEventHook.ResolveProcessName is internal precisely so this fixture can call it without
+        // installing a real hook or touching a real process.
+        private static void CheckResolveProcessName(Checklist checklist)
+        {
+            checklist.Lines.Add(string.Empty);
+            checklist.Lines.Add("WinEventHook.ResolveProcessName - the image path wins, GetProcessById is a fallback only:");
+
+            checklist.Check(WinEventHook.ResolveProcessName(-1, @"C:\Games\cs2.exe") == "cs2",
+                "a good image path yields the derived name even with an invalid process id - proof the fallback is never taken");
+            checklist.Check(WinEventHook.ResolveProcessName(-1, null) == null,
+                "no image path falls back to GetProcessById, which reports null for an invalid id rather than throwing");
+
+            // Every shape of image path GetProcessNameFromImagePath itself reports null for
+            // (see CheckProcessNameFromImagePath above) has to be pinned here too: this is the
+            // exact "no processName -> skip dispatch entirely" input WinEventProc's null guard
+            // depends on to avoid sending an unreadable foreground process into the vibrance
+            // proxies' restore branch (a visible flicker - see WinEventHook.cs's WinEventProc).
+            checklist.Check(WinEventHook.ResolveProcessName(-1, string.Empty) == null,
+                "an empty image path also falls back, and also fails for an invalid id");
+            checklist.Check(WinEventHook.ResolveProcessName(-1, @"C:\Games\") == null,
+                "a path with no file name to report also falls back, and also fails for an invalid id");
+
+            // The fallback has to actually succeed for a real process, not merely fail safely for
+            // an invalid one - this is the elevated/protected game case acceptance criterion 3
+            // depends on, proven here against a process this test can read the ground truth for.
+            Process self = Process.GetCurrentProcess();
+            checklist.Check(WinEventHook.ResolveProcessName(self.Id, null) == self.ProcessName,
+                "with no image path, GetProcessById still resolves a real process's name");
         }
 
         private static readonly Func<ApplicationSetting, bool> OnlyUnconfirmed =
