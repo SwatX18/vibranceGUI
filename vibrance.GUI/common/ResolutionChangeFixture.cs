@@ -1,7 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
+using System.Windows.Forms;
+using vibrance.GUI.AMD;
+using vibrance.GUI.AMD.vendor;
+using vibrance.GUI.NVIDIA;
 
 namespace vibrance.GUI.common
 {
@@ -40,6 +46,30 @@ namespace vibrance.GUI.common
             CheckAlreadyMatchingShortCircuits(checklist);
             CheckClearFailureStateDoesNotStraddleDeviceNames(checklist);
             CheckUnreadableCurrentModeNeverCountsTowardGiveUp(checklist);
+
+            // ResolutionHelper.RestoreOnExit coverage (upstream #98) - X1-X11 and X16-X17 drive
+            // RestoreOnExit's internal, IDisplayModeDevice-seamed overload directly, exactly like
+            // every check above; X12-X15 drive it one layer up, through each vendor proxy's
+            // RestoreResolutionOnExit, still against a fake display, never a real one.
+            CheckExitRestoreNoOpWhenFlagFalse(checklist);
+            CheckExitRestoreNoOpWhenNeverChangeResolution(checklist);
+            CheckExitRestoreNoOpWhenDeviceNameMissing(checklist);
+            CheckExitRestoreNoOpWhenDeviceAbsentFromDictionary(checklist);
+            CheckExitRestoreNoOpWhenDictionaryIsNull(checklist);
+            CheckExitRestoreNoOpWhenSavedModeIsNull(checklist);
+            CheckExitRestoreAppliesSavedMode(checklist);
+            CheckExitRestoreNoOpWhenAlreadyAtSavedMode(checklist);
+            CheckExitRestoreBypassesGiveUpSuppression(checklist);
+            CheckExitRestoreFailureDoesNotNotifyButDoesLog(checklist);
+            CheckExitRestoreUnverifiedApply(checklist);
+            CheckExitRestoreNeverRetries(checklist);
+            CheckExitRestoreSurvivesADeviceThatThrows(checklist);
+            CheckExitRestoreSurvivesAReadThatThrows(checklist);
+            CheckNvidiaExitRestoreAppliesSavedModeAndClearsFlag(checklist);
+            CheckNvidiaExitRestoreFailureLeavesFlagSet(checklist);
+            CheckAmdExitRestoreAppliesSavedModeAndClearsFlag(checklist);
+            CheckAmdExitRestoreFailureLeavesFlagSet(checklist);
+            CheckExitRestoreNeverTouchesOtherDevices(checklist);
 
             // WindowsResolutionRefresher.Refresh coverage - R1-R6/R-A below drive the extracted
             // refresh logic directly through IDisplayModeDevice, exactly like every check above;
@@ -322,6 +352,14 @@ namespace vibrance.GUI.common
             List<ResolutionFailureEventArgs> raised = new List<ResolutionFailureEventArgs>();
             EventHandler<ResolutionFailureEventArgs> handler = delegate(object sender, ResolutionFailureEventArgs e) { raised.Add(e); };
             ResolutionHelper.ResolutionChangeFailed += handler;
+            // Records the actual log message text, not just LoggedLineCountForTests' bare count - a
+            // count alone cannot tell "logged the code THIS phase queued" from "logged some OTHER,
+            // stale code that merely happened to be new to the dedup set", which is exactly how a
+            // previous version of Phase A masked its own bug (see Phase A's own comment below) while
+            // every assertion here stayed green throughout.
+            ILogSink previousSink = LogSink.Current;
+            RecordingLogSink recordingSink = new RecordingLogSink();
+            LogSink.Current = recordingSink;
             try
             {
                 // Phase A: 20 consecutive attempts, all rejected by CDS_TEST with the same code.
@@ -329,18 +367,41 @@ namespace vibrance.GUI.common
                 // further attempt is Suppressed and never reaches the device at all - 20 is
                 // deliberately more than the bound, to prove going further adds neither a second
                 // log line nor a second notification.
+                //
+                // Queued ONLY for the first 10 attempts - the ones that actually reach the device
+                // before the give-up state kicks in - one entry per attempt, not two: target's
+                // DmDisplayFixedOutput (0) already matches the fake's own current mode's
+                // (mismatched's, also 0), so the fixed-output fallback retry never fires and each
+                // attempt makes exactly one CDS_TEST call (see CheckFixedOutputFallback above for the
+                // retry itself). Attempts 11-20 are Suppressed before ever touching the device, so
+                // queuing anything for them would just leave it stranded. A prior version of this
+                // check queued twice per attempt, for all 20 attempts - leaving ~30 stale
+                // DispChangeBadflags entries sitting in this device's shared (deviceName, CdsTest)
+                // FIFO queue, which Phase B/C's own freshly-queued DispChangeBadmode entries then
+                // waited behind: both phases dequeued a stale DispChangeBadflags instead, silently
+                // never exercising DispChangeBadmode at all, while the line-count assertions below
+                // stayed green regardless, since ClearFailureState's dedup reset does not care WHICH
+                // code caused the log line that follows it. Caught by recording the actual message
+                // text (recordingSink, below) rather than trusting the count alone - the same class
+                // of hazard CheckExitRestoreBypassesGiveUpSuppression (X7, elsewhere in this file)
+                // guards against for a device reused past its own give-up state.
                 FakeDisplayModeDevice device = new FakeDisplayModeDevice();
                 device.SetCurrentMode(deviceName, mismatched);
                 for (int i = 0; i < 20; i++)
                 {
-                    device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
-                    device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+                    if (i < 10)
+                    {
+                        device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+                    }
                     ResolutionHelper.ChangeResolutionEx(device, target, deviceName, true);
                 }
                 checklist.Check(raised.Count == 1,
                     string.Format("20 consecutive identical failures raise ResolutionChangeFailed exactly once, got {0}", raised.Count));
                 checklist.Check(ResolutionHelper.LoggedLineCountForTests == 1,
                     string.Format("20 consecutive identical failures write exactly one log line, got {0}", ResolutionHelper.LoggedLineCountForTests));
+                checklist.Check(recordingSink.Messages.Count == 1 && recordingSink.Messages[0].Contains("DispChangeBadflags"),
+                    string.Format("that one log line actually names DispChangeBadflags, the code Phase A queued, got {0}",
+                        recordingSink.Messages.Count > 0 ? recordingSink.Messages[recordingSink.Messages.Count - 1] : "<none>"));
 
                 // Phase B: a REAL success (AlreadyMatching) clears every suppression this device
                 // was carrying - the fake's current mode never actually changes for this call, only
@@ -354,7 +415,9 @@ namespace vibrance.GUI.common
 
                 int loggedLinesBeforePhaseB = ResolutionHelper.LoggedLineCountForTests;
                 raised.Clear();
-                device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadmode);
+                // Queued once, not twice, for the same reason as Phase A above - and now that
+                // Phase A's own queue leaves nothing stranded behind it, this single entry is the
+                // one this call actually consumes.
                 device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadmode);
                 ResolutionHelper.ChangeResolutionEx(device, target, deviceName, true);
                 checklist.Check(ResolutionHelper.LoggedLineCountForTests == loggedLinesBeforePhaseB + 1,
@@ -362,6 +425,9 @@ namespace vibrance.GUI.common
                         loggedLinesBeforePhaseB, ResolutionHelper.LoggedLineCountForTests));
                 checklist.Check(raised.Count == 0,
                     "a single new failure, below the give-up bound, does not raise a second notification");
+                checklist.Check(recordingSink.Messages.Count > 0 && recordingSink.Messages[recordingSink.Messages.Count - 1].Contains("DispChangeBadmode"),
+                    string.Format("Phase B's new log line actually names DispChangeBadmode, the code IT queued - not a stale DispChangeBadflags left over from Phase A, got {0}",
+                        recordingSink.Messages.Count > 0 ? recordingSink.Messages[recordingSink.Messages.Count - 1] : "<none>"));
 
                 // Phase C: another real success, then a REPEAT of phase B's own code (DispChangeBadmode)
                 // - still logs again, proving the reopening is not limited to "only a brand new code
@@ -372,15 +438,18 @@ namespace vibrance.GUI.common
 
                 int loggedLinesBeforePhaseC = ResolutionHelper.LoggedLineCountForTests;
                 device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadmode);
-                device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadmode);
                 ResolutionHelper.ChangeResolutionEx(device, target, deviceName, true);
                 checklist.Check(ResolutionHelper.LoggedLineCountForTests == loggedLinesBeforePhaseC + 1,
                     string.Format("a repeated failure code, after another real success, logs again instead of staying silent - had {0} log lines before, {1} after",
                         loggedLinesBeforePhaseC, ResolutionHelper.LoggedLineCountForTests));
+                checklist.Check(recordingSink.Messages.Count > 0 && recordingSink.Messages[recordingSink.Messages.Count - 1].Contains("DispChangeBadmode"),
+                    string.Format("Phase C's new log line also names DispChangeBadmode, got {0}",
+                        recordingSink.Messages.Count > 0 ? recordingSink.Messages[recordingSink.Messages.Count - 1] : "<none>"));
             }
             finally
             {
                 ResolutionHelper.ResolutionChangeFailed -= handler;
+                LogSink.Current = previousSink;
             }
 
             checklist.Lines.Add(string.Empty);
@@ -700,6 +769,732 @@ namespace vibrance.GUI.common
 
             checklist.Lines.Add(string.Empty);
         }
+
+        // ------------------------------------------------------------------
+        // ResolutionHelper.RestoreOnExit coverage (X1-X17, upstream #98).
+        // ------------------------------------------------------------------
+
+        // Builds a windowsResolutionSettings dictionary with a single entry for deviceName - the
+        // shape RestoreOnExit's own guards 3/4 walk (see that method's comment). Item2 (the
+        // supported-mode list) is never consulted by RestoreOnExit itself, so an empty list is
+        // always enough here.
+        private static Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> BuildExitSettings(
+            string deviceName, ResolutionModeWrapper savedMode)
+        {
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            settings[deviceName] = new Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>(savedMode, new List<ResolutionModeWrapper>());
+            return settings;
+        }
+
+        // X1 - guard 1, the isResolutionChangeApplied half: nothing vibranceGUI itself changed, so
+        // nothing to undo.
+        private static void CheckExitRestoreNoOpWhenFlagFalse(Checklist checklist)
+        {
+            checklist.Lines.Add("X1: RestoreOnExit is a no-op when isResolutionChangeApplied is false - nothing vibranceGUI itself changed to undo:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X1";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, BuildTarget(1920, 1080, 32, 60, 0));
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, false);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("X1: returns NothingToRestore, got {0}", result));
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("X1: zero ChangeMode calls, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X2 - guard 1, the neverChangeResolution half: the user's opt-out wins even though
+        // isResolutionChangeApplied is true.
+        private static void CheckExitRestoreNoOpWhenNeverChangeResolution(Checklist checklist)
+        {
+            checklist.Lines.Add("X2: RestoreOnExit is a no-op when neverChangeResolution is true, even though isResolutionChangeApplied is true:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X2";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, BuildTarget(1920, 1080, 32, 60, 0));
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, true, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("X2: returns NothingToRestore, got {0}", result));
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("X2: zero ChangeMode calls, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X3 - guard 2, the one NothingToRestore guard that logs: a null or empty device name means
+        // vibranceGUI believes it changed something but has lost track of which screen, which is a
+        // real "we owe the user a restore and cannot deliver it" case, not an ordinary no-op. Both
+        // the null and the empty-string case log their own line - neither goes through
+        // _loggedFailures, so there is no dedup between them to prove absent.
+        private static void CheckExitRestoreNoOpWhenDeviceNameMissing(Checklist checklist)
+        {
+            checklist.Lines.Add("X3: RestoreOnExit is a no-op for a null or empty game device name, and logs once per attempt (the one NothingToRestore guard worth a log line):");
+            ResolutionHelper.ResetForTests();
+
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+
+            ResolutionHelper.ExitRestoreResult nullResult = ResolutionHelper.RestoreOnExit(device, settings, null, false, true);
+            checklist.Check(nullResult == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("X3: a null device name returns NothingToRestore, got {0}", nullResult));
+            checklist.Check(ResolutionHelper.LoggedLineCountForTests == 1,
+                string.Format("X3: a null device name logs exactly once, got {0} lines", ResolutionHelper.LoggedLineCountForTests));
+
+            ResolutionHelper.ExitRestoreResult emptyResult = ResolutionHelper.RestoreOnExit(device, settings, string.Empty, false, true);
+            checklist.Check(emptyResult == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("X3: an empty device name returns NothingToRestore, got {0}", emptyResult));
+            checklist.Check(ResolutionHelper.LoggedLineCountForTests == 2,
+                string.Format("X3: the empty-name attempt logs its own line too, not deduped against the null-name attempt, got {0} lines total", ResolutionHelper.LoggedLineCountForTests));
+
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("X3: zero ChangeMode calls across both attempts, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X4 - guards 3/4, the ordinary case: the game's own device name is simply absent from the
+        // dictionary (never populated, or the device dropped out of a later refresh).
+        private static void CheckExitRestoreNoOpWhenDeviceAbsentFromDictionary(Checklist checklist)
+        {
+            checklist.Lines.Add("X4: RestoreOnExit is a no-op when the game's device name has no entry in windowsResolutionSettings at all:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X4";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("X4: returns NothingToRestore, got {0}", result));
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("X4: zero ChangeMode calls, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // Extra - guard 3's other half: RestoreOnExit tolerates a null dictionary itself, not just a
+        // missing entry inside one (VibranceGUI's own field is never actually null in production, but
+        // the guard exists in the source and is cheap to pin directly).
+        private static void CheckExitRestoreNoOpWhenDictionaryIsNull(Checklist checklist)
+        {
+            checklist.Lines.Add("Extra: RestoreOnExit tolerates a null windowsResolutionSettings dictionary itself, not just a missing entry:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X4B";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, null, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("a null dictionary returns NothingToRestore, got {0}", result));
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("zero ChangeMode calls, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // Extra - guard 4's other half: a dictionary entry whose Item1 is itself null (the device is
+        // known but no Windows mode was ever successfully captured for it).
+        private static void CheckExitRestoreNoOpWhenSavedModeIsNull(Checklist checklist)
+        {
+            checklist.Lines.Add("Extra: RestoreOnExit tolerates a dictionary entry whose Item1 is itself null:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X4C";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, null);
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("a null Item1 returns NothingToRestore, got {0}", result));
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("zero ChangeMode calls, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X5. The happy path: a real apply (via ChangeResolutionEx, exactly as OnWinEventHook's own
+        // apply branch would drive it) puts the game's mode live, then RestoreOnExit sends the
+        // desktop mode back through exactly one CDS_TEST and one CDS_UPDATEREGISTRY.
+        private static void CheckExitRestoreAppliesSavedMode(Checklist checklist)
+        {
+            checklist.Lines.Add("X5: after a real apply put the game's mode live, RestoreOnExit sends the desktop mode back through exactly one CDS_TEST and one CDS_UPDATEREGISTRY, and returns Restored:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X5";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(1920, 1080, 32, 60, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            ResolutionModeWrapper gameTarget = BuildTarget(2560, 1440, 32, 144, 0);
+
+            ResolutionHelper.ResolutionChangeResult applyResult = ResolutionHelper.ChangeResolutionEx(device, gameTarget, deviceName, false);
+            checklist.Check(applyResult == ResolutionHelper.ResolutionChangeResult.Applied,
+                string.Format("X5: the setup apply returns Applied, got {0}", applyResult));
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            int callsBeforeExit = device.CallLog.Count;
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Restored,
+                string.Format("X5: returns Restored, got {0}", result));
+            checklist.Check(desktopTarget.MatchesAchievedMode(device.GetCurrentMode(deviceName)),
+                "X5: the fake device is genuinely back at the desktop mode (Item1)");
+
+            List<FakeDisplayModeDevice.RecordedCall> exitCalls = device.CallLog.GetRange(callsBeforeExit, device.CallLog.Count - callsBeforeExit);
+            int testCalls = exitCalls.Count(call => call.Flags == ChangeDisplaySettingsFlags.CdsTest);
+            int registryCalls = exitCalls.Count(call => call.Flags == ChangeDisplaySettingsFlags.CdsUpdateregistry);
+            checklist.Check(testCalls == 1 && registryCalls == 1,
+                string.Format("X5: the exit restore itself is exactly one CDS_TEST and one CDS_UPDATEREGISTRY, got {0} test / {1} registry calls", testCalls, registryCalls));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X6 - guard 5: the saved mode already matches what is live (the game's own exit, or a
+        // debounced refresh, already brought the desktop back) - IsResolutionChangeNeeded's own
+        // guard, never reaching the driver at all.
+        private static void CheckExitRestoreNoOpWhenAlreadyAtSavedMode(Checklist checklist)
+        {
+            checklist.Lines.Add("X6: RestoreOnExit is a no-op when the fake device is already at the saved mode:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X6";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(1920, 1080, 32, 60, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.NothingToRestore,
+                string.Format("X6: returns NothingToRestore, got {0}", result));
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("X6: zero ChangeMode calls, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X7 - the critical one. Drives a key into the give-up (Suppressed) state through the
+        // NORMAL, honourGiveUp:true path (RevertFailureBound consecutive failures), confirms that
+        // directly, then proves RestoreOnExit still reaches the driver for one last attempt and can
+        // restore successfully. Without honourGiveUp actually being wired through to the suppression
+        // guard, this would come back Suppressed-via-NothingToRestore-looking-like-Failed instead -
+        // this is the check that would catch the bypass silently being dead code.
+        private static void CheckExitRestoreBypassesGiveUpSuppression(Checklist checklist)
+        {
+            checklist.Lines.Add("X7 (the critical one): once a revert key has given up through the normal path, RestoreOnExit still reaches the driver for one last attempt and restores successfully - proves honourGiveUp:false is actually wired, not dead code:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X7";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+
+            // RevertFailureBound (ResolutionHelper.cs) is 10 - exactly enough consecutive failures to
+            // give up, no more. Queued ONCE per attempt, not twice like CheckApplyBound/
+            // CheckRevertBound above - those tests discard their device once the loop ends, but this
+            // device is reused past the give-up state, by RestoreOnExit itself below, and desktopTarget's
+            // DmDisplayFixedOutput (0) matches the fake's own current mode's (0), so the fixed-output
+            // fallback retry never fires and exactly one CDS_TEST call is made per attempt. A leftover
+            // second queued failure would sit unconsumed until RestoreOnExit's own CDS_TEST call
+            // dequeues it, silently turning "reaches the driver" into "reaches the driver and fails" -
+            // exactly the false negative this check exists to rule out.
+            for (int attempt = 1; attempt <= 10; attempt++)
+            {
+                device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+                ResolutionHelper.ChangeResolutionEx(device, desktopTarget, deviceName, true);
+            }
+
+            int callsBeforeProbe = device.CallLog.Count;
+            ResolutionHelper.ResolutionChangeResult suppressedProbe = ResolutionHelper.ChangeResolutionEx(device, desktopTarget, deviceName, true);
+            checklist.Check(suppressedProbe == ResolutionHelper.ResolutionChangeResult.Suppressed,
+                string.Format("X7: the key is genuinely in the give-up state before RestoreOnExit runs, got {0}", suppressedProbe));
+            checklist.Check(device.CallLog.Count == callsBeforeProbe,
+                "X7: the Suppressed probe itself touches the driver zero times");
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            int callsBeforeExit = device.CallLog.Count;
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Restored,
+                string.Format("X7: RestoreOnExit still reaches the driver and restores despite the give-up state, got {0}", result));
+            checklist.Check(device.CallLog.Count > callsBeforeExit,
+                "X7: RestoreOnExit actually called ChangeMode - the give-up state did not silently no-op it");
+            checklist.Check(desktopTarget.MatchesAchievedMode(device.GetCurrentMode(deviceName)),
+                "X7: the fake device's current mode is genuinely back at the desktop target");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X8. The X7 give-up state, but the exit attempt itself also fails: still returns Failed
+        // (never Suppressed - the check that would ever return it is skipped), and still writes at
+        // least one log line, proving the RestoreOnExit-specific log call is not itself swallowed by
+        // _loggedFailures' dedup against a code already logged during the game session.
+        //
+        // raised.Count == 0 below is NOT because nothing is listening - the handler stays attached
+        // on purpose, so a stray raise would be caught. It is zero because _notifiedFailures already
+        // holds this exact (device, target) key from the give-up loop's own notification above (the
+        // 10th attempt reaching RevertFailureBound) - RecordFailureAccounting's own dedup
+        // (_notifiedFailures.Add(...) returning false) suppresses a second raise for the same key,
+        // exit attempt or not, exactly as it would for two failures anywhere in the same streak. The
+        // real, structural guarantee that a user never sees a give-up balloon during shutdown is
+        // VibranceGUI.CleanUp detaching ResolutionChangeFailed (-=) BEFORE calling HandleDvcExit, not
+        // this dedup - a FIRST give-up for a (device, target) that had never failed before exit WOULD
+        // still raise here. Production relies on CleanUp's own unsubscribe for that, not on this
+        // coincidence of state - see VibranceGUI.cs, CleanUp's own top-of-method comment.
+        private static void CheckExitRestoreFailureDoesNotNotifyButDoesLog(Checklist checklist)
+        {
+            checklist.Lines.Add("X8: with the same give-up state, a RestoreOnExit attempt that also fails returns Failed, raises zero ResolutionChangeFailed notifications, and still writes at least one log line for the final attempt:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X8";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+
+            // Queued once per attempt - see CheckExitRestoreBypassesGiveUpSuppression's (X7) own
+            // comment for why this device's shared queue makes that the correct count, not two.
+            for (int attempt = 1; attempt <= 10; attempt++)
+            {
+                device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+                ResolutionHelper.ChangeResolutionEx(device, desktopTarget, deviceName, true);
+            }
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            List<ResolutionFailureEventArgs> raised = new List<ResolutionFailureEventArgs>();
+            EventHandler<ResolutionFailureEventArgs> handler = delegate(object sender, ResolutionFailureEventArgs e) { raised.Add(e); };
+            ResolutionHelper.ResolutionChangeFailed += handler;
+            int loggedBefore = ResolutionHelper.LoggedLineCountForTests;
+            ResolutionHelper.ExitRestoreResult result;
+            try
+            {
+                // The exit attempt itself is also forced to fail - queued the same defensive-twice
+                // way every other forced-failure check above does.
+                device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+                device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+                result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+            }
+            finally
+            {
+                ResolutionHelper.ResolutionChangeFailed -= handler;
+            }
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Failed,
+                string.Format("X8: a failing exit attempt returns Failed, got {0}", result));
+            checklist.Check(raised.Count == 0,
+                string.Format("X8: zero ResolutionChangeFailed notifications from the exit attempt itself, got {0}", raised.Count));
+            checklist.Check(ResolutionHelper.LoggedLineCountForTests >= loggedBefore + 1,
+                string.Format("X8: at least one new log line documents the exit attempt, had {0} before, {1} after", loggedBefore, ResolutionHelper.LoggedLineCountForTests));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X9. CDS_UPDATEREGISTRY reports success but the readback does not confirm it - RestoreOnExit
+        // maps ChangeResolutionEx's AppliedUnverified to Unverified, through exactly one CDS_TEST and
+        // one CDS_UPDATEREGISTRY call (no retry - step 6's readback mismatch is not a CDS_TEST
+        // rejection, so the fixed-output fallback never enters into it).
+        private static void CheckExitRestoreUnverifiedApply(Checklist checklist)
+        {
+            checklist.Lines.Add("X9: a RestoreOnExit attempt whose CDS_UPDATEREGISTRY reports success but the readback does not confirm it returns Unverified, via exactly one CDS_TEST and one CDS_UPDATEREGISTRY call:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X9";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            device.SuppressNextApply(deviceName);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Unverified,
+                string.Format("X9: returns Unverified, got {0}", result));
+            checklist.Check(device.CallLog.Count == 2,
+                string.Format("X9: exactly two ChangeMode calls, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X10. A hard CDS_TEST rejection makes RestoreOnExit try at most twice (CDS_TEST itself, plus
+        // the one fixed-output fallback retry every ChangeResolutionEx call is entitled to - see
+        // CheckFixedOutputFallback above) and never reach CDS_UPDATEREGISTRY at all - pins "one
+        // attempt, no retry loop" at the RestoreOnExit level the same way CheckApplyBound/
+        // CheckRevertBound already pin it at the ChangeResolutionEx level.
+        private static void CheckExitRestoreNeverRetries(Checklist checklist)
+        {
+            checklist.Lines.Add("X10: a hard CDS_TEST rejection makes RestoreOnExit try at most twice and never reach CDS_UPDATEREGISTRY at all - pins 'one attempt, no retry loop':");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X10";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+            device.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            int testCalls = device.CallLog.Count(call => call.Flags == ChangeDisplaySettingsFlags.CdsTest);
+            int registryCalls = device.CallLog.Count(call => call.Flags == ChangeDisplaySettingsFlags.CdsUpdateregistry);
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Failed,
+                string.Format("X10: returns Failed, got {0}", result));
+            checklist.Check(testCalls <= 2,
+                string.Format("X10: at most two CDS_TEST calls (no retry loop), got {0}", testCalls));
+            checklist.Check(registryCalls == 0,
+                string.Format("X10: zero CDS_UPDATEREGISTRY calls - CDS_TEST failing gates it completely, got {0}", registryCalls));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X11. A device whose ChangeMode throws (a driver-level exception, not a returned failure
+        // code) must not propagate out of RestoreOnExit - this alone would be survivable with a
+        // try/catch around just the ChangeResolutionEx call. The wider reason RestoreOnExit wraps
+        // its ENTIRE body instead - IsResolutionChangeNeeded (guard 5) also reaches the device,
+        // through TryGetCurrentMode, so a device broken enough to throw on a READ, not just a write,
+        // must be survivable too - is what X17 below proves; this check alone does not exercise that
+        // wider claim.
+        private static void CheckExitRestoreSurvivesADeviceThatThrows(Checklist checklist)
+        {
+            checklist.Lines.Add("X11: a device whose ChangeMode throws makes RestoreOnExit return Failed instead of propagating, and still logs exactly once:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X11";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            device.ThrowOnChangeMode(deviceName);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            int loggedBefore = ResolutionHelper.LoggedLineCountForTests;
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Failed,
+                string.Format("X11: a throwing device is caught and returns Failed, not propagated, got {0}", result));
+            checklist.Check(ResolutionHelper.LoggedLineCountForTests == loggedBefore + 1,
+                string.Format("X11: exactly one log line documents the exception, had {0} before, {1} after", loggedBefore, ResolutionHelper.LoggedLineCountForTests));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X17. The read-side mirror of X11: a device whose TryGetCurrentMode itself throws - reached
+        // through IsResolutionChangeNeeded (guard 5), BEFORE ChangeResolutionEx is ever called, let
+        // alone ChangeMode - must also not propagate out of RestoreOnExit. This is the check that
+        // actually exercises "the whole body, not just the ChangeResolutionEx call, is wrapped in
+        // try/catch": X11 alone throws only from ChangeMode, which a narrower try/catch around just
+        // that one call would have caught exactly as well, so X11 on its own never proved the wider
+        // wrap was needed.
+        private static void CheckExitRestoreSurvivesAReadThatThrows(Checklist checklist)
+        {
+            checklist.Lines.Add("X17: a device whose TryGetCurrentMode itself throws (reached through IsResolutionChangeNeeded, before ChangeResolutionEx is ever called) makes RestoreOnExit return Failed instead of propagating, and still logs exactly once:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-EXIT-X17";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            device.ThrowOnGetCurrentMode(deviceName);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(deviceName, desktopTarget);
+
+            int loggedBefore = ResolutionHelper.LoggedLineCountForTests;
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, deviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Failed,
+                string.Format("X17: a device whose current-mode read throws is caught and returns Failed, not propagated, got {0}", result));
+            checklist.Check(ResolutionHelper.LoggedLineCountForTests == loggedBefore + 1,
+                string.Format("X17: exactly one log line documents the exception, had {0} before, {1} after", loggedBefore, ResolutionHelper.LoggedLineCountForTests));
+            checklist.Check(device.CallLog.Count == 0,
+                string.Format("X17: TryGetCurrentMode throwing means ChangeMode (CDS_TEST/CDS_UPDATEREGISTRY) is never even reached, got {0}", device.CallLog.Count));
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // Reflection seam for _windowsResolutionSettings/_gameScreen (NVIDIA) and _gameScreen (AMD) -
+        // neither proxy exposes a production setter reachable without a live game event, the same
+        // justification VibranceRestoreFixture's own N11/A6 give for reflecting into _gameScreen.
+        // NVIDIA's ResetForTests seam (used by X12/X13 below) already covers _vibranceInfo/
+        // _applicationSettings/_device, but was never extended to _windowsResolutionSettings - it
+        // does not need to be, for anything ResetForTests' own callers use it for, so this stays a
+        // narrow, fixture-local seam rather than growing the production method's surface.
+        private static void SetNvidiaWindowsResolutionSettings(Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings)
+        {
+            FieldInfo field = typeof(NvidiaDynamicVibranceProxy).GetField("_windowsResolutionSettings", BindingFlags.NonPublic | BindingFlags.Static);
+            field.SetValue(null, settings);
+        }
+
+        private static void SetNvidiaGameScreen(Screen screen)
+        {
+            FieldInfo field = typeof(NvidiaDynamicVibranceProxy).GetField("_gameScreen", BindingFlags.NonPublic | BindingFlags.Static);
+            field.SetValue(null, screen);
+        }
+
+        private static void SetAmdGameScreen(Screen screen)
+        {
+            FieldInfo field = typeof(AmdDynamicVibranceProxy).GetField("_gameScreen", BindingFlags.NonPublic | BindingFlags.Static);
+            field.SetValue(null, screen);
+        }
+
+        // VibranceInfo is a struct (Definitions.cs), so GetVibranceInfo() hands back a COPY - fine to
+        // read (X12-X15 all do), but "GetVibranceInfo().isResolutionChangeApplied = true" would try
+        // to mutate that throwaway copy and the compiler rightly refuses (CS1612). Setting a field
+        // has to go through the proxy's own storage instead: NvidiaDynamicVibranceProxy already
+        // exposes that as ResetForTests (its _vibranceInfo is static, so ResetForTests's assignment
+        // - copying the caller's local struct in - is enough on its own); AmdDynamicVibranceProxy's
+        // own copy is a private INSTANCE field with no equivalent seam, so this reflects into it
+        // directly, the same class of seam SetNvidiaGameScreen/SetAmdGameScreen above already use.
+        private static void SetAmdVibranceInfo(AmdDynamicVibranceProxy proxy, VibranceInfo vibranceInfo)
+        {
+            FieldInfo field = typeof(AmdDynamicVibranceProxy).GetField("_vibranceInfo", BindingFlags.NonPublic | BindingFlags.Instance);
+            field.SetValue(proxy, vibranceInfo);
+        }
+
+        // A fresh, uninitialized NVIDIA proxy instance purely so GetVibranceInfo() (an instance
+        // method over a static field) can be called at all - mirrors StartupForegroundFixture's own
+        // NewNvidiaProxy exactly, including the FormatterServices.GetUninitializedObject seam (no
+        // constructor, so no initializeLibrary() and no real GPU touched). Used by X12/X13 to read
+        // _vibranceInfo's CURRENT value after RestoreResolutionOnExit has run - the local
+        // VibranceInfo those checks built for ResetForTests is a struct, so it is its own,
+        // independent copy from the moment ResetForTests assigns it into the static field; only a
+        // fresh read through GetVibranceInfo() sees what RestoreResolutionOnExit actually did to it.
+        private static IVibranceProxy NewNvidiaProxy()
+        {
+            return (IVibranceProxy)FormatterServices.GetUninitializedObject(typeof(NvidiaDynamicVibranceProxy));
+        }
+
+        // X12 (NVIDIA). HandleDvcExit's own new last statement, RestoreResolutionOnExit, restores the
+        // saved desktop mode through a fake display (never _device, never a real GPU) and clears
+        // isResolutionChangeApplied once the restore lands. gameDeviceName is the real desktop
+        // screen's own DeviceName - not a synthetic "FAKE-..." string - purely so _gameScreen (a real
+        // Screen; it has no public constructor) and the dictionary key agree; the DISPLAY device
+        // itself is still the fake, never touched for real.
+        private static void CheckNvidiaExitRestoreAppliesSavedModeAndClearsFlag(Checklist checklist)
+        {
+            checklist.Lines.Add("X12 (NVIDIA): RestoreResolutionOnExit restores the saved desktop mode through a fake display and clears isResolutionChangeApplied:");
+            ResolutionHelper.ResetForTests();
+
+            Screen currentScreen = Screen.FromHandle(GetDesktopWindow());
+            string gameDeviceName = currentScreen.DeviceName;
+
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(gameDeviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.neverChangeResolution = false;
+            vibranceInfo.isResolutionChangeApplied = true;
+            NvidiaDynamicVibranceProxy.ResetForTests(null, vibranceInfo, new List<ApplicationSetting>());
+            SetNvidiaWindowsResolutionSettings(BuildExitSettings(gameDeviceName, desktopTarget));
+            SetNvidiaGameScreen(currentScreen);
+
+            ResolutionHelper.ExitRestoreResult result = NvidiaDynamicVibranceProxy.RestoreResolutionOnExit(device);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Restored,
+                string.Format("X12: returns Restored, got {0}", result));
+            checklist.Check(desktopTarget.MatchesAchievedMode(device.GetCurrentMode(gameDeviceName)),
+                "X12: the fake device is back at the saved desktop mode");
+            checklist.Check(!NewNvidiaProxy().GetVibranceInfo().isResolutionChangeApplied,
+                "X12: isResolutionChangeApplied is cleared once the restore lands");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X13 (NVIDIA). The X12 mirror: a forced driver failure returns Failed and leaves
+        // isResolutionChangeApplied exactly as it was - never claiming a restore that did not land.
+        private static void CheckNvidiaExitRestoreFailureLeavesFlagSet(Checklist checklist)
+        {
+            checklist.Lines.Add("X13 (NVIDIA): a RestoreResolutionOnExit attempt that fails against the driver returns Failed and leaves isResolutionChangeApplied true:");
+            ResolutionHelper.ResetForTests();
+
+            Screen currentScreen = Screen.FromHandle(GetDesktopWindow());
+            string gameDeviceName = currentScreen.DeviceName;
+
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(gameDeviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            device.QueueResult(gameDeviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+            device.QueueResult(gameDeviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.neverChangeResolution = false;
+            vibranceInfo.isResolutionChangeApplied = true;
+            NvidiaDynamicVibranceProxy.ResetForTests(null, vibranceInfo, new List<ApplicationSetting>());
+            SetNvidiaWindowsResolutionSettings(BuildExitSettings(gameDeviceName, desktopTarget));
+            SetNvidiaGameScreen(currentScreen);
+
+            ResolutionHelper.ExitRestoreResult result = NvidiaDynamicVibranceProxy.RestoreResolutionOnExit(device);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Failed,
+                string.Format("X13: returns Failed, got {0}", result));
+            checklist.Check(NewNvidiaProxy().GetVibranceInfo().isResolutionChangeApplied,
+                "X13: isResolutionChangeApplied is still true after a failed restore");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X14 (AMD). The X12 equivalent - AmdDynamicVibranceProxy.RestoreResolutionOnExit is an
+        // instance method over instance state (_windowsResolutionSettings, _vibranceInfo), so no
+        // reflection is needed for either of those; only _gameScreen (static on AMD too - see
+        // AmdDynamicVibranceProxy's own field comment) needs it, exactly as VibranceRestoreFixture's
+        // A6 already establishes.
+        private static void CheckAmdExitRestoreAppliesSavedModeAndClearsFlag(Checklist checklist)
+        {
+            checklist.Lines.Add("X14 (AMD): RestoreResolutionOnExit restores the saved desktop mode through a fake display and clears isResolutionChangeApplied:");
+            ResolutionHelper.ResetForTests();
+            VibranceRestoreHelper.ResetForTests();
+
+            Screen currentScreen = Screen.FromHandle(GetDesktopWindow());
+            string gameDeviceName = currentScreen.DeviceName;
+
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(gameDeviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(gameDeviceName, desktopTarget);
+
+            AmdDynamicVibranceProxy proxy = new AmdDynamicVibranceProxy(new FakeAmdAdapter(), new List<ApplicationSetting>(), settings);
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.neverChangeResolution = false;
+            vibranceInfo.isResolutionChangeApplied = true;
+            SetAmdVibranceInfo(proxy, vibranceInfo);
+            SetAmdGameScreen(currentScreen);
+
+            ResolutionHelper.ExitRestoreResult result = proxy.RestoreResolutionOnExit(device);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Restored,
+                string.Format("X14: returns Restored, got {0}", result));
+            checklist.Check(desktopTarget.MatchesAchievedMode(device.GetCurrentMode(gameDeviceName)),
+                "X14: the fake device is back at the saved desktop mode");
+            checklist.Check(!proxy.GetVibranceInfo().isResolutionChangeApplied,
+                "X14: isResolutionChangeApplied is cleared once the restore lands");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X15 (AMD). The X13 equivalent.
+        private static void CheckAmdExitRestoreFailureLeavesFlagSet(Checklist checklist)
+        {
+            checklist.Lines.Add("X15 (AMD): a RestoreResolutionOnExit attempt that fails against the driver returns Failed and leaves isResolutionChangeApplied true:");
+            ResolutionHelper.ResetForTests();
+            VibranceRestoreHelper.ResetForTests();
+
+            Screen currentScreen = Screen.FromHandle(GetDesktopWindow());
+            string gameDeviceName = currentScreen.DeviceName;
+
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(gameDeviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper desktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+            device.QueueResult(gameDeviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+            device.QueueResult(gameDeviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                BuildExitSettings(gameDeviceName, desktopTarget);
+
+            AmdDynamicVibranceProxy proxy = new AmdDynamicVibranceProxy(new FakeAmdAdapter(), new List<ApplicationSetting>(), settings);
+            VibranceInfo vibranceInfo = new VibranceInfo();
+            vibranceInfo.neverChangeResolution = false;
+            vibranceInfo.isResolutionChangeApplied = true;
+            SetAmdVibranceInfo(proxy, vibranceInfo);
+            SetAmdGameScreen(currentScreen);
+
+            ResolutionHelper.ExitRestoreResult result = proxy.RestoreResolutionOnExit(device);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Failed,
+                string.Format("X15: returns Failed, got {0}", result));
+            checklist.Check(proxy.GetVibranceInfo().isResolutionChangeApplied,
+                "X15: isResolutionChangeApplied is still true after a failed restore");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // X16. Second-monitor isolation - RestoreOnExit touches ONLY the game's own device, never
+        // sweeps every key in windowsResolutionSettings restoring anything that differs from its
+        // saved mode. This matters beyond "that's just what the guard order does" - the architect
+        // explicitly rejected a sweeping design: while a resolution change is applied,
+        // preserveCapturedMode pins Item1 for EVERY device, not just the game's own (see
+        // WindowsResolutionRefresher.Refresh's own "single most dangerous line" comment), so a sweep
+        // would drag a second monitor the user hand-reconfigured mid-session back to whatever stale
+        // mode happened to be pinned for it. Nothing else in this file pins that rejection - without
+        // this check, a future refactor could reintroduce the sweep and every other X-case here
+        // would still pass, since none of them populate the dictionary with a second device at all.
+        // The other device's saved entry is deliberately built to DIFFER from its own live mode
+        // (never the reverse) - if it matched, IsResolutionChangeNeeded would report "nothing to do"
+        // regardless of whether a sweep bug existed, masking the very defect this exists to catch,
+        // the same class of false-negative Phase A's stale queue used to hide in
+        // CheckNoRepeatNotification above.
+        private static void CheckExitRestoreNeverTouchesOtherDevices(Checklist checklist)
+        {
+            checklist.Lines.Add("X16: RestoreOnExit touches only the game's own device - a second monitor's hand-set mode, deliberately recorded as needing a change of its own, is left byte-for-byte untouched and never reaches ChangeMode at all:");
+            ResolutionHelper.ResetForTests();
+
+            const string gameDeviceName = "FAKE-EXIT-X16-GAME";
+            const string otherDeviceName = "FAKE-EXIT-X16-OTHER";
+
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            device.SetCurrentMode(gameDeviceName, BuildDevmode(2560, 1440, 32, 144, 0));
+            ResolutionModeWrapper gameDesktopTarget = BuildTarget(1920, 1080, 32, 60, 0);
+
+            // The other monitor's own live mode - what the user actually set it to, by hand, mid
+            // session - and its dictionary entry, deliberately a DIFFERENT mode, standing in for
+            // whatever Item1 a preserveCapturedMode-pinned refresh left behind while the game's own
+            // change was outstanding. If a sweep existed, this mismatch is exactly what would make it
+            // fire.
+            Devmode otherLiveMode = BuildDevmode(3840, 2160, 32, 120, 0);
+            device.SetCurrentMode(otherDeviceName, otherLiveMode);
+            ResolutionModeWrapper otherSavedTarget = BuildTarget(1920, 1080, 32, 60, 0);
+
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> settings =
+                new Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>();
+            settings[gameDeviceName] = new Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>(gameDesktopTarget, new List<ResolutionModeWrapper>());
+            settings[otherDeviceName] = new Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>(otherSavedTarget, new List<ResolutionModeWrapper>());
+
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, settings, gameDeviceName, false, true);
+
+            checklist.Check(result == ResolutionHelper.ExitRestoreResult.Restored,
+                string.Format("X16: the game's own device is still restored, got {0}", result));
+            checklist.Check(gameDesktopTarget.MatchesAchievedMode(device.GetCurrentMode(gameDeviceName)),
+                "X16: the game's own device is genuinely back at its saved mode");
+            checklist.Check(otherLiveMode.Equals(device.GetCurrentMode(otherDeviceName)),
+                "X16: the other device's live mode is byte-for-byte unchanged, even though its own dictionary entry differs from it");
+            checklist.Check(!device.CallLog.Any(call => call.DeviceName == otherDeviceName),
+                "X16: zero ChangeMode calls ever name the other device");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDesktopWindow();
 
         // ------------------------------------------------------------------
         // WindowsResolutionRefresher.Refresh coverage (R1-R8/R-A).
@@ -1807,6 +2602,31 @@ namespace vibrance.GUI.common
                 _suppressNextApply.Add(deviceName);
             }
 
+            // Stands in for a driver that throws instead of returning a failure DispChange -
+            // CheckExitRestoreSurvivesADeviceThatThrows's scenario (X11). Not one-shot, unlike
+            // SuppressNextApply above: RestoreOnExit's own single attempt never gets a second call
+            // that could consume a one-shot flag.
+            private readonly HashSet<string> _throwOnChangeMode = new HashSet<string>();
+
+            public void ThrowOnChangeMode(string deviceName)
+            {
+                _throwOnChangeMode.Add(deviceName);
+            }
+
+            // The READ-side mirror of ThrowOnChangeMode - stands in for a device broken enough to
+            // throw on TryGetCurrentMode itself, not just on a write. RestoreOnExit's guard 5
+            // (IsResolutionChangeNeeded) reaches this before ChangeMode is ever called, which is the
+            // whole reason RestoreOnExit wraps its ENTIRE body in try/catch instead of just the
+            // ChangeResolutionEx line - CheckExitRestoreSurvivesAReadThatThrows (X17) is what proves
+            // that wider wrap actually matters, rather than merely being wrapped and never exercised
+            // for that specific reason.
+            private readonly HashSet<string> _throwOnGetCurrentMode = new HashSet<string>();
+
+            public void ThrowOnGetCurrentMode(string deviceName)
+            {
+                _throwOnGetCurrentMode.Add(deviceName);
+            }
+
             private static string QueueKey(string deviceName, ChangeDisplaySettingsFlags flags)
             {
                 return deviceName + "|" + flags;
@@ -1814,6 +2634,10 @@ namespace vibrance.GUI.common
 
             public bool TryGetCurrentMode(string deviceName, out Devmode mode)
             {
+                if (_throwOnGetCurrentMode.Contains(deviceName))
+                {
+                    throw new InvalidOperationException("FakeDisplayModeDevice.TryGetCurrentMode forced to throw for " + deviceName);
+                }
                 return _currentModes.TryGetValue(deviceName, out mode);
             }
 
@@ -1835,6 +2659,11 @@ namespace vibrance.GUI.common
 
             public DispChange ChangeMode(string deviceName, Devmode mode, ChangeDisplaySettingsFlags flags)
             {
+                if (_throwOnChangeMode.Contains(deviceName))
+                {
+                    throw new InvalidOperationException("FakeDisplayModeDevice.ChangeMode forced to throw for " + deviceName);
+                }
+
                 CallLog.Add(new RecordedCall(deviceName, flags, mode));
 
                 DispChange result = DispChange.DispChangeSuccessful;
@@ -1917,6 +2746,57 @@ namespace vibrance.GUI.common
                 {
                     pending();
                 }
+            }
+        }
+
+        // Minimal enough for the AMD exit-restore checks (X14/X15) above, which never touch the
+        // adapter at all - only ResolutionHelper's own IDisplayModeDevice seam - but IsAvailable()
+        // must still return false so AmdDynamicVibranceProxy's constructor never calls Init() or
+        // installs a real WinEventHook, mirroring every other fixture's own minimal copy of this same
+        // fake (e.g. StartupForegroundFixture.FakeAmdAdapter).
+        private class FakeAmdAdapter : IAmdAdapter
+        {
+            public void SetSaturationOnAllDisplays(int vibranceLevel)
+            {
+            }
+
+            public bool SetSaturationOnDisplay(int vibranceLevel, string displayName)
+            {
+                return true;
+            }
+
+            public bool IsAvailable()
+            {
+                return false;
+            }
+
+            public void Init()
+            {
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+
+        // CheckNoRepeatNotification's own log-content probe - mirrors ProfileToggleFixture's
+        // RecordingLogSink exactly (per-fixture fakes are this codebase's convention; see that
+        // class's own header comment). Records the exact string Program.LogSafely/VibranceGUI.Log
+        // was called with, never touching the real vibranceGUI.log, so a check can assert on WHICH
+        // failure code actually got logged - not just how many lines - the distinction
+        // CheckNoRepeatNotification's own comment explains was needed to catch its prior bug.
+        private class RecordingLogSink : ILogSink
+        {
+            public readonly List<string> Messages = new List<string>();
+
+            public void Write(string message)
+            {
+                Messages.Add(message);
+            }
+
+            public void Write(Exception ex)
+            {
+                Messages.Add(ex.ToString());
             }
         }
 

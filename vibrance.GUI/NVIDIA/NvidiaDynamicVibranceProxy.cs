@@ -855,6 +855,17 @@ namespace vibrance.GUI.NVIDIA
             return unloadLibrary();
         }
 
+        // Color -> vibrance -> resolution, in that order - deliberately the REVERSE of
+        // OnWinEventHook's own revert branch, which does resolution-then-colour (see that branch's
+        // own comment, and RestoreWindowsColorSettings's "restored first" rationale just above).
+        // There, a resolution revert that fails or gives up is retried by the very next foreground
+        // event, so skipping the colour restore below it costs nothing permanent. Here there is no
+        // next foreground event - this IS the last one - so nothing below the top of this method can
+        // be allowed to skip something above it. ChangeDisplaySettingsEx (inside
+        // RestoreResolutionOnExit, below) is a synchronous driver call this class cannot bound or
+        // cancel, exactly the same property that already justified restoring the gamma ramp before
+        // the vibrance restore - extended here to put resolution last of all three, so a slow or
+        // hanging driver call can never prevent the colour or vibrance restore from running first.
         public void HandleDvcExit()
         {
             //the gamma ramp is global display driver state, it does not revert when the process exits.
@@ -872,6 +883,36 @@ namespace vibrance.GUI.NVIDIA
             RestoreWindowsVibranceLevel(_device, _vibranceInfo.affectPrimaryMonitorOnly,
                 VibranceRestoreHelper.GetPrimaryDeviceName(), _vibranceInfo.displayHandles,
                 _vibranceInfo.userVibranceSettingDefault, _vibranceInfo.isWindowsLevelKnown);
+
+            // The last-chance resolution restore (upstream #98) - see ResolutionHelper.RestoreOnExit's
+            // own comment for the guard order and why it is allowed to bypass the give-up suppression
+            // for this one attempt. Last of the three restores here on purpose - see this method's
+            // own header comment.
+            RestoreResolutionOnExit(ResolutionHelper.RealDevice);
+        }
+
+        // The seam ResolutionChangeFixture drives directly, exactly the pattern this whole class
+        // already follows for _device (ResetForTests) - RestoreResolutionOnExit itself never touches
+        // _device, only ResolutionHelper's own IDisplayModeDevice seam, so a check can drive this
+        // against a fake display with no GPU and no real display involved at all.
+        internal static ResolutionHelper.ExitRestoreResult RestoreResolutionOnExit(IDisplayModeDevice device)
+        {
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, _windowsResolutionSettings,
+                _gameScreen != null ? _gameScreen.DeviceName : null,
+                _vibranceInfo.neverChangeResolution, _vibranceInfo.isResolutionChangeApplied);
+
+            // Never claim a restore that did not land - Failed leaves the flag exactly as
+            // OnWinEventHook's own revert branch already treats a Failed/AppliedUnverified result
+            // (see that branch's comment): still worth acting on later if anything ever could. Unlike
+            // that branch, nothing here ever WILL act on it again - vibranceGUI is exiting - but
+            // leaving the flag true costs nothing at this point and telling the user (or a future
+            // reader of isResolutionChangeApplied) that the resolution was restored when it was not
+            // would be worse than a flag nobody reads again.
+            if (result != ResolutionHelper.ExitRestoreResult.Failed)
+            {
+                _vibranceInfo.isResolutionChangeApplied = false;
+            }
+            return result;
         }
     }
 }

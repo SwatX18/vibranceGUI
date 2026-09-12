@@ -116,6 +116,14 @@ namespace vibrance.GUI.AMD
             return true;
         }
 
+        // Color -> vibrance -> resolution, in that order - deliberately the REVERSE of
+        // OnWinEventHook's own revert branch, which does resolution-then-colour (see that branch's
+        // own comment, and the matching header comment on NvidiaDynamicVibranceProxy.HandleDvcExit
+        // for the full reasoning). There, a resolution revert that fails or gives up is retried by
+        // the very next foreground event, so skipping the colour restore below it costs nothing
+        // permanent; here there is no next foreground event, so nothing above can be skipped by
+        // something below it. ChangeDisplaySettingsEx (inside RestoreResolutionOnExit, below) is a
+        // synchronous driver call this class cannot bound or cancel, exactly why it goes last.
         public void HandleDvcExit()
         {
             //the gamma ramp is global display driver state, it does not revert when the process exits.
@@ -126,6 +134,32 @@ namespace vibrance.GUI.AMD
             }
 
             RestoreWindowsVibranceLevel();
+
+            // The last-chance resolution restore (upstream #98) - see ResolutionHelper.RestoreOnExit's
+            // own comment for the guard order and why it is allowed to bypass the give-up suppression
+            // for this one attempt. Last of the three restores here on purpose - see this method's
+            // own header comment.
+            RestoreResolutionOnExit(ResolutionHelper.RealDevice);
+        }
+
+        // The seam ResolutionChangeFixture drives directly - RestoreResolutionOnExit never touches
+        // _amdAdapter, only ResolutionHelper's own IDisplayModeDevice seam, so a check can drive this
+        // against a fake display with no ADL and no real display involved at all. Instance, not
+        // static, mirroring _windowsResolutionSettings and _vibranceInfo themselves - unlike NVIDIA's
+        // proxy, this class's own resolution/vibrance state is per-instance, not per-type.
+        internal ResolutionHelper.ExitRestoreResult RestoreResolutionOnExit(IDisplayModeDevice device)
+        {
+            ResolutionHelper.ExitRestoreResult result = ResolutionHelper.RestoreOnExit(device, _windowsResolutionSettings,
+                _gameScreen != null ? _gameScreen.DeviceName : null,
+                _vibranceInfo.neverChangeResolution, _vibranceInfo.isResolutionChangeApplied);
+
+            // Never claim a restore that did not land - see the matching comment on
+            // NvidiaDynamicVibranceProxy.RestoreResolutionOnExit for the full reasoning.
+            if (result != ResolutionHelper.ExitRestoreResult.Failed)
+            {
+                _vibranceInfo.isResolutionChangeApplied = false;
+            }
+            return result;
         }
 
         public void SetAffectPrimaryMonitorOnly(bool affectPrimaryMonitorOnly)
