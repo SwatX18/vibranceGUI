@@ -1280,6 +1280,18 @@ namespace vibrance.GUI.common
 
         private void CleanUp()
         {
+            // Detached BEFORE the try, not just in the finally below (upstream #98) - `-=` is
+            // idempotent and cannot throw, so doing it first is strictly stronger than doing it only
+            // once the try/finally below finishes: it now always runs, and runs earlier. This
+            // matters here specifically because HandleDvcExit below (via
+            // ResolutionHelper.RestoreOnExit) itself fires DisplaySettingsChanged, and a failing
+            // restore attempt can raise ResolutionChangeFailed - both of which, left subscribed,
+            // would reach OnDisplaySettingsChanged/OnResolutionChangeFailed and their own
+            // BeginInvoke onto a form that is already mid-FormClosing. Detaching first is what
+            // guarantees neither handler is still listening by the time that happens.
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed;
+
             try
             {
                 this.statusLabel.Text = "Closing...";
@@ -1299,10 +1311,10 @@ namespace vibrance.GUI.common
             finally
             {
                 // In a finally, not just after the try: these must run even if the block above
-                // throws. SystemEvents.DisplaySettingsChanged above all - see the ctor's own
-                // comment for why leaving it subscribed leaks this form and can fault at shutdown.
-                SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
-                ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed;
+                // throws. SystemEvents.DisplaySettingsChanged/ResolutionHelper.ResolutionChangeFailed
+                // are detached above, before the try, instead of here - see this method's own
+                // top-of-method comment for why that earlier, unconditional placement is required.
+                //
                 // Unsubscribing SystemEvents above stops any NEW DisplaySettingsChanged from
                 // reaching the debouncer, but a countdown it already armed keeps ticking down on
                 // its own regardless - this stops one already in flight from firing after the form

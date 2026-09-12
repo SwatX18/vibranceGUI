@@ -15,7 +15,7 @@
 > **INFERENCE** or **UNCERTAIN** and must not be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 545 automated checks across twelve fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 601 automated checks across twelve fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -334,7 +334,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 545 of them across twelve
+- **There is no test project**, but there are automated checks: 601 of them across twelve
   `*Fixture.cs` files — ten in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`
   — compiled into the app and run through thirteen `--selftest-*` flags dispatched early in
   `Program.cs`, but *after* the single-instance mutex (`Program.cs:77`, second-instance bail at
@@ -431,7 +431,7 @@ vibranceGUI/
     │   ├── HdrVibranceFixture.cs       58 checks
     │   ├── MatchingFixture.cs          55 checks
     │   ├── ProfileToggleFixture.cs     91 checks
-    │   ├── ResolutionChangeFixture.cs 158 checks
+    │   ├── ResolutionChangeFixture.cs 214 checks
     │   ├── StabilityFixture.cs          6 checks
     │   ├── StartupForegroundFixture.cs 11 checks
     │   ├── VibranceRestoreFixture.cs   38 checks
@@ -812,7 +812,8 @@ open when you are debugging a vendor-specific report:
 | Order of operations on game focus | vibrance → resolution change → gamma ramp (`:305`, `:316`, `:334`, `OnWinEventHook`) | the same order (`:180`/`:187`, `:205`, `:221`, `OnWinEventHook`). The unconditional "reset every display to the Windows level" that used to run *first*, making this a visible double-write, is **gone** (`62541a6`, on `master` since `4fb598c`) — see **D16** |
 | `affectPrimaryMonitorOnly` on focus loss | honoured. The extra bail-out that skipped the restore unless the new window was on `_gameScreen` is **gone**: `RestoreWindowsVibranceLevel` restores every display holding a game level, plus the primary, wherever the focus landed (`:505-536`, `RestoreWindowsVibranceLevel`; `0c3057b`, issues #95/#144) | **now honoured** — the restore branches on the flag instead of always calling `SetSaturationOnAllDisplays` (`:265-297`, `RestoreWindowsVibranceLevel`; `0c3057b`, issues #60/#36) |
 | `_gameScreen` assignment | assigned on any match not toggled off by hotkey, before any driver write (`:291`, `OnWinEventHook`); the old `displayHandle != -1 && !equalsDVCLevel(...)` gate around it is gone | the same (`:173`, `OnWinEventHook`). It used to sit **only inside the resolution-change `if`**, so with resolution switching off it stayed `null` and disabled AMD's own restore-resolution branch at `:236` (`OnWinEventHook`) — fixed by `62541a6` (**D18**) |
-| On exit (`HandleDvcExit`) | honours `affectPrimaryMonitorOnly` (`:783-800`, `HandleDvcExit`) | **now honours it too** — `HandleDvcExit` goes through the same `RestoreWindowsVibranceLevel` as the focus-loss path (`:119-129`, `HandleDvcExit`) |
+| On exit (`HandleDvcExit`) | honours `affectPrimaryMonitorOnly` (`:869-892`, `HandleDvcExit`) | **now honours it too** — `HandleDvcExit` goes through the same `RestoreWindowsVibranceLevel` as the focus-loss path (`:127-143`, `HandleDvcExit`) |
+| Resolution restore on exit (upstream #98) | `HandleDvcExit` ends with `RestoreResolutionOnExit(ResolutionHelper.RealDevice)`, after colour and vibrance — see [§6.5](#65-shutdown) and **D4** | the same, same call, same position |
 
 ### 6.4 The optional resolution switch
 
@@ -908,6 +909,17 @@ could otherwise find the handle destroyed, or the form disposed (`BeginInvoke` t
 resolution, the safe side; giving up on a *revert* strands them at the **game's** resolution, with
 nothing else in the program that will ever retry it, so it is worth trying substantially longer
 before accepting that outcome.
+
+**One exception to "nothing else will ever retry it": `ResolutionHelper.RestoreOnExit`** (upstream
+#98, see [§6.5](#65-shutdown)) is called from each proxy's `HandleDvcExit` on a clean exit, and is
+allowed to bypass a key already in the give-up (`Suppressed`) state for exactly one attempt
+(`ChangeResolutionEx`'s private 5-arg overload, `honourGiveUp: false`). That is safe specifically
+because vibranceGUI itself is exiting: the hazard the suppression exists to prevent — re-running a
+doomed mode set on every foreground event forever — cannot occur when there is no next foreground
+event left. `RestoreOnExit` never loops or retries itself; it is one attempt, mapped onto its own
+`ExitRestoreResult` (`NothingToRestore`/`Restored`/`Unverified`/`Failed`) rather than
+`ResolutionChangeResult`, since there is no ongoing caller left to hand a `Suppressed` or
+`AlreadyMatching` distinction off to.
 
 **The frozen-snapshot fix.** `_windowsResolutionSettings` (`VibranceGUI.cs`) used to be built once in
 the constructor and never touched again — if the user changed their desktop resolution by hand, or
@@ -1031,31 +1043,48 @@ on every switch.
 ### 6.5 Shutdown
 
 Triggered from the tray menu's `Exit` or the window's X, via `Form1_FormClosing` → `CleanUp()`
-(`VibranceGUI.cs:495-498` (`Form1_FormClosing`), `:967-1002`, `CleanUp`):
+(`VibranceGUI.cs:505-508` (`Form1_FormClosing`), `:1281-1331`, `CleanUp`):
 
 ```
 CleanUp():
-  statusLabel.Text = "Closing..."; ForeColor = Red; this.Update()     // :318-320
-  if (_v != null && _v.GetVibranceInfo().isInitialized):
-      _v.HandleDvcExit()      // restore the Windows level on the displays
-      _v.SetShouldRun(false)  // vestigial — nothing reads shouldRun
-      _v.UnloadLibraryEx()    // unhook the WinEvent hook, then unload the native library (NVIDIA)
-  catch (Exception ex) -> Log(ex)                                     // :328-331
+  SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged      // :1292-1293, BEFORE the try -
+  ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed  // see that method's own comment
+  try:
+      statusLabel.Text = "Closing..."; ForeColor = Red; this.Update()  // :1297-1299
+      if (_v != null && _v.GetVibranceInfo().isInitialized):
+          _v.HandleDvcExit()      // restore colour, then vibrance, then (upstream #98) resolution
+          _v.SetShouldRun(false)  // vestigial — nothing reads shouldRun
+          _v.UnloadLibraryEx()    // unhook the WinEvent hook, then unload the native library (NVIDIA)
+  catch (Exception ex) -> Log(ex)                                      // :1307-1310
+  finally: _resolutionAdoptionDebouncer.Cancel(); _hdrRecheckTimer.Stop(); _hotkeyRegistration.Release()
 ```
+
+`HandleDvcExit` (§6.3's own "on exit" row) now ends with
+`RestoreResolutionOnExit(ResolutionHelper.RealDevice)`, which calls
+`ResolutionHelper.RestoreOnExit` — see [§6.4](#64-the-optional-resolution-switch) for the guard order,
+the single attempt, and the deliberate `honourGiveUp: false` bypass. The two event unsubscriptions
+run **before** the `try`, not only in the `finally` (upstream #98): `RestoreOnExit` itself fires
+`DisplaySettingsChanged`, and a failing attempt can raise `ResolutionChangeFailed` — both of which,
+left subscribed through `HandleDvcExit`'s own call above, would reach
+`OnDisplaySettingsChanged`/`OnResolutionChangeFailed` and their `BeginInvoke` onto a form already
+mid-`FormClosing`. `-=` is idempotent and cannot throw, so detaching unconditionally, first, is
+strictly stronger than the previous finally-only placement.
 
 What is **not** done on shutdown, by omission:
 
 - settings are not saved — a pending 5-second debounced save is simply lost
   ([§9.6](#96-the-debounced-save));
-- **the screen resolution is not restored** if a game was ingame when vibranceGUI exits;
 - the extracted `%APPDATA%\vibranceGUI\vibranceDLL.dll` is not deleted;
 - `WinEventHook._instance` is not cleared (`WinEventHook.cs:174`);
 - on AMD, ADL is never torn down at all — `UnloadLibraryEx` unhooks and returns `true`
   (`AmdDynamicVibranceProxy.cs:113-117`, `UnloadLibraryEx`), and `IAmdAdapter.Dispose()` is never called by anyone
   ([§8.6](#86-resource-management-on-the-amd-path)).
 
-On an abnormal exit (Task Manager kill, crash, logoff, power loss) **nothing at all is restored** — no
-vibrance, no resolution. This is the mechanism behind reports like issue #144 ("vibrance does not reset
+**The screen resolution is now restored on this clean path** (upstream #98, **D4** — partially fixed;
+see [§12.1](#121-the-defects-that-explain-real-upstream-issues)) — it was not, before this branch. On an abnormal exit (Task
+Manager kill, crash, logoff, power loss) **nothing at all is restored** — no colour, no vibrance, no
+resolution — because `CleanUp()` is never reached at all on that path; this half of **D4** is
+unchanged. This is the mechanism behind reports like issue #144 ("vibrance does not reset
 to Windows level when program closes"): the reset only happens on the clean `FormClosing` path, and
 even then only if `isInitialized` was true.
 
@@ -2335,15 +2364,27 @@ makes `getGpuSystemType` fail, which the DLL flattens to `Unknown`, which aborts
 hardware-sounding dialog (`:225-233`, `InitializeProxy`); (d) GPU name and active outputs are read from `gpuHandles[0]`
 only.
 
-**D4 — nothing restores the display on an abnormal exit, and events can be dropped.** `CleanUp()`
-(`VibranceGUI.cs:1271-1309`, `CleanUp`) is reached only from `Form1_FormClosing`, and its body is guarded by
-`_v.GetVibranceInfo().isInitialized`. A Task Manager kill, crash, or logoff leaves the panel at the
-ingame level, and **the resolution is never restored on exit at all**, even on the clean path. Separately,
-if `PathResolver` could not resolve an image path and the process has also exited by the time the
-`Process.GetProcessById` fallback runs, the exception is swallowed and **no event is dispatched**
-(`common/WinEventHook.cs:274-293`, `GetProcessNameById`) — so the event that would have reverted
-vibrance when a game exits can simply be lost. The third contributor,
-**D9**, is fixed. There is no persisted "we changed this, restore it next time" record anywhere.
+**D4 — PARTIALLY FIXED. The clean-exit half is FIXED on `work/98-restore-resolution-on-exit`
+(upstream #98); the abnormal-exit half is not, and is not claimed to be.** `CleanUp()`
+(`VibranceGUI.cs:1281-1331`, `CleanUp`) is reached only from `Form1_FormClosing`, and its body is
+guarded by `_v.GetVibranceInfo().isInitialized`. **What changed:** on that clean path, the resolution
+is now restored too, not just colour and vibrance. Each proxy's `HandleDvcExit` ends with
+`RestoreResolutionOnExit(ResolutionHelper.RealDevice)` (`NvidiaDynamicVibranceProxy.cs`,
+`AmdDynamicVibranceProxy.cs`), which calls `ResolutionHelper.RestoreOnExit` — a single,
+uninterruptible attempt that deliberately bypasses `ChangeResolutionEx`'s own give-up suppression
+(`honourGiveUp: false`) for this one call, since at exit there is no next foreground event left for a
+suppressed key to ever be retried on (see [§6.4](#64-the-optional-resolution-switch) and
+[§6.5](#65-shutdown)). **What did not change:** a Task Manager kill, crash, logoff or power loss still
+never reaches `CleanUp()` at all, so nothing is restored on that path — no resolution, no vibrance, no
+colour settings, exactly as before. Separately, if `PathResolver` could not resolve an image path and
+the process has also exited by the time the `Process.GetProcessById` fallback runs, the exception is
+swallowed and **no event is dispatched** (`common/WinEventHook.cs:274-293`, `GetProcessNameById`) — so
+the event that would have reverted vibrance (and, on the clean path, triggered a resolution revert)
+when a game exits can simply be lost. The third contributor, **D9**, is fixed. There is still no
+persisted "we changed this, restore it next time" record anywhere, which is what an abnormal-exit fix
+would actually need — the clean-exit fix above works entirely from in-memory state
+(`_windowsResolutionSettings`, `isResolutionChangeApplied`) that a kill or crash never gives `CleanUp`
+the chance to read.
 
 ### 12.2 Crashes and data loss
 

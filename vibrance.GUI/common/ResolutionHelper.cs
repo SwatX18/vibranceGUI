@@ -76,6 +76,23 @@ namespace vibrance.GUI.common
             Suppressed
         }
 
+        // What RestoreOnExit's single, uninterruptible attempt actually did - deliberately NOT
+        // ResolutionChangeResult, and not just a bool either. AlreadyMatching and Suppressed both
+        // mean "nothing was sent to the driver this time", for two different reasons an ONGOING
+        // caller needs to tell apart (see ResolutionChangeResult above) - but RestoreOnExit has no
+        // next foreground event to hand either of those distinctions off to, so a caller here would
+        // have nothing left to act on even if it kept them. What a caller here CAN act on - is the
+        // desktop believed restored, or not - is what this collapses down to instead. Nested for the
+        // same reason ResolutionChangeResult is: callers write
+        // ResolutionHelper.ExitRestoreResult.Restored, matching ResolutionChangeResult's own callers.
+        public enum ExitRestoreResult
+        {
+            NothingToRestore,  // a guard declined - see RestoreOnExit's own guard order
+            Restored,          // ChangeResolutionEx returned Applied or AlreadyMatching
+            Unverified,        // ChangeResolutionEx returned AppliedUnverified
+            Failed             // ChangeResolutionEx returned Failed (or Suppressed - see RestoreOnExit), or threw
+        }
+
         private const int EnumCurrentSettings = -1;
 
         // How many consecutive failures ChangeResolutionEx tolerates for one (device, target,
@@ -140,11 +157,14 @@ namespace vibrance.GUI.common
         // deferred to the moment of giving up rather than fired on the first failure.
         private static readonly HashSet<string> _notifiedFailures = new HashSet<string>();
 
-        // Test-only counter of distinct log lines this class has actually written (i.e. every time
-        // the _loggedFailures dedup check below passes). A real log write has no return value or
-        // other observable signal, and ResolutionChangeFixture's design asks it to assert exact
-        // log-line counts - this is the seam that makes that possible without reading the real,
-        // shared vibranceGUI.log file. Reset by ResetForTests().
+        // Test-only counter of distinct log lines this class has actually written - incremented from
+        // two sources: every time the _loggedFailures dedup check below passes (the ongoing
+        // apply/revert path), and unconditionally by every non-NothingToRestore RestoreOnExit outcome
+        // (deliberately outside that dedup - see RestoreOnExit's own comment for why a repeat of an
+        // already-logged failure code must still get its own line at exit). A real log write has no
+        // return value or other observable signal, and ResolutionChangeFixture's design asks it to
+        // assert exact log-line counts - this is the seam that makes that possible without reading the
+        // real, shared vibranceGUI.log file. Reset by ResetForTests().
         internal static int LoggedLineCountForTests;
 
         /// <summary>
@@ -235,8 +255,15 @@ namespace vibrance.GUI.common
         }
 
         // The seam ResolutionChangeFixture drives directly - see ChangeResolutionEx's public
-        // overload above for why.
-        //
+        // overload above for why. Delegates to the 5-arg overload below with honourGiveUp: true -
+        // every call site through this overload (both proxies' apply/revert calls, every fixture
+        // call above this line) needs the give-up suppression honoured normally; RestoreOnExit below
+        // is the one caller that goes straight to the 5-arg overload instead, with false.
+        internal static ResolutionChangeResult ChangeResolutionEx(IDisplayModeDevice device, ResolutionModeWrapper target, string deviceName, bool isRevert)
+        {
+            return ChangeResolutionEx(device, target, deviceName, isRevert, true);
+        }
+
         // CDS_TEST (validate only) is tried first and CDS_UPDATEREGISTRY (apply AND persist) is
         // tried only once that passes - never CDS_UPDATEREGISTRY|CDS_NORESET followed by a second,
         // separate commit call. That old two-call pattern left a reachable state where the first
@@ -247,7 +274,14 @@ namespace vibrance.GUI.common
         // CDS_UPDATEREGISTRY gets no 15-second revert-if-unconfirmed safety net the way an
         // interactive Windows Settings resolution change does, which is exactly why CDS_TEST runs
         // first - a mode the driver would reject is caught before anything is written at all.
-        internal static ResolutionChangeResult ChangeResolutionEx(IDisplayModeDevice device, ResolutionModeWrapper target, string deviceName, bool isRevert)
+        //
+        // honourGiveUp is false for exactly one caller, RestoreOnExit below, which needs to bypass an
+        // already-suppressed key for one last attempt at shutdown - see RestoreOnExit's own comment
+        // for the full justification, and the suppression guard just below for why that bypass is
+        // safe. Private, not internal, because unlike every other overload in this class it is not a
+        // seam ResolutionChangeFixture needs to drive on its own - the fixture reaches it, when it
+        // needs to, through RestoreOnExit's own internal overload instead.
+        private static ResolutionChangeResult ChangeResolutionEx(IDisplayModeDevice device, ResolutionModeWrapper target, string deviceName, bool isRevert, bool honourGiveUp)
         {
             if (target == null)
             {
@@ -267,7 +301,12 @@ namespace vibrance.GUI.common
             // (AlreadyMatching, on a healthy machine with nothing recorded at all) had to pay for it
             // before this guard existed. A device already mid-streak still pays that cost on every
             // attempt, suppressed or not - this only short-circuits when the dictionary is empty.
-            if (_consecutiveFailures.Count > 0)
+            //
+            // honourGiveUp short-circuits this whole guard when false, so a suppressed key still
+            // reaches the driver for one attempt - see RestoreOnExit's own comment for why that is
+            // safe specifically at exit, when this whole guard exists to stop a foreground-change
+            // storm from re-running a doomed mode set forever.
+            if (honourGiveUp && _consecutiveFailures.Count > 0)
             {
                 int priorFailures;
                 if (_consecutiveFailures.TryGetValue(BuildFailureKey(deviceName, target, isRevert), out priorFailures) &&
@@ -277,10 +316,13 @@ namespace vibrance.GUI.common
                     // driver again until something clears it. In practice that means a success on a
                     // DIFFERENT target/direction for the same device (ClearFailureState clears the
                     // whole device, see below) - once THIS key is suppressed, the driver is never
-                    // called for it again through the normal path above, so it can no longer produce a
-                    // success of its own; the only other way out is ResetForTests(). This is what keeps
-                    // a persistently failing revert from re-running the same doomed mode set on every
-                    // single foreground event forever.
+                    // called for it again through the normal (honourGiveUp: true) path above, so it
+                    // can no longer produce a success of its own. In production, short of
+                    // ResetForTests() (test-only), the only other way out is RestoreOnExit's
+                    // honourGiveUp: false bypass below, which gets exactly one more attempt at
+                    // vibranceGUI's own shutdown. This is what keeps a persistently failing revert
+                    // from re-running the same doomed mode set on every single foreground event
+                    // forever, for as long as vibranceGUI keeps running.
                     return ResolutionChangeResult.Suppressed;
                 }
             }
@@ -380,6 +422,122 @@ namespace vibrance.GUI.common
 
             ClearFailureState(deviceName);
             return ResolutionChangeResult.Applied;
+        }
+
+        // The last-chance resolution restore at vibranceGUI's own shutdown (upstream #98). Called
+        // from each proxy's HandleDvcExit (via RestoreResolutionOnExit, passing RealDevice), never
+        // from OnWinEventHook. Deliberately has no separate public, hardware-touching overload the
+        // way ChangeResolutionEx/IsResolutionChangeNeeded do - those two are called directly by both
+        // proxies with no explicit device (OnWinEventHook's apply/revert branches), so their public
+        // overloads have real production callers to be symmetric with. RestoreOnExit has exactly one
+        // production call shape - a proxy handing in RealDevice through RestoreResolutionOnExit -
+        // so a second, device-less overload here would be dead surface no caller has ever needed;
+        // ResolutionChangeFixture drives this internal overload directly instead, the same pattern
+        // used wherever a class in this file has no genuine device-less production caller.
+        //
+        // Guard order matters, and is deliberately cheapest-first: each guard below returns
+        // NothingToRestore before the next one is even evaluated, so a normal exit (the common case -
+        // most exits happen with no game in the foreground at all) never pays for a dictionary lookup
+        // once guard 1 alone has already ruled a restore out.
+        //   1. the user opted out, or vibranceGUI's own apply never actually landed - nothing to undo
+        //   2. gameDeviceName is null/empty - vibranceGUI believes it changed something but has lost
+        //      track of which screen; logged once, since unlike every other guard here this IS a real
+        //      "we owe the user a restore and cannot deliver it" case, not an ordinary no-op
+        //   3/4. no saved Windows mode recorded for that device at all (a stale/never-populated
+        //      dictionary, or an entry with no Item1 - see WindowsResolutionRefresher.Refresh for how
+        //      Item1 is normally populated)
+        //   5. the saved mode already matches what is live - nothing left to send to the driver
+        //
+        // The whole body, not just the ChangeResolutionEx call below, is wrapped in one try/catch:
+        // IsResolutionChangeNeeded also P/Invokes EnumDisplaySettings (through device.TryGetCurrentMode),
+        // so a driver that throws on a READ, not just on a write, must not escape into FormClosing.
+        // Program.LogSafely already swallows whatever it is handed, matching every other catch site in
+        // this class.
+        //
+        // Exactly one ChangeResolutionEx call, honourGiveUp: false - no loop, no retry, no sleep, no
+        // timer. Bypassing the give-up suppression is deliberate and safe specifically here: this IS
+        // the "no other code path will ever try again" case the revert bound's own comment
+        // (ApplyFailureBound/RevertFailureBound above) warns about, so declining to even try because
+        // an earlier, unrelated foreground event gave up would strand the desktop for good with a
+        // guard that was only ever meant to stop an infinite RETRY, not to rule out a single final
+        // attempt at shutdown. The hazard that guard protects against - re-running a doomed mode set
+        // on every foreground event forever - is structurally absent here: there is no next
+        // foreground event once vibranceGUI itself is exiting. And the common cause of a failing
+        // revert, a fullscreen-exclusive game still holding the mode, has usually already let go of it
+        // by the time exit runs - same driver, different world state.
+        //
+        // Logs every outcome except NothingToRestore under its own line (format "Restoring the
+        // resolution for screen {0} at exit: {1}"), deliberately NOT through
+        // RecordFailure/RecordUnverifiedApply's own _loggedFailures dedup - a Failed or
+        // AppliedUnverified result here can easily repeat a code _loggedFailures already logged once
+        // during the game session (and so would otherwise stay silent), but this is the one attempt
+        // whose outcome the user most needs to see, not one dedup should be allowed to swallow.
+        internal static ExitRestoreResult RestoreOnExit(IDisplayModeDevice device,
+            Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>> windowsResolutionSettings,
+            string gameDeviceName, bool neverChangeResolution, bool isResolutionChangeApplied)
+        {
+            try
+            {
+                if (neverChangeResolution || !isResolutionChangeApplied)
+                {
+                    return ExitRestoreResult.NothingToRestore;
+                }
+
+                if (string.IsNullOrEmpty(gameDeviceName))
+                {
+                    Program.LogSafely("Restoring the resolution at exit: vibranceGUI applied a resolution change but lost track of which screen to restore it on");
+                    LoggedLineCountForTests++;
+                    return ExitRestoreResult.NothingToRestore;
+                }
+
+                if (windowsResolutionSettings == null)
+                {
+                    return ExitRestoreResult.NothingToRestore;
+                }
+
+                Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>> saved;
+                if (!windowsResolutionSettings.TryGetValue(gameDeviceName, out saved) || saved.Item1 == null)
+                {
+                    return ExitRestoreResult.NothingToRestore;
+                }
+
+                if (!IsResolutionChangeNeeded(device, gameDeviceName, saved.Item1))
+                {
+                    return ExitRestoreResult.NothingToRestore;
+                }
+
+                ResolutionChangeResult result = ChangeResolutionEx(device, saved.Item1, gameDeviceName, true, false);
+                ExitRestoreResult exitResult;
+                switch (result)
+                {
+                    case ResolutionChangeResult.Applied:
+                    case ResolutionChangeResult.AlreadyMatching:
+                        exitResult = ExitRestoreResult.Restored;
+                        break;
+                    case ResolutionChangeResult.AppliedUnverified:
+                        exitResult = ExitRestoreResult.Unverified;
+                        break;
+                    case ResolutionChangeResult.Failed:
+                        exitResult = ExitRestoreResult.Failed;
+                        break;
+                    default:
+                        // Suppressed - unreachable with honourGiveUp false (the guard that would ever
+                        // return it is skipped entirely above), but handled explicitly rather than
+                        // left to an implicit fall-through in case that ever changes.
+                        exitResult = ExitRestoreResult.Failed;
+                        break;
+                }
+
+                Program.LogSafely(string.Format("Restoring the resolution for screen {0} at exit: {1}", gameDeviceName, exitResult));
+                LoggedLineCountForTests++;
+                return exitResult;
+            }
+            catch (Exception ex)
+            {
+                Program.LogSafely(string.Format("Restoring the resolution for screen {0} at exit: {1}", gameDeviceName, ex));
+                LoggedLineCountForTests++;
+                return ExitRestoreResult.Failed;
+            }
         }
 
         // OR's target's four controllable fields' bits into whatever dmFields EnumDisplaySettings
