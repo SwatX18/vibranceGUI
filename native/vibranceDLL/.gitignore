@@ -1,0 +1,9 @@
+# Build output (see docs/CODEBASE_GUIDE.md / README.md - Task 4 deliberately builds
+# here rather than into vibrance.GUI/NVIDIA, since *.lib and *.exp there are not
+# otherwise gitignored and would litter a tracked source directory).
+build/
+
+# Per-configuration MSBuild intermediate/output directories, in case a build is
+# ever run without -p:OutDir pointed at build/ above.
+Debug/
+Release/

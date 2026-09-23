@@ -41,89 +41,115 @@ namespace vibrance.GUI.NVIDIA
 
     class NvidiaDynamicVibranceProxy : IVibranceProxy
     {
+        // vibranceDLL.dll used to export these 12 methods only under their 32-bit
+        // C++ mangled __thiscall names (e.g. "?initializeLibrary@vibrance@vibranceDLL@@QAE_NXZ"),
+        // bound below as CallingConvention.StdCall with no "this" argument - a hack
+        // that only worked because 32-bit __thiscall happens to pass "this" in ECX
+        // and none of these methods ever touched it. __thiscall does not exist on
+        // x64, so that hack could not carry over to a 64-bit build.
+        //
+        // The native project (native\vibranceDLL, vendored from
+        // https://github.com/juv/vibranceDLL) now also exports a small extern "C"
+        // wrapper layer (native\vibranceDLL\vibrance\vibrance_c.h/.cpp) - one
+        // __cdecl free function per method below, named "vibrance_<originalName>",
+        // each constructing its own throwaway vibrance instance and forwarding the
+        // call. __cdecl is used, not __stdcall, because it is the one calling
+        // convention that exists unchanged on both x86 and x64: the exported names
+        // stay undecorated and identical on both architectures, where __stdcall
+        // would additionally mangle each name to "_foo@N" with N (and therefore the
+        // name) differing per signature and per architecture. That is what lets
+        // these bindings bind by plain name instead of a mangled, 32-bit-only
+        // symbol, and is why this slice needs no ABI change to eventually build x64.
         #region DllImports
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?initializeLibrary@vibrance@vibranceDLL@@QAE_NXZ",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_initializeLibrary",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern bool initializeLibrary();
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?unloadLibrary@vibrance@vibranceDLL@@QAE_NXZ",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_unloadLibrary",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern bool unloadLibrary();
 
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?getActiveOutputs@vibrance@vibranceDLL@@QAEHQAPAH0@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_getActiveOutputs",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern int getActiveOutputs([In, Out] int[] gpuHandles, [In, Out] int[] outputIds);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?enumeratePhsyicalGPUs@vibrance@vibranceDLL@@QAEXQAPAH@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_enumeratePhsyicalGPUs",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern void enumeratePhsyicalGPUs([In, Out] int[] gpuHandles);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?getGpuName@vibrance@vibranceDLL@@QAE_NQAPAHPAD@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_getGpuName",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Ansi)]
         static extern bool getGpuName([In, Out] int[] gpuHandles, StringBuilder szName);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?getDVCInfo@vibrance@vibranceDLL@@QAE_NPAUNV_DISPLAY_DVC_INFO@12@H@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_getDVCInfo",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Ansi)]
         static extern bool getDVCInfo(ref NvDisplayDvcInfo info, int defaultHandle);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?enumerateNvidiaDisplayHandle@vibrance@vibranceDLL@@QAEHH@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_enumerateNvidiaDisplayHandle",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern int enumerateNvidiaDisplayHandle(int index);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?setDVCLevel@vibrance@vibranceDLL@@QAE_NHH@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_setDVCLevel",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern bool setDVCLevel([In] int defaultHandle, [In] int level);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?isWindowActive@vibrance@vibranceDLL@@QAE_NPAPAUHWND__@@@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_isWindowActive",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern bool isWindowActive(ref IntPtr hwnd);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?equalsDVCLevel@vibrance@vibranceDLL@@QAE_NHH@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_equalsDVCLevel",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern bool equalsDVCLevel([In] int defaultHandle, [In] int level);
 
+        // Pre-existing mismatch, kept exactly as-is: the native side (both the old
+        // mangled export and the new vibrance_getGpuSystemType wrapper) takes the
+        // GPU handle by pointer (int *gpuHandle - see vibrance.h), but this
+        // declaration passes gpuHandle by value. That has always been wrong, but
+        // changing it is a behaviour change, not a binding-mechanism change, and
+        // this slice is build-system/ABI parity only - so it is deliberately left
+        // for a separate fix rather than folded in here.
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?getGpuSystemType@vibrance@vibranceDLL@@QAEHPAH@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_getGpuSystemType",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
         static extern NvSystemType getGpuSystemType(int gpuHandle);
 
         [DllImport(
             "vibranceDLL.dll",
-            EntryPoint = "?getAssociatedNvidiaDisplayHandle@vibrance@vibranceDLL@@QAEHPBDH@Z",
-            CallingConvention = CallingConvention.StdCall,
+            EntryPoint = "vibrance_getAssociatedNvidiaDisplayHandle",
+            CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Ansi)]
         static extern int getAssociatedNvidiaDisplayHandle(string deviceName, [In] int length);
         #endregion

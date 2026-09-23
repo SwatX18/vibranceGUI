@@ -36,6 +36,7 @@ namespace vibrance.GUI
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
         private const string CliSelfTestMessageBoxCaption = "vibranceGUI command line self test";
+        private const string NvapiSelfTestMessageBoxCaption = "vibranceGUI NVIDIA interop self test";
         private const string HelpMessageBoxCaption = "vibranceGUI command line options";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
@@ -256,6 +257,18 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, StartupForegroundFixture.Run().ToArray()),
                     StartupSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again, and for the same reason: every check either reads the embedded
+            // resource's own bytes or resolves/prelinks a P/Invoke against a copy loaded from a
+            // fixture-private directory - nvapi is only ever touched inside initializeLibrary(),
+            // which this never calls - so this needs no GPU, no NVIDIA driver and writes to no
+            // display. See NvidiaInteropFixture's own header comment.
+            if (args.Contains("--selftest-nvapi"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, NvidiaInteropFixture.Run().ToArray()),
+                    NvapiSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

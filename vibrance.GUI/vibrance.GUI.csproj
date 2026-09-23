@@ -181,6 +181,7 @@
     <Compile Include="common\HdrVibranceFixture.cs" />
     <Compile Include="common\StartupForegroundFixture.cs" />
     <Compile Include="NVIDIA\NvidiaDynamicVibranceProxy.cs" />
+    <Compile Include="NVIDIA\NvidiaInteropFixture.cs" />
     <Compile Include="NVIDIA\NvidiaTypes.cs" />
     <Compile Include="common\RegistryController.cs" />
     <Compile Include="common\ILogSink.cs" />
