@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 636 automated checks across thirteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 652 automated checks across thirteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -152,12 +152,13 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
    just taken focus. `ResolutionHelper.cs` no longer has a `using System.Windows.Forms` or any
    `MessageBox` call site (the word itself still appears once, in a doc comment describing this very
    fact); see [§6.4](#64-the-optional-resolution-switch) and **D2**.
-3. **The build is x86-only, and stays that way until someone retargets the native DLL too.**
-   `vibrance.GUI/NVIDIA/vibranceDLL.dll` is a PE32 i386 image (VERIFIED binary), and `PlatformTarget`
-   is `x86` in all four configurations (`vibrance.GUI.csproj:32,43,64,73`, `PlatformTarget`). As of
-   `work/native-dll-from-source` the native binding mechanism itself no longer stands in the way of a
-   64-bit build (§7.3, §7.5) - what still does is that nothing has retargeted `PlatformTarget`, and the
-   native project has not been built `Release|x64`.
+3. **The build is x86 or x64, chosen at build time - x86 is still the default if you do not choose.**
+   Both `vibrance.GUI.csproj` and the native `vibrance.vcxproj`/`.sln` now carry `x64` configurations
+   alongside the original `x86` ones (§3.2, §3.3), and both `vibrance.GUI/NVIDIA/vibranceDLL.dll`
+   (PE32 i386) and `vibrance.GUI/NVIDIA/vibranceDLL64.dll` (PE32+, x86-64) are embedded and selected at
+   runtime by `Environment.Is64BitProcess` (§3.5, §7.2). Omitting `/p:Platform` on the command line
+   still resolves to x86 (§3.2), so existing build scripts that do not pass `/p:Platform=x64` keep
+   producing exactly what they did before.
 4. **The NVIDIA native layer used to live outside this repository - it no longer does.** Before
    `work/native-dll-from-source`, `vibranceDLL.dll` was a checked-in binary built 2017-01-02 from
    `juvlarN/vibranceDLL` (embedded PDB path, VERIFIED binary), and its 12 bound exports were the entire
@@ -215,25 +216,34 @@ Read this before basing work on `master` or trying to reproduce a user's bug rep
 | Language / runtime | C#, .NET Framework **4.0** (`vibrance.GUI.csproj:12`; `App.config` `supportedRuntime v4.0`) |
 | UI | Windows Forms — three forms, all with designer files |
 | Output | `WinExe`, assembly name `vibrance.GUI`, root namespace `vibrance.GUI` (`csproj:8-11`) |
-| Platform target | **x86 in every configuration** (`csproj:32,43,64,73`, `PlatformTarget`); `Prefer32Bit=false` in the two AnyCPU groups only (`csproj:40,50`) |
+| Platform target | **x86 or x64**, chosen at build time (`csproj:64,73,90-107`, `PlatformTarget`); `Prefer32Bit=false` in every configuration that sets it (`csproj:40,50`). The x64 configurations were added on top of an originally x86-only project — see §3.3. |
 | Project style | pre-SDK MSBuild, `ToolsVersion 4.0`, every source file listed explicitly (`csproj:91-225`, `Compile`) |
 | Solution | `vibrance.GUI.sln`, format 12.00, "# Visual Studio 2012", one project |
 | NuGet packages | none, as of v2.6.0 — `Fody`, `Costura.Fody`, and the unused `CommonServiceLocator` were all removed; the build requires no NuGet restore |
-| Native dependencies | `nvapi.dll` (NVIDIA, resolved dynamically inside `vibranceDLL.dll`, itself now built in this repo from `native/vibranceDLL/` — §7.2); `atiadlxy.dll` / `atiadlxx.dll` (AMD, static `DllImport`); plus `user32`, `kernel32`, `psapi`, `advapi32` |
+| Native dependencies | `nvapi.dll` (x86) / `nvapi64.dll` (x64) (NVIDIA, resolved dynamically inside `vibranceDLL.dll` by an `#ifdef _WIN64` in `native/vibranceDLL/vibrance/vibrance.cpp`'s `initializeLibrary()`, itself now built in this repo from `native/vibranceDLL/` — §7.2); `atiadlxy.dll` / `atiadlxx.dll` (AMD, static `DllImport`, selected by **process** bitness, not OS bitness — §8.4); plus `user32`, `kernel32`, `psapi`, `advapi32` |
 | Size | 64 tracked files in the repo; 58 items in the project; 48 `.cs` files, ~4,622 lines of C# |
 
 ### 3.2 Building
 
 ```bash
-# from the repository root
+# from the repository root - x86 (the historical, still-default target)
 msbuild vibrance.GUI.sln /p:Configuration=Release /p:Platform=x86
+
+# x64
+msbuild vibrance.GUI.sln /p:Configuration=Release /p:Platform=x64
 ```
+
+Omitting `/p:Platform` entirely still builds - it resolves to `Any CPU`, which the solution remaps to
+the project's `Release|x86` (§3.4), so a bare `/p:Configuration=Release` build is x86, not "whatever the
+machine is". Pass `/p:Platform=x64` explicitly to get an x64 build.
 
 No NuGet restore step is needed: as of v2.6.0 the project references no NuGet packages at all, so
 there is no `packages/` directory to populate and no restore-related build target to satisfy.
 
-Because the project targets `v4.0`, you need a toolchain that can still target .NET Framework 4.0 (the
-4.0 targeting / multi-targeting pack). Open PR #153 proposes moving to .NET 4.8.
+Because the project targets `v4.0` by default, you need a toolchain that can still target .NET
+Framework 4.0 (the 4.0 targeting / multi-targeting pack) unless you override it, e.g.
+`/p:TargetFrameworkVersion=v4.8` (needed on a machine with no v4.0 targeting pack installed - the v4.0
+reference directory can exist but be empty). Open PR #153 proposes moving to .NET 4.8 permanently.
 
 **A C# 6 compiler is mandatory despite the 4.0 target framework.** The solution header says "Visual
 Studio 2012", but the source uses interpolated strings (`Program.cs:313` (`Main`), `VibranceGUI.cs:577` (`backgroundWorker_ProgressChanged`),
@@ -241,7 +251,8 @@ Studio 2012", but the source uses interpolated strings (`Program.cs:313` (`Main`
 (`NVIDIA/NvidiaDynamicVibranceProxy.cs:876` (`GraphicsAdapter`) — `public GraphicsAdapter GraphicsAdapter { get; } = GraphicsAdapter.Nvidia;`).
 Building with the VS 2012/2013 compiler fails: target framework and language version are independent.
 
-Output paths by configuration (`csproj:36,46,61,69`, `OutputPath`):
+Output paths by configuration (`csproj:36,46,61,69,` and the x64 groups added alongside them,
+`OutputPath`):
 
 | Configuration | Output path |
 |---|---|
@@ -249,31 +260,58 @@ Output paths by configuration (`csproj:36,46,61,69`, `OutputPath`):
 | `Release` + `Any CPU` | remapped by the solution to `Release`+`x86` → `vibrance.GUI/bin/x86/Release/` |
 | `Debug` + `x86` | `vibrance.GUI/bin/x86/Debug/` |
 | `Release` + `x86` | `vibrance.GUI/bin/x86/Release/` |
+| `Debug` + `x64` | `vibrance.GUI/bin/x64/Debug/` |
+| `Release` + `x64` | `vibrance.GUI/bin/x64/Release/` |
 
-The shipped artefact is a single `vibrance.GUI.exe`. There is no installer, no post-build step, and no
-loose files to copy beside it.
+The shipped artefact is a single `vibrance.GUI.exe` per architecture. There is no installer, no
+post-build step, and no loose files to copy beside it - both native NVIDIA DLLs are embedded resources
+(§3.5), not files that ship alongside the exe.
 
-### 3.3 The x86 rule, and why it is not negotiable
+### 3.3 x86 and x64, and what changed to support both
 
-The README says only *"When compiling, make sure to compile for x86 target platform."* The reasons are
-concrete:
+Until the x64 port (this section), the README said only *"When compiling, make sure to compile for
+x86 target platform,"* and that was not optional - every reason below was a hard failure on x64. Each
+is now either fixed, or was never actually x86-specific to begin with:
 
-1. **`vibrance.GUI/NVIDIA/vibranceDLL.dll` is a 32-bit PE32 i386 image** (VERIFIED binary: machine
-   `0x14c`, 163,840 bytes, link timestamp 2017-01-02 18:22:43 UTC, SHA-256
-   `0f229f79934f21617337c28915a9449f7b2395b20d7fb0e4a02d14277163cea0`). A 64-bit process cannot load
-   it, and no 64-bit build of it exists in this repository.
-2. **Vendor detection probes the 32-bit system directory.** `GraphicsAdapterHelper.GetAdapter()` looks
-   in `Environment.SpecialFolder.SystemX86` (`common/GraphicsAdapter.cs:166`, `IsVendorDriverInstalled`) — `C:\Windows\SysWOW64`
-   on 64-bit Windows — which is where the *32-bit* `nvapi.dll` and `atiadlxy.dll` live.
-3. **The AMD binding assumes a 32-bit caller.** A 32-bit process on 64-bit Windows must load
-   `atiadlxy.dll` rather than `atiadlxx.dll`; that assumption is baked into the `adl32`/`adl64` split
-   (see [§8.4](#84-the-adl32adl64-duplication-and-why-the-names-are-backwards)).
-4. **The code knows it is 32-bit and works around it.** `ProcessExplorer.GetPathFromProcessId` uses
-   `psapi!GetModuleFileNameEx` with the comment *"Process.MainModule.FileName crashes when called on a
-   x64 process because vibranceGUI is running as x86 process."* (`common/ProcessExplorer.cs:63-72`, `GetAllProcesses`).
+1. **`vibrance.GUI/NVIDIA/vibranceDLL.dll` was a 32-bit PE32 i386 image** (VERIFIED binary of the
+   historical, hand-shipped 2017 build: machine `0x14c`, 163,840 bytes, link timestamp 2017-01-02
+   18:22:43 UTC, SHA-256 `0f229f79934f21617337c28915a9449f7b2395b20d7fb0e4a02d14277163cea0`). That
+   exact binary is gone - `vibranceDLL.dll` is now built from source in this repo
+   (`native/vibranceDLL/` - §7.2) as **two** embedded resources, one PE32 (`vibranceDLL.dll`, machine
+   `0x14c`) and one PE32+ (`vibranceDLL64.dll`, machine `0x8664`), and `Program.cs` picks between them
+   with `Environment.Is64BitProcess` at startup (§3.5). A 64-bit process still cannot load a 32-bit
+   image or vice versa - that has not changed - but a 64-bit build now has its own correctly-built
+   image to load instead of none at all.
+2. **Vendor detection probes the 32-bit system directory, and this was never actually the problem it
+   looked like.** `GraphicsAdapterHelper.IsVendorDriverInstalled` reads
+   `Environment.SpecialFolder.SystemX86` (`common/GraphicsAdapter.cs`) — `C:\Windows\SysWOW64` on
+   64-bit Windows, **regardless of the calling process's own bitness** — and checks for the 32-bit
+   `nvapi.dll` / AMD driver file there purely as a yes/no "is this vendor's driver installed at all"
+   signal, not as the path anything is loaded from. NVIDIA's installer puts both `nvapi.dll` (32-bit,
+   SysWOW64) and `nvapi64.dll` (64-bit, System32) down together, so the 32-bit file's presence remains
+   a valid proxy for "the driver is installed" from an x64 process too. This check needed no change for
+   the x64 port.
+3. **The AMD binding assumed a 32-bit caller - now fixed.** Until this port, a 32-bit process on
+   64-bit Windows loaded `atiadlxy.dll` via `Environment.Is64BitOperatingSystem`, which answers for the
+   *OS*, not the calling process; an x64 process hit the same branch and tried to load
+   `atiadlxy.dll` too, which has no 64-bit build anywhere and fails outright. The selection now keys off
+   `Environment.Is64BitProcess` (`common/GraphicsAdapter.cs`, the `_amdDllName`/`AmdDllName` field and
+   the `IAmdAdapter` construction in both `GetAdapter()` and `Program.cs`'s AMD startup branch) - see
+   [§8.4](#84-the-adl32adl64-duplication-and-why-the-names-are-backwards) for the full reasoning,
+   including why the `adl32`/`adl64` namespace names are the *opposite* of which file each one loads.
+4. **The code knows it is 32-bit in one place, and this claim is now stale.**
+   `ProcessExplorer.GetPathFromProcessId` uses `psapi!GetModuleFileNameEx` with the comment
+   *"Process.MainModule.FileName crashes when called on a x64 process because vibranceGUI is running
+   as x86 process"* (`common/ProcessExplorer.cs:63-72`, `GetAllProcesses`). The underlying fix
+   (`GetModuleFileNameEx` instead of `Process.MainModule`) is architecture-agnostic and still correct
+   either way, but the comment's stated reason no longer universally holds now that vibranceGUI itself
+   can be built x64 - **not fixed in this port** (out of scope for it: `ProcessExplorer.cs` was not
+   touched), flagged here so a future pass does not trust the comment's premise at face value.
 
-`IntPtr` being 4 bytes is also load-bearing for some P/Invoke signatures — e.g. `getGpuSystemType` is
-declared taking an `int` in C# where the native side takes an `int*` (**D32**, [§12.4](#124-native-boundary-hazards)).
+NvAPI handles being genuine pointers - 4 bytes on x86, 8 on x64, not the `int` several of them used to
+be typed as in both the native `vibrance.h`/`.cpp` and the C# `[DllImport]` layer - was **D32**
+([§12.4](#124-native-boundary-hazards)), now fixed as part of this same x64 port; see
+`native/vibranceDLL/README.md` item 8 and §7.3's binding table below for exactly what changed.
 
 ### 3.4 The `Debug|Any CPU` trap — with a correction
 
@@ -292,8 +330,9 @@ can still load `vibranceDLL.dll`. What actually differs:
 - `Debug|Any CPU` does not set `CodeAnalysisRuleSet`, which both `x86` configurations do
   (`csproj:66,75`, `CodeAnalysisRuleSet`).
 
-The practical advice is unchanged — **select the `x86` solution platform** — but when you are chasing a
-"it won't load the native DLL" report, do not assume bitness is the cause on this branch; verify it.
+The practical advice: **select the `x86` or `x64` solution platform explicitly** — leaving it on
+"Any CPU" builds x86 either way (§3.2) — but when you are chasing a "it won't load the native DLL"
+report, do not assume bitness is the cause; verify which platform the report's build was.
 
 ### 3.5 How the native NVIDIA DLL is deployed (not what you would guess)
 
@@ -305,31 +344,56 @@ was removed in the same release, so Costura had nothing left to do and was dropp
 build now references no NuGet packages at all (§3.2).
 
 **The native DLL was never Costura's job.** `vibranceDLL.dll` is deployed via plain MSBuild plus
-hand-written extraction, untouched by the Costura removal:
+hand-written extraction, untouched by the Costura removal.
 
-- `vibrance.GUI.csproj:245` (`EmbeddedResource`) — `<EmbeddedResource Include="NVIDIA\vibranceDLL.dll" />`, giving the
-  manifest resource name `vibrance.GUI.NVIDIA.vibranceDLL.dll`;
-- `Program.cs:338-343` (`Main`) reconstructs exactly that name and calls
-  `CommonUtils.LoadUnmanagedLibraryFromResource(...)`;
-- `AMD/vendor/utils/CommonUtils.cs:20-36` reads the resource, **writes it to
-  `%APPDATA%\vibranceGUI\vibranceDLL.dll`, overwriting on every launch**, and calls
-  `kernel32!LoadLibrary("vibranceDLL.dll")`, which resolves through the directory registered with
-  `SetDllDirectory` (`Program.cs:286` (`Main`), and again in the `NativeMethods` static constructor,
-  `AMD/vendor/utils/NativeMethods.cs:8-11` — so the call is made twice).
+**Two embedded resources, chosen at runtime by process bitness.** Since the x64 port, `vibranceDLL.dll`
+(x86, PE32) and `vibranceDLL64.dll` (x64, PE32+) are both embedded (`vibrance.GUI.csproj` —
+`<EmbeddedResource Include="NVIDIA\vibranceDLL.dll" />` and `<EmbeddedResource
+Include="NVIDIA\vibranceDLL64.dll" />`, giving manifest resource names `vibrance.GUI.NVIDIA.vibranceDLL.dll`
+and `vibrance.GUI.NVIDIA.vibranceDLL64.dll`), and `Program.cs`'s NVIDIA startup branch picks between
+them with the internal `Program.ResolveNvidiaAdapterResourceName()` helper
+(`Environment.Is64BitProcess ? "vibranceDLL64.dll" : "vibranceDLL.dll"`) before calling
+`CommonUtils.LoadUnmanagedLibraryFromResource(...)`. The helper is `internal`, not `private`,
+specifically so `NvidiaInteropFixture`'s §N0 can call it directly and assert the *selection itself* is
+correct, not merely that whichever resource happens to be embedded loads (§3.7, §7.3).
 
-Two consequences. The extraction helper lives in the **AMD** utils namespace but is used only by the
-NVIDIA path — a misfiled utility, not a behavioural bug. And `File.WriteAllBytes` on a locked file
-throws `IOException`, while neither the extraction nor the following
-`Marshal.PrelinkAll(typeof(NvidiaDynamicVibranceProxy))` (`Program.cs:344`, `Main`) sits in a `try`/`catch` — so
+**The on-disk file name stays `vibranceDLL.dll` in both cases - only the directory differs.**
+`NvidiaDynamicVibranceProxy.cs`'s `[DllImport]` attributes hardcode the literal `"vibranceDLL.dll"`
+(deliberately, and unchanged by this port's handle-width pass, which retyped those bindings'
+parameters but not the library name they resolve against), so whatever file the loader actually loads
+must have that exact base file name for those P/Invokes to resolve, on both architectures. Keeping one
+constant file name across both architectures is what makes the subdirectory split below necessary
+rather than optional. `Program.cs` reconciles this by extracting into an
+architecture-specific **subdirectory** of `%APPDATA%\vibranceGUI` (`x86\` or `x64\`, created with
+`Directory.CreateDirectory` if missing) while keeping the file name itself constant, then passing the
+resulting **absolute path** as `CommonUtils.LoadUnmanagedLibraryFromResource`'s `libraryName` parameter.
+That function (`AMD/vendor/utils/CommonUtils.cs:20-36`) needed **no change** for this - `Path.Combine`
+returns its second argument unmodified when that argument is already rooted, so passing an absolute
+path through unchanged both writes to the right subdirectory and loads from it correctly, and
+`kernel32!LoadLibrary` given an absolute path still registers the module under its base file name, so
+the later bare `DllImport("vibranceDLL.dll")` P/Invoke lookups resolve against that already-loaded
+module without needing `SetDllDirectory` to point at the subdirectory at all (the same mechanism
+`NvidiaInteropFixture`'s own absolute-path load relies on - see its N3 comment). This is also why an
+x86 and an x64 build extracting concurrently can never collide: they write to two different
+subdirectories, not two different files in the same one, so neither's `File.WriteAllBytes` can throw a
+sharing violation against the other's already-loaded copy. `SetDllDirectory` (`Program.cs:287` (`Main`),
+and again in the `NativeMethods` static constructor, `AMD/vendor/utils/NativeMethods.cs:8-11` — so the
+call is made twice) still points at the parent `%APPDATA%\vibranceGUI` directory, unchanged; nothing
+requires moving it.
+
+Two more things worth knowing. The extraction helper lives in the **AMD** utils namespace but is used
+only by the NVIDIA path — a misfiled utility, not a behavioural bug. And `File.WriteAllBytes` on a
+locked file throws `IOException`, while neither the extraction nor the following
+`Marshal.PrelinkAll(typeof(NvidiaDynamicVibranceProxy))` (`Program.cs:371`, `Main`) sits in a `try`/`catch` — so
 a locked or mismatched DLL is an unhandled exception out of `Main`, not a friendly error. This exact
 call (N16) plus one `Marshal.Prelink` per bound method (N4-N15) are exercised headlessly by
 `NvidiaInteropFixture` — §3.7, §7.3 — so a bad entry-point name or calling convention is caught by the
 fixture suite, naming the specific method, rather than only at a user's next launch. That fixture
 deliberately does **not** call `CommonUtils.LoadUnmanagedLibraryFromResource` (the very code cited two
-paragraphs up) — it extracts to a private directory and loads by absolute path instead, specifically so
-that a locked `%APPDATA%\vibranceGUI\vibranceDLL.dll` (i.e. vibranceGUI already running, same as this
-paragraph's own `IOException` case) cannot make the *fixture* fail for a reason that has nothing to do
-with the binding layer.
+paragraphs up) — it extracts to its own private directory and loads by absolute path instead,
+specifically so that a locked `%APPDATA%\vibranceGUI\x86\vibranceDLL.dll` or `\x64\vibranceDLL.dll`
+(i.e. vibranceGUI already running, same as this paragraph's own `IOException` case) cannot make the
+*fixture* fail for a reason that has nothing to do with the binding layer.
 
 ### 3.6 Running it
 
@@ -350,7 +414,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 636 of them across thirteen
+- **There is no test project**, but there are automated checks: 652 of them across thirteen
   `*Fixture.cs` files — ten in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
   fourteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
@@ -457,7 +521,7 @@ vibranceGUI/
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
     │   ├── CliOptionsFixture.cs        52 checks
     │   ├── GammaRestoreFixture.cs      21 checks
-    │   ├── GraphicsAdapterFixture.cs   38 checks
+    │   ├── GraphicsAdapterFixture.cs   40 checks
     │   ├── HdrVibranceFixture.cs       58 checks
     │   ├── MatchingFixture.cs          55 checks
     │   ├── ProfileToggleFixture.cs     91 checks
@@ -487,13 +551,15 @@ vibranceGUI/
     │
     ├── NVIDIA/                    NVIDIA vendor path (§7)
     │   ├── NvidiaDynamicVibranceProxy.cs   IVibranceProxy impl + 12 Cdecl P/Invokes into vibranceDLL
-    │   ├── NvidiaInteropFixture.cs         31 checks — self-test fixture, run via --selftest-nvapi
+    │   ├── NvidiaInteropFixture.cs         45 checks — self-test fixture, run via --selftest-nvapi
     │   │                                    (§3.7); lives here rather than common/ since it is
     │   │                                    NVIDIA-binding-specific, not app-shell logic
     │   ├── NvidiaTypes.cs                  NV_DISPLAY_DVC_INFO, NvApiStatus (dead), NvSystemType
     │   ├── NvidiaVibranceValueWrapper.cs   raw DVC level → "50%".."100%" label map
-    │   └── vibranceDLL.dll                 built from ../../native/vibranceDLL/ (§7.2); a compile-time
-    │                                        input, overwritten in place and rebuilt, not linked
+    │   ├── vibranceDLL.dll                 x86 (PE32), built from ../../native/vibranceDLL/ (§7.2);
+    │   │                                    a compile-time input, overwritten in place and rebuilt,
+    │   │                                    not linked
+    │   └── vibranceDLL64.dll               x64 (PE32+) twin of the above, same source (§3.5, §7.2)
     │
     ├── AMD/                       AMD vendor path (§8)
     │   ├── AmdDynamicVibranceProxy.cs      IVibranceProxy impl
@@ -551,8 +617,8 @@ graph TD
     end
 
     subgraph native["Native / driver"]
-        DLL["vibranceDLL.dll<br/>PE32 i386, built from native/vibranceDLL/"]
-        NVAPI["nvapi.dll<br/>Digital Vibrance"]
+        DLL["vibranceDLL.dll / vibranceDLL64.dll<br/>PE32 / PE32+, built from native/vibranceDLL/"]
+        NVAPI["nvapi.dll / nvapi64.dll<br/>Digital Vibrance"]
         ADLA["AmdAdapter32 / AmdAdapter64"]
         ADL["atiadlxx.dll / atiadlxy.dll<br/>ADL_Display_Color_Set"]
     end
@@ -627,9 +693,9 @@ with no locking anywhere.
 *same* `VibranceGUI` form in both branches, parameterised by a proxy factory and the vendor's value
 scale:
 
-| Constructor argument (`VibranceGUI.cs:182-245`, `VibranceGUI`) | AMD (`Program.cs:296-308`, `Main`) | NVIDIA (`Program.cs:322-330`, `Main`) |
+| Constructor argument (`VibranceGUI.cs:182-245`, `VibranceGUI`) | AMD (`Program.cs:321-338`, `Main`) | NVIDIA (`Program.cs:340-383`, `Main`) |
 |---|---|---|
-| `getProxy` | `new AmdDynamicVibranceProxy(Is64BitOperatingSystem ? AmdAdapter64 : AmdAdapter32, x, y)` | `new NvidiaDynamicVibranceProxy(x, y)` |
+| `getProxy` | `new AmdDynamicVibranceProxy(amdAdapter, x, y)` — `amdAdapter` selected by `Is64BitProcess`, not `Is64BitOperatingSystem` (§8.4) | `new NvidiaDynamicVibranceProxy(x, y)` |
 | `defaultWindowsLevel` | `100` | `NvapiDefaultLevel` = `0` |
 | `minTrackBarValue` | `0` | `0` |
 | `maxTrackBarValue` | `300` | `NvapiMaxLevel` = `63` |
@@ -705,14 +771,15 @@ Step by step, with the details that matter:
    That helper (`AMD/vendor/utils/CommonUtils.cs:9-18`) returns `%APPDATA%\vibranceGUI` **and creates
    the directory if it is missing** — the only place that is guaranteed to happen, which
    `SettingsController` silently depends on ([§9.3](#93-write-and-read-paths)).
-3. **Vendor detection** (`Program.cs:262` (`Main`) → `common/GraphicsAdapter.cs:84-109`, `GetAdapter`):
+3. **Vendor detection** (`Program.cs:289` (`Main`) → `common/GraphicsAdapter.cs`, `GetAdapter`):
    - if **both** the AMD DLL and `nvapi.dll` exist in `SysWOW64` → `Ambiguous`;
    - else if `LoadLibrary(amdDll)` succeeds **and** `IAmdAdapter.IsAvailable()` → `Amd`;
    - else if `LoadLibrary("nvapi.dll")` succeeds → `Nvidia`;
    - else `Unknown`.
-   The AMD file name is chosen at static-init by *OS* bitness: `atiadlxy.dll` on 64-bit Windows,
-   `atiadlxx.dll` on 32-bit (`GraphicsAdapter.cs:79-81`, `_amdDllName`). None of the `LoadLibrary` handles is ever
-   freed.
+   The AMD file name is chosen at static-init primarily by **process** bitness, since the x64 port
+   (§8.4): an x64 process always resolves `atiadlxx.dll`; a 32-bit process still resolves by *OS*
+   bitness exactly as before (`atiadlxy.dll` on a 64-bit OS, `atiadlxx.dll` on a 32-bit OS)
+   (`GraphicsAdapter.cs`, `_amdDllName`/`AmdDllName`). None of the `LoadLibrary` handles is ever freed.
 4. **Error branches quit the process.** `Unknown` (`Program.cs:332-341`, `Main`) shows the "failed to determine
    your graphics adapter" text plus `new Win32Exception(Marshal.GetLastWin32Error()).Message`, and
    "Yes" opens `https://x.com/swatx18`. `Ambiguous` (`:255-261`, `Main`) shows the "uninstall your old
@@ -1306,10 +1373,12 @@ VibranceGUI (shell)
 NvidiaDynamicVibranceProxy.cs        C#, 12 P/Invokes, ALL state static
    │  DllImport("vibranceDLL.dll"), CallingConvention.Cdecl
    ▼
-vibranceDLL.dll                      native C++, built in this repo from native/vibranceDLL/ (§7.2)
-   │  LoadLibraryA("nvapi.dll") + nvapi_QueryInterface(<13 ids>)
+vibranceDLL.dll / vibranceDLL64.dll  native C++, built in this repo from native/vibranceDLL/ (§7.2);
+   │                                 Program.cs picks the resource by Environment.Is64BitProcess (§3.5)
+   │                                 but both extract to a file literally named "vibranceDLL.dll" (§3.5)
+   │  LoadLibraryA("nvapi.dll" x86 / "nvapi64.dll" x64) + nvapi_QueryInterface(<13 ids>)
    ▼
-nvapi.dll → NVIDIA display driver → Digital Vibrance on the panel
+nvapi.dll / nvapi64.dll → NVIDIA display driver → Digital Vibrance on the panel
 ```
 
 ### 7.2 What `vibranceDLL.dll` actually is
@@ -1317,12 +1386,23 @@ nvapi.dll → NVIDIA display driver → Digital Vibrance on the panel
 **As of `work/native-dll-from-source`, `vibrance.GUI/NVIDIA/vibranceDLL.dll` is built in this repo**
 from vendored source at `native/vibranceDLL/` (upstream `https://github.com/juv/vibranceDLL`; see that
 directory's own `README.md` for the exact commit vendored and every change made to its build). It is a
-**compile-time input**, not a linked dependency: `Program.cs:338-344` extracts the embedded resource to
-`%APPDATA%\vibranceGUI\vibranceDLL.dll` and `Marshal.PrelinkAll`s it at every launch, unchanged by this
-work — see [§3.5](#35-how-the-native-nvidia-dll-is-deployed-not-what-you-would-guess). Rebuilding it is
-`native/vibranceDLL/vibrance.vcxproj`, `Release|Win32`, then copying the output over the checked-in DLL
-by hand; there is no MSBuild wiring from `vibrance.GUI.csproj` into the native project, by design (a C#
-build must not require a full C++ toolchain to succeed).
+**compile-time input**, not a linked dependency: `Program.cs`'s NVIDIA startup branch extracts the
+architecture-appropriate embedded resource to `%APPDATA%\vibranceGUI\x86\vibranceDLL.dll` or
+`\x64\vibranceDLL.dll` and `Marshal.PrelinkAll`s it at every launch — see
+[§3.5](#35-how-the-native-nvidia-dll-is-deployed-not-what-you-would-guess) for the two-resource scheme
+this now is. Rebuilding it means building `native/vibranceDLL/vibrance.vcxproj` for both
+`Release|Win32` **and** `Release|x64` (both configurations now exist in the `.vcxproj`/`.sln`; the x64
+ones mirror Win32's settings exactly, including the `/MT` `RuntimeLibrary` setting - see that
+directory's `README.md`), then copying each output over the matching checked-in DLL by hand; there is
+still no MSBuild wiring from `vibrance.GUI.csproj` into the native project, by design (a C# build must
+not require a full C++ toolchain to succeed).
+
+**`nvapi.dll` vs `nvapi64.dll`.** NvAPI itself ships as two separate DLLs, not one bitness-agnostic one
+- `nvapi.dll` (32-bit, `SysWOW64`) and `nvapi64.dll` (64-bit, `System32`), with no cross-copy of either.
+`vibrance.cpp`'s `initializeLibrary()` originally hardcoded `LoadLibraryA("nvapi.dll")` unconditionally,
+which is the one line in `vibrance.cpp` that is no longer bit-identical to upstream (every other native
+source file still is - see `native/vibranceDLL/README.md`'s Fidelity note and its item 7): it is now
+`#ifdef _WIN64` - `"nvapi64.dll"` in a 64-bit build, `"nvapi.dll"` otherwise.
 
 **The paragraphs below up to and including [§7.6](#76-what-each-native-call-really-does-verified-binary)
 were VERIFIED against the *previously shipped* prebuilt 2017 binary** (see the history below); they are
@@ -1358,7 +1438,8 @@ i386** (machine `0x14c`), 6 sections, link timestamp **2017-01-02 18:22:43 UTC**
   and `api-ms-win-crt-*.dll`, a VC++ redistributable dependency the app does not otherwise require. NvAPI
   is resolved dynamically at init either way ([§7.4](#74-the-initialisation-handshake)).
 - Deployment is described in [§3.5](#35-how-the-native-nvidia-dll-is-deployed-not-what-you-would-guess):
-  embedded as an MSBuild resource, extracted by hand to `%APPDATA%\vibranceGUI\` on every launch.
+  two architecture-specific MSBuild resources, extracted to an architecture-specific subdirectory of
+  `%APPDATA%\vibranceGUI\` on every launch.
 
 **Practical consequence:** the NVIDIA capability surface of vibranceGUI is still frozen at whatever the
 16 methods `vibrance.h:91-106` declares do (12 of those 16 are C#-bound; all 16, plus the compiler-
@@ -1720,10 +1801,16 @@ dead GUI** as the NVIDIA failure path, with no dialog. Note that in that case `I
 reached, which is the only reason the unguarded `Adl.AdlMainControlCreate` call at
 `AmdAdapter32.cs:20` is safe today.
 
-Detection carries a matching assumption: it expects `atiadlxx.dll` on 32-bit Windows and
-`atiadlxy.dll` on 64-bit Windows to exist under `SpecialFolder.SystemX86`
-(`common/GraphicsAdapter.cs:148-173`, `IsVendorDriverInstalled`). **A driver package that ships only one of those names breaks
-detection outright** — the app reports `Unknown` and exits.
+Detection carries a matching assumption: `IsVendorDriverInstalled` (`common/GraphicsAdapter.cs:148-173`)
+checks for whichever name `_amdDllName` currently resolves to (§8.4) under
+`Environment.SpecialFolder.SystemX86` - which is **always** the 32-bit system directory
+(`SysWOW64` on 64-bit Windows), regardless of the calling process's own bitness. This still works from
+an x64 process: AMD's driver package puts a 32-bit `atiadlxx.dll` in `SysWOW64` *and* a 64-bit one in
+`System32` side by side (VERIFIED on this machine), so the 32-bit copy's presence remains a valid "is
+the driver installed at all" signal no matter which architecture is asking - the same reasoning as
+NVIDIA's `nvapi.dll` detection in §3.3. **A driver package that ships only one bitness of ADL, or only
+`atiadlxy.dll` and no `atiadlxx.dll` at all, breaks detection outright** — the app reports `Unknown` and
+exits.
 
 ### 8.3 Enumeration and the saturation write
 
@@ -1810,24 +1897,41 @@ There is no difference in structure packing, no `[StructLayout(Pack=…)]`, no `
 differing entry-point names, no `#if` conditionals. **940 lines of source exist to carry one string
 literal.**
 
-**And the names mean the opposite of what they say.** The process is *always* 32-bit
-([§3.3](#33-the-x86-rule-and-why-it-is-not-negotiable)), so `IntPtr` never changes size. The 32/64
-distinction here is about **OS bitness**, i.e. which ADL library a 32-bit process is able to load:
+**And the names still mean the opposite of what they say - this was not renamed by the x64 port, only
+the selection logic underneath it was fixed.** Until this port, the process was *always* 32-bit
+(historically §3.3's premise), so the 32/64 distinction here was purely about **OS bitness**, i.e.
+which ADL library a 32-bit process is able to load. Since the x64 port, vibranceGUI can itself be a
+64-bit process, and the selection now has to account for **both** axes:
 
-- `common/GraphicsAdapter.cs:79-81` (`_amdDllName`) picks the file name by `Environment.Is64BitOperatingSystem` →
-  64-bit OS ⇒ `adl64.AdlImport.AtiadlFileName` = **`atiadlxy.dll`**; 32-bit OS ⇒ `adl32` =
-  **`atiadlxx.dll`**.
-- This follows AMD's own ADL sample guidance: a 32-bit caller on 64-bit Windows cannot load the native
-  `atiadlxx.dll` and must use `atiadlxy.dll`. **So `adl64` means "we are running on a 64-bit OS", and
-  it loads the *32-bit* ADL library. The folder names say the opposite of what they do.**
-- The history corroborates the confusion: commit `f1e748d` ("amd: handle also 32bit systems") renamed
-  the original `adl/` to `adl32/` and cloned it to `adl64/`, and in that very commit the newly created
-  `adl32/ADLImport.cs` **still declared namespace `…adl64` and `atiadlxy.dll`**. The split was muddled
-  from birth.
+- `adl64.AdlImport.AtiadlFileName` = **`atiadlxy.dll`** — a 32-bit-only bridge binary that exists
+  nowhere but `SysWOW64` (no 64-bit build of it exists at all, on this or any machine checked).
+- `adl32.AdlImport.AtiadlFileName` = **`atiadlxx.dll`** — the one name with a *real* 64-bit build.
+  `System32`/`SysWOW64` file redirection transparently resolves a bare `LoadLibrary("atiadlxx.dll")`
+  call to the 64-bit copy in `System32` or the 32-bit copy in `SysWOW64` depending on the *calling
+  process's* bitness, so this single name is correct for a 32-bit **or** a 64-bit caller.
+- **So `adl64` means "we are running on a 64-bit OS", and it loads the *32-bit-only* ADL library; `adl32`
+  loads the name that actually has a 64-bit build. The folder names say the opposite of what they do** -
+  this has not changed. What changed is that this inversion used to be harmless (the process was always
+  32-bit, so `adl64`'s 32-bit-only binary always worked) and now is not: an x64 process that took the old
+  `Environment.Is64BitOperatingSystem` branch would pick `adl64` → `"atiadlxy.dll"`, which has no 64-bit
+  build and fails to load outright, a hard failure with no fallback.
+- `common/GraphicsAdapter.cs` (`_amdDllName`/`AmdDllName`) and the two `IAmdAdapter` construction sites
+  (`GraphicsAdapterHelper.GetAdapter()` and `Program.cs`'s AMD startup branch) now key the selection off
+  **`Environment.Is64BitProcess`** first: an x64 process always picks `adl32` → `"atiadlxx.dll"`, the
+  only name that can load at all. A 32-bit process still picks by OS bitness exactly as before (`adl64`
+  on a 64-bit OS, `adl32` on a native 32-bit OS), unchanged from pre-port behaviour - only the new x64
+  branch was added, specifically to avoid re-deriving proven-working x86 behaviour from first
+  principles as part of this port.
+- The history corroborates the original confusion: commit `f1e748d` ("amd: handle also 32bit systems")
+  renamed the original `adl/` to `adl32/` and cloned it to `adl64/`, and in that very commit the newly
+  created `adl32/ADLImport.cs` **still declared namespace `…adl64` and `atiadlxy.dll`**. The split was
+  muddled from birth, and this port deliberately left the namespace names as-is rather than compounding
+  a bitness fix with a large, purely-cosmetic rename across 940 lines.
 
-**Verdict: copy-paste debt with a small real excuse.** The excuse is that `[DllImport("…")]` requires a
-compile-time constant library name, so you genuinely cannot swap the two names with a variable using
-static P/Invoke. Fixes, in increasing order of effort:
+**Verdict: copy-paste debt with a small real excuse, now carrying one more correct-but-confusing
+branch.** The excuse is that `[DllImport("…")]` requires a compile-time constant library name, so you
+genuinely cannot swap the two names with a variable using static P/Invoke. Fixes, in increasing order
+of effort:
 
 1. `SetDllDirectory` plus a single binding, letting the loader resolve one name (the app already calls
    `SetDllDirectory`).
@@ -1836,12 +1940,14 @@ static P/Invoke. Fixes, in increasing order of effort:
    `AdlCheckLibrary.GetProcAddress` (`:45-53`, currently dead) already wraps
    `ADL_Main_Control_GetProcAddress`.
 3. One `AmdAdapter<TAdl>` generic, or a single class taking an `IAdlBinding`.
+4. Rename `adl32`/`adl64` to something that names what each namespace actually binds (e.g. by DLL name
+   rather than by an assumed caller bitness) - deliberately not done as part of the x64 port to keep
+   that change isolated from a large, non-behavioural rename.
 
 Cost of the status quo: **every ADL bug fix must be applied twice**, in near-identical files, in
-namespaces whose names are backwards. Two independent selection sites do the picking, both spelled
-`Environment.Is64BitOperatingSystem ? new AmdAdapter64() : new AmdAdapter32()`
-(`common/GraphicsAdapter.cs:98` (`GetAdapter`) for a throwaway detection instance, `Program.cs:296-298` (`Main`) for the real
-one).
+namespaces whose names are backwards, and the selection logic choosing between them now has to reason
+about two independent bitness axes (process and OS) instead of one. `GraphicsAdapterFixture`'s AMD
+checks (§3.7) assert the process-bitness selection is correct without touching any driver file.
 
 ### 8.5 AMD value semantics
 
@@ -2137,14 +2243,14 @@ one getter — there is no view-model, no binding and no messaging.
 
 ### 10.1 `VibranceGUI` — the main window
 
-`ClientSize 419×524`, `FixedSingle`, no maximise box, title `vibranceGUI` — to which `Program.cs:525` (`buildFormTitleText`)
+`ClientSize 419×524`, `FixedSingle`, no maximise box, title `vibranceGUI` — to which `Program.cs:552` (`buildFormTitleText`)
 appends `" (NVIDIA, x86, 2.8.0)"` or `" (AMD, x64, …)"` — adapter, then architecture, then version, in
 that order. The architecture token is `Environment.Is64BitProcess ? "x64" : "x86"`, deliberately not
-`Is64BitOperatingSystem` — the x64 port (`native/vibranceDLL`) means x86 and x64 builds will both be
-downloadable, and a bug report naming a build must be tied to the code that actually produced it, the
+`Is64BitOperatingSystem` — the x64 port (§3.3, `native/vibranceDLL`) means x86 and x64 builds are both
+downloadable now, and a bug report naming a build must be tied to the code that actually produced it, the
 same reasoning that put the version number here (commit `3ffc505`). `Is64BitOperatingSystem` would be
-wrong: it reports the OS, not this process, so an x86 build running on 64-bit Windows — the common case
-today, since every build is currently x86 — would wrongly claim `x64`. The version comes from
+wrong: it reports the OS, not this process, so an x86 build running on 64-bit Windows — still the common
+case, and the one most existing installs are on — would wrongly claim `x64`. The version comes from
 `Application.ProductVersion`, so it tracks `AssemblyFileVersion` with no code change.
 
 | Region | Controls |
@@ -2699,15 +2805,20 @@ parameter of type `int**` - `sizeof` a pointer over `sizeof` a pointer is always
 runs exactly once regardless of how many GPUs exist. Its result is stored in `VibranceInfo.activeOutput`,
 which nothing reads. **Not fixed by this work** — `vibrance.cpp` was deliberately left unmodified (§7.2).
 
-**D32 — `getGpuSystemType` is declared taking an `int` in C# and an `int*` in C++**
-(`NvidiaDynamicVibranceProxy.cs:142-147`, `getGpuSystemType`). It works only because NvAPI GPU handles
-*are* pointers and the process is 32-bit; the type lie will bite anyone porting to x64. **Still open,
-deliberately, after `work/native-dll-from-source`:** the new `vibrance_getGpuSystemType` wrapper takes
-`int *gpuHandle`, matching `vibrance.h` exactly (§7.3) — the mismatch is entirely on the C# side, which
-still passes `gpuHandle` by value on purpose, with a comment recording it at the call site
-(`NvidiaDynamicVibranceProxy.cs:135-141`). Fixing it is a behaviour change, and this work was scoped to
-binding-mechanism parity only; folding an unrelated behaviour fix into a build-system slice was judged
-the worse place to make it.
+**D32 — FIXED by the x64 port's handle-width pass** (`native/vibranceDLL/README.md` item 8;
+`NvidiaDynamicVibranceProxy.cs`, `getGpuSystemType`). Previously declared taking an `int` in C# where
+the native side's own wrapper took `int *gpuHandle` - it worked only because NvAPI GPU handles *are*
+pointers and the process was always 32-bit at the time; the type lie would have bitten x64 the moment
+it existed. The C# side is now `IntPtr`, which is exactly as wide as the native pointer on both
+architectures. The native side's own `int *gpuHandle` needed no change here specifically - it was
+already pointer-width (see the fix's own comment on why that parameter, alone among the ones touched,
+was already correctly typed) - the type mismatch was entirely on the C# side, which used to pass
+`gpuHandle` by value as a plain `int` on purpose, with a comment recording it at the call site. That
+comment, and the "this is a deliberate, deferred behaviour change, out of scope for a build-system
+slice" reasoning that went with it, are gone along with the bug: the x64 port made fixing this
+mandatory rather than optional, since a truncated handle on x64 is not a latent correctness nit
+(as it was on x86, where it merely worked by accident) but a hard failure the moment the upper 32
+bits of a real handle are non-zero.
 
 **D33 — the native DLL does not null-check `NvAPI_GetAssociatedNvidiaDisplayHandle`** at init
 (VERIFIED binary, [§7.4](#74-the-initialisation-handshake)), so on a driver that lacks it, init succeeds
@@ -2852,10 +2963,10 @@ pair this used to call out is deleted from both proxies; both now call
 - **DLL-search surface.** `SetDllDirectory("%APPDATA%\vibranceGUI")` (`Program.cs:260` (`Main`),
   `AMD/vendor/utils/NativeMethods.cs:10`) puts a **user-writable directory on the loader search path**
   before `LoadLibrary("nvapi.dll")` / `LoadLibrary("atiadlxy.dll")` are attempted by name
-  (`common/GraphicsAdapter.cs:386`, `IsAdapterAvailable`). `vibranceDLL.dll` is written to and loaded from that same directory
-  with no hash or signature check (`CommonUtils.cs:29-34`). Not remotely exploitable, but any process
-  running as the user can plant a same-named DLL there — worth knowing before you add more
-  `LoadLibrary`-by-name calls.
+  (`common/GraphicsAdapter.cs`, `IsAdapterAvailable`). `vibranceDLL.dll` is written to and loaded from
+  an architecture-specific subdirectory of that same user-writable directory (§3.5) with no hash or
+  signature check (`CommonUtils.cs:29-34`). Not remotely exploitable, but any process running as the
+  user can plant a same-named DLL there — worth knowing before you add more `LoadLibrary`-by-name calls.
 - **Hardcoded external URLs**, all opened with `Process.Start` on a user click: the maintainer's X/Twitter
   (`Program.cs:23,251` (`ErrorGraphicsAdapterUnknown`); `VibranceGUI.cs:29,548,553`, `TwitterLink`), the
   Guru3D DDU page (`Program.cs:470`, `ShowLegacyAmbiguousDriverDialog`), the Steam guide (`NvidiaDynamicVibranceProxy.cs:189`, `GuideLink`).
@@ -2974,11 +3085,16 @@ native rebuild, not to *get* a name but to *confirm* the wrapper you added actua
 - see [§4](#4-repository-map)'s task 4 checklist in `native/vibranceDLL/README.md` for the checks a
 rebuild should pass, in particular the import-table check.) Keeping the C++ class **stateless** is no
 longer what makes the binding safe (**D29**, fixed) — but it is still good practice, since every wrapper
-constructs a fresh instance per call. Rebuild `native/vibranceDLL/vibrance.vcxproj` `Release|Win32`, and copy the output over
-`vibrance.GUI/NVIDIA/vibranceDLL.dll` — no `.csproj` change is needed to pick it up, since the
-`<EmbeddedResource>` entry (`vibrance.GUI.csproj:245`) already points at that path and the C# build
-just embeds whatever bytes are there. Note that `%APPDATA%\vibranceGUI\vibranceDLL.dll` is overwritten
-at every app start, so a stale extracted copy self-heals, but a running instance locks the file.
+constructs a fresh instance per call. Rebuild `native/vibranceDLL/vibrance.vcxproj` for **both**
+`Release|Win32` **and** `Release|x64` (§3.5, §7.2) and copy each output over its matching checked-in
+DLL - `vibrance.GUI/NVIDIA/vibranceDLL.dll` for Win32, `vibrance.GUI/NVIDIA/vibranceDLL64.dll` for x64 -
+**do not skip the x64 rebuild**: since both are always embedded regardless of which architecture you
+build `vibrance.GUI` itself for, an x64 build left stale here still compiles and runs, but silently
+ships an out-of-date `vibranceDLL64.dll` to every x64 user while x86 users get the fix. No `.csproj`
+change is needed to pick either up, since both `<EmbeddedResource>` entries already point at those paths
+and the C# build just embeds whatever bytes are there. Note that
+`%APPDATA%\vibranceGUI\x86\vibranceDLL.dll` / `\x64\vibranceDLL.dll` are overwritten at every app start,
+so a stale extracted copy self-heals, but a running instance locks its own file.
 
 **Do this first, whatever else you do.** Wire up the two driver reads that are bound and dead:
 `ADL_Display_Color_Get` (`adl32/ADL.cs:189-203`) and NVIDIA's `getDVCInfo`
@@ -3005,10 +3121,12 @@ they are never fetched at all. Sourcing the UI ranges from the driver instead of
    lives (`vibrance.cpp`'s NvAPI function pointers, `shouldRun`, `defaultHandle`).
 5. **Never "correct" the exported entry-point names**, including the typo `enumeratePhsyicalGPUs` — now
    preserved as `vibrance_enumeratePhsyicalGPUs` (§7.3) as much as it was in the old mangled name.
-6. **Never build AnyCPU or x64 — for now.** The native DLL is still built and shipped PE32 i386 only
-   ([§3.3](#33-the-x86-rule-and-why-it-is-not-negotiable)); `work/native-dll-from-source` made the
-   binding mechanism itself architecture-agnostic (§7.3, §7.5) precisely so a future x64 slice is a
-   rebuild-and-retarget, not another binding rewrite, but that slice has not happened yet.
+6. **Never build `Any CPU`.** It remains remapped to x86 for `Release` and left unremapped (but still
+   `PlatformTarget=x86`) for `Debug` (§3.4) - `x86` and `x64` are the two real platforms
+   ([§3.3](#33-x86-and-x64-and-what-changed-to-support-both)). Both are now built and shipped, each
+   with its own native DLL (§3.5, §7.2); `work/native-dll-from-source` made the binding mechanism
+   itself architecture-agnostic (§7.3, §7.5) precisely so this later x64 slice was a rebuild-and-retarget,
+   not another binding rewrite.
 7. **Never assume `isInitialized == true` means the driver works.** AMD sets it before `Init()`
    (**D22**). **D30**'s specific worry (a failed NVIDIA init observed as `true` because of a stale byte
    in `EAX`) is fixed, but that says nothing about whether the driver call itself actually succeeded in

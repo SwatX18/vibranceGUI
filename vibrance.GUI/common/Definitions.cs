@@ -26,7 +26,9 @@ namespace vibrance.GUI.common
         // per-game toggle, which this single field could never represent correctly.
         public bool shouldRun;
         public int sleepInterval;
-        public List<int> displayHandles;
+        // IntPtr, not int - NvAPI display handles are genuine pointers (4 bytes on x86, 8 on x64).
+        // See NvidiaDynamicVibranceProxy.InvalidDisplayHandle's own comment.
+        public List<IntPtr> displayHandles;
         public bool affectPrimaryMonitorOnly;
         public bool neverChangeResolution;
         public bool neverChangeColorSettings;

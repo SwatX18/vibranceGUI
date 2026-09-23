@@ -49,37 +49,41 @@ extern "C"
 		return v.unloadLibrary() ? 1 : 0;
 	}
 
-	int vibrance_getActiveOutputs(int **gpuHandles, int **outputIds)
+	int vibrance_getActiveOutputs(vibrance_handle_t *gpuHandles, unsigned int **outputIds)
 	{
 		vibranceDLL::vibrance v;
-		return v.getActiveOutputs(gpuHandles, outputIds);
+		// gpuHandles/outputIds are pointer-to-pointer either way (an array of pointer-sized
+		// elements) - vibrance_handle_t and unsigned int are both exactly as wide as vibrance.h's
+		// own "int" element type on this platform, so this is a same-width reinterpretation of
+		// the array, not a truncation. See vibrance_c.h's own comment on vibrance_handle_t.
+		return v.getActiveOutputs(reinterpret_cast<int **>(gpuHandles), reinterpret_cast<int **>(outputIds));
 	}
 
-	void vibrance_enumeratePhsyicalGPUs(int **gpuHandles)
+	void vibrance_enumeratePhsyicalGPUs(vibrance_handle_t *gpuHandles)
 	{
 		vibranceDLL::vibrance v;
-		v.enumeratePhsyicalGPUs(gpuHandles);
+		v.enumeratePhsyicalGPUs(reinterpret_cast<int **>(gpuHandles));
 	}
 
-	int vibrance_getGpuName(int **gpuHandles, char *szName)
+	int vibrance_getGpuName(vibrance_handle_t *gpuHandles, char *szName)
 	{
 		vibranceDLL::vibrance v;
-		return v.getGpuName(gpuHandles, szName) ? 1 : 0;
+		return v.getGpuName(reinterpret_cast<int **>(gpuHandles), szName) ? 1 : 0;
 	}
 
-	int vibrance_getDVCInfo(void *info, int defaultHandle)
+	int vibrance_getDVCInfo(void *info, vibrance_handle_t defaultHandle)
 	{
 		vibranceDLL::vibrance v;
 		return v.getDVCInfo(reinterpret_cast<NvDisplayDvcInfo *>(info), defaultHandle) ? 1 : 0;
 	}
 
-	int vibrance_enumerateNvidiaDisplayHandle(int index)
+	vibrance_handle_t vibrance_enumerateNvidiaDisplayHandle(int index)
 	{
 		vibranceDLL::vibrance v;
 		return v.enumerateNvidiaDisplayHandle(index);
 	}
 
-	int vibrance_setDVCLevel(int defaultHandle, int level)
+	int vibrance_setDVCLevel(vibrance_handle_t defaultHandle, int level)
 	{
 		vibranceDLL::vibrance v;
 		return v.setDVCLevel(defaultHandle, level) ? 1 : 0;
@@ -91,21 +95,32 @@ extern "C"
 		return v.isWindowActive(reinterpret_cast<HWND *>(hwnd)) ? 1 : 0;
 	}
 
-	int vibrance_equalsDVCLevel(int defaultHandle, int level)
+	int vibrance_equalsDVCLevel(vibrance_handle_t defaultHandle, int level)
 	{
 		vibranceDLL::vibrance v;
 		return v.equalsDVCLevel(defaultHandle, level) ? 1 : 0;
 	}
 
-	int vibrance_getGpuSystemType(int *gpuHandle)
+	int vibrance_getGpuSystemType(vibrance_handle_t gpuHandle)
 	{
 		vibranceDLL::vibrance v;
-		return v.getGpuSystemType(gpuHandle);
+		// vibrance.h's own getGpuSystemType was always declared taking "int *gpuHandle" - already
+		// pointer-width on both platforms, and never dereferenced (see that declaration's own
+		// comment) - so this cast is a same-width reinterpretation, matching the "int *"/"int **"
+		// casts just above, not a new truncation.
+		return v.getGpuSystemType(reinterpret_cast<int *>(gpuHandle));
 	}
 
-	int vibrance_getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length)
+	vibrance_handle_t vibrance_getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length)
 	{
 		vibranceDLL::vibrance v;
 		return v.getAssociatedNvidiaDisplayHandle(szDisplayName, length);
+	}
+
+	vibrance_handle_t vibrance_abi_echoHandle(vibrance_handle_t handle)
+	{
+		// Deliberately does not construct a vibranceDLL::vibrance or touch any NvAPI state - see
+		// this export's own comment in vibrance_c.h.
+		return handle;
 	}
 }

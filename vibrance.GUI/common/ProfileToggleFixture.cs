@@ -2727,16 +2727,16 @@ namespace vibrance.GUI.common
         // file, so this is a second, smaller copy of the same shape.
         private class FakeNvidiaVibranceDevice : INvidiaVibranceDevice
         {
-            private readonly Dictionary<string, int> _handlesByDeviceName = new Dictionary<string, int>();
-            private readonly Dictionary<int, int> _levelsByHandle = new Dictionary<int, int>();
-            private readonly HashSet<int> _failNextSetLevel = new HashSet<int>();
+            private readonly Dictionary<string, IntPtr> _handlesByDeviceName = new Dictionary<string, IntPtr>();
+            private readonly Dictionary<IntPtr, int> _levelsByHandle = new Dictionary<IntPtr, int>();
+            private readonly HashSet<IntPtr> _failNextSetLevel = new HashSet<IntPtr>();
             private int _nextHandle = 1;
 
-            public readonly List<int> SetLevelCalls = new List<int>();
+            public readonly List<IntPtr> SetLevelCalls = new List<IntPtr>();
             public readonly List<string> ResolvedDeviceNames = new List<string>();
             public int TotalCallCount;
 
-            public int HandleFor(string deviceName)
+            public IntPtr HandleFor(string deviceName)
             {
                 return ResolveOrAssign(deviceName);
             }
@@ -2751,12 +2751,12 @@ namespace vibrance.GUI.common
                 _failNextSetLevel.Add(ResolveOrAssign(deviceName));
             }
 
-            private int ResolveOrAssign(string deviceName)
+            private IntPtr ResolveOrAssign(string deviceName)
             {
-                int handle;
+                IntPtr handle;
                 if (!_handlesByDeviceName.TryGetValue(deviceName, out handle))
                 {
-                    handle = _nextHandle++;
+                    handle = new IntPtr(_nextHandle++);
                     _handlesByDeviceName[deviceName] = handle;
                 }
                 return handle;
@@ -2768,25 +2768,25 @@ namespace vibrance.GUI.common
                 return true;
             }
 
-            public int TryResolveDisplayHandle(string deviceName)
+            public IntPtr TryResolveDisplayHandle(string deviceName)
             {
                 TotalCallCount++;
                 ResolvedDeviceNames.Add(deviceName);
                 if (string.IsNullOrEmpty(deviceName))
                 {
-                    return -1;
+                    return NvidiaDynamicVibranceProxy.InvalidDisplayHandle;
                 }
                 return ResolveOrAssign(deviceName);
             }
 
-            public bool IsAtLevel(int displayHandle, int level)
+            public bool IsAtLevel(IntPtr displayHandle, int level)
             {
                 TotalCallCount++;
                 int current;
                 return _levelsByHandle.TryGetValue(displayHandle, out current) && current == level;
             }
 
-            public bool SetLevel(int displayHandle, int level)
+            public bool SetLevel(IntPtr displayHandle, int level)
             {
                 TotalCallCount++;
                 SetLevelCalls.Add(displayHandle);

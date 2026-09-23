@@ -24,7 +24,7 @@ namespace vibranceDLL
 	vibrance::NvAPI_GPU_GetSystemType_t					NvAPI_GPU_GetSystemType = NULL;
 
 	bool shouldRun;
-	int defaultHandle;
+	void *defaultHandle;
 
 	void vibrance::printError(_NvAPI_Status status)
 	{
@@ -104,7 +104,7 @@ namespace vibranceDLL
 		return *hwnd == activeWindow;
 	}
 
-	bool vibrance::equalsDVCLevel(int defaultHandle, int level)
+	bool vibrance::equalsDVCLevel(void *defaultHandle, int level)
 	{	
 		NV_DISPLAY_DVC_INFO info = {};
 		if(getDVCInfo(&info, defaultHandle))
@@ -114,7 +114,7 @@ namespace vibranceDLL
 		return false;
 	}
 
-	bool vibrance::getDVCInfo(NV_DISPLAY_DVC_INFO *info, int defaultHandle)
+	bool vibrance::getDVCInfo(NV_DISPLAY_DVC_INFO *info, void *defaultHandle)
 	{
 		//NV_DISPLAY_DVC_INFO info2 = {};
 
@@ -137,7 +137,7 @@ namespace vibranceDLL
 		return true;
 	}
 
-	bool vibrance::setDVCLevel(int defaultHandle, int level)
+	bool vibrance::setDVCLevel(void *defaultHandle, int level)
 	{
 		_NvAPI_Status status = (_NvAPI_Status)(*NvAPI_SetDVCLevel)(defaultHandle, 0, level);
 		if(status != NVAPI_OK)
@@ -147,13 +147,13 @@ namespace vibranceDLL
 		return true;
 	}
 
-	int vibrance::enumerateNvidiaDisplayHandle(int index)
+	void *vibrance::enumerateNvidiaDisplayHandle(int index)
 	{
-		int defaultHandle = 0;
+		void *defaultHandle = NULL;
 		_NvAPI_Status status = (_NvAPI_Status)(*NvAPI_EnumNvidiaDisplayHandle)(index, &defaultHandle);
 		if(status != 0 && status == NVAPI_END_ENUMERATION)
 		{
-			return -1;
+			return NULL;
 		}
 		return defaultHandle;
 	}
@@ -217,15 +217,15 @@ namespace vibranceDLL
 		return NV_SYSTEM_TYPE::NV_SYSTEM_TYPE_UNKNOWN;
 	}
 
-	int vibrance::getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length)
+	void *vibrance::getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length)
 	{
-		int outputId = 0; 
+		void *outputId = NULL;
 		_NvAPI_Status status = (_NvAPI_Status)(*NvAPI_GetAssociatedNvidiaDisplayHandle)(szDisplayName, &outputId);
 		if(status == 0)
 		{
 			return outputId;
 		}
-		return -1;
+		return NULL;
 	}
 
 	bool vibrance::unloadLibrary()
@@ -238,7 +238,12 @@ namespace vibranceDLL
 
 	bool vibrance::initializeLibrary()
 	{
+		// nvapi.dll only exists 32-bit; a 64-bit process must load nvapi64.dll instead.
+#ifdef _WIN64
+		HMODULE hmod = LoadLibraryA("nvapi64.dll");
+#else
 		HMODULE hmod = LoadLibraryA("nvapi.dll");
+#endif
 		if (hmod == NULL)
 		{
 			return false;

@@ -73,15 +73,15 @@ namespace vibranceDLL
 		typedef int (*NvAPI_Unload_t)();
 		typedef int (*NvAPI_EnumPhysicalGPUs_t)(int **handles, int *count);
 		typedef int (*NvAPI_GPU_GetUsages_t)(int *handle, unsigned int *usages);
-		typedef int (*NvAPI_GetDVCInfo_t)(int hNvDisplay, int outputId, NV_DISPLAY_DVC_INFO *pDVCInfo);
+		typedef int (*NvAPI_GetDVCInfo_t)(void *hNvDisplay, int outputId, NV_DISPLAY_DVC_INFO *pDVCInfo);
 		typedef int (*NvAPI_GPU_GetFullName_t)(int *handle, char szName[64]);
 		typedef int (*NvAPI_GPU_GetActiveOutputs_t)(int *handle, int *pOutputsMask);
-		typedef int (*NvAPI_SetDVCLevel_t)(int handle, int outputId, int level);
-		typedef int (*NvAPI_EnumNvidiaDisplayHandle_t)(int thisEnum, int *pNvDispHandle);
+		typedef int (*NvAPI_SetDVCLevel_t)(void *handle, int outputId, int level);
+		typedef int (*NvAPI_EnumNvidiaDisplayHandle_t)(int thisEnum, void **pNvDispHandle);
 		typedef int (*NvAPI_GetInterfaceVersionString_t)(char szVersion[64]);
 		typedef int (*NvAPI_GetErrorMessage_t)(_NvAPI_Status nr,char szDesc[64]);
-		typedef int (*NvAPI_GetDVCInfoEx_t)(int hNvDisplay, int outputId, NV_DISPLAY_DVC_INFO *pDVCInfo);
-		typedef int (*NvAPI_GetAssociatedNvidiaDisplayHandle_t)(const char *szDisplayName, int *pNvDispHandle);
+		typedef int (*NvAPI_GetDVCInfoEx_t)(void *hNvDisplay, int outputId, NV_DISPLAY_DVC_INFO *pDVCInfo);
+		typedef int (*NvAPI_GetAssociatedNvidiaDisplayHandle_t)(const char *szDisplayName, void **pNvDispHandle);
 		typedef int (*NvAPI_GPU_GetSystemType_t)(int *hPhysicalGpu, NV_SYSTEM_TYPE *pSystemType);
 
 
@@ -92,17 +92,17 @@ namespace vibranceDLL
 		int getActiveOutputs(int *gpuHandles[], int *outputIds[]);
 		bool getInterfaceVersionString(char* szVersion);
 		void enumeratePhsyicalGPUs(int *gpuHandles[]);
-		int enumerateNvidiaDisplayHandle(int index);
-		bool getDVCInfo(NV_DISPLAY_DVC_INFO *info, int defaultHandle);
+		void *enumerateNvidiaDisplayHandle(int index);
+		bool getDVCInfo(NV_DISPLAY_DVC_INFO *info, void *defaultHandle);
 		bool getGpuName(int *gpuHandles[], char* szName);
 		bool isCsgoStarted(HWND *hwnd);
 		bool isWindowActive(HWND *hwnd);
-		bool setDVCLevel(int defaultHandle, int level);
-		bool equalsDVCLevel(int defaultHandle, int level);
+		bool setDVCLevel(void *defaultHandle, int level);
+		bool equalsDVCLevel(void *defaultHandle, int level);
 		void handleDVC();
 		void printError(_NvAPI_Status status);
 		bool unloadLibrary();
-		int getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length);
+		void *getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length);
 		int getGpuSystemType(int *gpuHandle);
 	};
 }

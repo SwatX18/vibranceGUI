@@ -4,27 +4,36 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace vibrance.GUI.NVIDIA
 {
     /// <summary>
     /// Binding-layer regression coverage for the vibranceDLL.dll-from-source rebuild (see
-    /// native\vibranceDLL): proves the embedded resource is the right shape (§N2 is the tripwire a
-    /// future x64 slice must trip if the DLL is not rebuilt for that platform too), that every
-    /// NvidiaDynamicVibranceProxy [DllImport] still resolves and prelinks cleanly, that every one
-    /// of them still declares CallingConvention.Cdecl (§N18 - resolving is not enough on its own,
-    /// see that check's own comment), that there are still exactly 12 of them (§N19), and that the
-    /// original 12 mangled __thiscall exports are still present - i.e. that native/vibranceDLL's
-    /// vibrance_c.h/.cpp wrapper layer stayed additive and nothing was removed from vibrance.h/.cpp.
+    /// native\vibranceDLL): proves the right one of the two embedded builds is picked for this
+    /// process's bitness (§N0 tests the selection itself; §N2 is the complementary tripwire - a
+    /// 64-bit build that still ships the x86 DLL, or vice versa, fails there even if N0's own logic
+    /// were somehow wrong too), that every NvidiaDynamicVibranceProxy [DllImport] still resolves and
+    /// prelinks cleanly, that every one of them still declares CallingConvention.Cdecl (§N18 -
+    /// resolving is not enough on its own, see that check's own comment), that there are still
+    /// exactly 12 of them (§N19), that every one of their parameter/return types is exactly what the
+    /// handle-width fix expects (§N20 - resolving and prelinking cleanly is not enough here either;
+    /// see that check's own comment for why), that a value actually round-trips intact through the
+    /// real ABI boundary with no GPU attached (§N23 - the one check here Marshal.Prelink cannot
+    /// substitute for), and that the original 12 mangled __thiscall exports are still present - i.e.
+    /// that native/vibranceDLL's vibrance_c.h/.cpp wrapper layer stayed additive and nothing was
+    /// removed from vibrance.h/.cpp.
     ///
     /// No GUI, no live GPU driver, no display write: the DLL's own load-time imports are only
     /// KERNEL32/USER32 (VERIFIED for this build - no VCRUNTIME/MSVCP/api-ms-win-crt-*, see
-    /// native/vibranceDLL's README.md item 3), and nvapi.dll is resolved dynamically inside
-    /// initializeLibrary(), which this fixture never calls. Marshal.Prelink/PrelinkAll resolve
+    /// native/vibranceDLL's README.md item 3), and nvapi.dll/nvapi64.dll is resolved dynamically
+    /// inside initializeLibrary(), which this fixture never calls. Marshal.Prelink/PrelinkAll resolve
     /// entry points and build marshalling stubs; they do not invoke anything.
     ///
     /// Critically, this does NOT call CommonUtils.LoadUnmanagedLibraryFromResource - that writes
-    /// %APPDATA%\vibranceGUI\vibranceDLL.dll, which a real vibranceGUI instance already running on
+    /// %APPDATA%\vibranceGUI\x86\vibranceDLL.dll or \x64\vibranceDLL.dll (see Program.cs's NVIDIA
+    /// startup branch for why the file name itself has to stay "vibranceDLL.dll" in both
+    /// architecture-specific directories), which a real vibranceGUI instance already running on
     /// this machine has open, so File.WriteAllBytes against it throws a sharing-violation
     /// IOException that has nothing to do with whether this binding layer is correct. A normal
     /// --selftest-nvapi run cannot actually hit that collision - the single-instance mutex
@@ -32,8 +41,9 @@ namespace vibrance.GUI.NVIDIA
     /// at :120), so a second launch bails out long before reaching this fixture. What DOES reach it
     /// while a real instance is running is the headless reflection harness (see the docs guide's
     /// §3.7): it calls NvidiaInteropFixture.Run() directly, bypassing Main() - and therefore the
-    /// mutex - entirely, so the live instance's file lock on %APPDATA%\vibranceGUI\vibranceDLL.dll
-    /// is reachable that way even though a normal second launch never gets there. Instead this
+    /// mutex - entirely, so the live instance's file lock on its own architecture-specific
+    /// %APPDATA%\vibranceGUI\x86\vibranceDLL.dll or \x64\vibranceDLL.dll is reachable that way even
+    /// though a normal second launch never gets there. Instead this
     /// extracts to a fixture-private directory and loads it by absolute path
     /// (kernel32!LoadLibrary(fullPath)) with no SetDllDirectory call at all: once a module is loaded
     /// under a given base file name, Windows' loader satisfies a later bare-name lookup - which is
@@ -46,7 +56,12 @@ namespace vibrance.GUI.NVIDIA
     /// </summary>
     public static class NvidiaInteropFixture
     {
-        private const string EmbeddedDllResourceName = "vibrance.GUI.NVIDIA.vibranceDLL.dll";
+        // Which of the two embedded builds (see native/vibranceDLL/README.md) this process should
+        // use - computed the same way Program.cs's real NVIDIA startup branch does, by calling the
+        // same method, not a hand-copied mirror of it. CheckResourceNameMatchesProcessBitness below
+        // is the check that this selection itself is correct.
+        private static readonly string EmbeddedDllFileName = Program.ResolveNvidiaAdapterResourceName();
+        private static readonly string EmbeddedDllResourceName = "vibrance.GUI.NVIDIA." + EmbeddedDllFileName;
 
         // The 12 mangled __thiscall export names NvidiaDynamicVibranceProxy.cs bound before
         // work/native-dll-from-source moved it to the undecorated vibrance_* names (see
@@ -54,21 +69,52 @@ namespace vibrance.GUI.NVIDIA
         // longer references them at all - specifically so N17 below proves the *native* side still
         // carries them (i.e. vibrance.h/.cpp were genuinely left untouched), not merely that nobody
         // deleted the new wrapper layer.
-        private static readonly string[] OriginalMangledExportNames =
+        //
+        // __thiscall's own mangling is pointer-size-dependent - "QAE" (32-bit) vs "QEAA" (64-bit),
+        // and every pointer/reference argument gains an extra "E" (e.g. "PAH" -> "PEAH") - so x86
+        // and x64 builds of the identical C++ source produce two different, equally valid name
+        // sets. Both were read directly off this build's own rebuilt DLL (see native/vibranceDLL's
+        // README.md) with the PE export-table parser used to verify Task 2 of the x64 port, not
+        // hand-derived from the mangling rules, so a transcription mistake here would show up as a
+        // [FAIL] rather than silently passing against itself.
+        // Re-pinned for the handle-width fix (native/vibranceDLL/README.md item 8): an NvAPI handle
+        // that used to mangle as "int" now mangles as "void *" ("H" -> "PAX"/"PEAX"), which changed
+        // several of these names from what a pre-width-fix rebuild produced. Still read directly off
+        // this build's own rebuilt DLL, not hand-derived from the mangling rules.
+        private static readonly string[] OriginalMangledExportNamesX86 =
         {
             "?initializeLibrary@vibrance@vibranceDLL@@QAE_NXZ",
             "?unloadLibrary@vibrance@vibranceDLL@@QAE_NXZ",
             "?getActiveOutputs@vibrance@vibranceDLL@@QAEHQAPAH0@Z",
             "?enumeratePhsyicalGPUs@vibrance@vibranceDLL@@QAEXQAPAH@Z",
             "?getGpuName@vibrance@vibranceDLL@@QAE_NQAPAHPAD@Z",
-            "?getDVCInfo@vibrance@vibranceDLL@@QAE_NPAUNV_DISPLAY_DVC_INFO@12@H@Z",
-            "?enumerateNvidiaDisplayHandle@vibrance@vibranceDLL@@QAEHH@Z",
-            "?setDVCLevel@vibrance@vibranceDLL@@QAE_NHH@Z",
+            "?getDVCInfo@vibrance@vibranceDLL@@QAE_NPAUNV_DISPLAY_DVC_INFO@12@PAX@Z",
+            "?enumerateNvidiaDisplayHandle@vibrance@vibranceDLL@@QAEPAXH@Z",
+            "?setDVCLevel@vibrance@vibranceDLL@@QAE_NPAXH@Z",
             "?isWindowActive@vibrance@vibranceDLL@@QAE_NPAPAUHWND__@@@Z",
-            "?equalsDVCLevel@vibrance@vibranceDLL@@QAE_NHH@Z",
+            "?equalsDVCLevel@vibrance@vibranceDLL@@QAE_NPAXH@Z",
             "?getGpuSystemType@vibrance@vibranceDLL@@QAEHPAH@Z",
-            "?getAssociatedNvidiaDisplayHandle@vibrance@vibranceDLL@@QAEHPBDH@Z",
+            "?getAssociatedNvidiaDisplayHandle@vibrance@vibranceDLL@@QAEPAXPBDH@Z",
         };
+
+        private static readonly string[] OriginalMangledExportNamesX64 =
+        {
+            "?initializeLibrary@vibrance@vibranceDLL@@QEAA_NXZ",
+            "?unloadLibrary@vibrance@vibranceDLL@@QEAA_NXZ",
+            "?getActiveOutputs@vibrance@vibranceDLL@@QEAAHQEAPEAH0@Z",
+            "?enumeratePhsyicalGPUs@vibrance@vibranceDLL@@QEAAXQEAPEAH@Z",
+            "?getGpuName@vibrance@vibranceDLL@@QEAA_NQEAPEAHPEAD@Z",
+            "?getDVCInfo@vibrance@vibranceDLL@@QEAA_NPEAUNV_DISPLAY_DVC_INFO@12@PEAX@Z",
+            "?enumerateNvidiaDisplayHandle@vibrance@vibranceDLL@@QEAAPEAXH@Z",
+            "?setDVCLevel@vibrance@vibranceDLL@@QEAA_NPEAXH@Z",
+            "?isWindowActive@vibrance@vibranceDLL@@QEAA_NPEAPEAUHWND__@@@Z",
+            "?equalsDVCLevel@vibrance@vibranceDLL@@QEAA_NPEAXH@Z",
+            "?getGpuSystemType@vibrance@vibranceDLL@@QEAAHPEAH@Z",
+            "?getAssociatedNvidiaDisplayHandle@vibrance@vibranceDLL@@QEAAPEAXPEBDH@Z",
+        };
+
+        private static readonly string[] OriginalMangledExportNames =
+            IntPtr.Size == 4 ? OriginalMangledExportNamesX86 : OriginalMangledExportNamesX64;
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr LoadLibrary(string lpFileName);
@@ -81,6 +127,8 @@ namespace vibrance.GUI.NVIDIA
             Checklist checklist = new Checklist();
             checklist.Lines.Add("vibranceGUI NVIDIA interop self test");
             checklist.Lines.Add(string.Empty);
+
+            CheckResourceNameMatchesProcessBitness(checklist);
 
             byte[] resourceBytes = CheckResourceExists(checklist);
             if (resourceBytes == null)
@@ -112,16 +160,36 @@ namespace vibrance.GUI.NVIDIA
             CheckOriginalMangledExportsStillResolve(checklist, hModule);
             CheckEveryBoundMethodIsCdecl(checklist);
             CheckBoundMethodCount(checklist);
+            CheckDllImportTypesMatchExpectedSignatures(checklist);
+            CheckAbiEchoHandleRoundTrips(checklist);
 
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
             return checklist.Lines;
         }
 
+        // N0 - Slice 2: proves the *selection* itself picks the right resource for this process's
+        // bitness, not merely that whichever resource happens to end up embedded loads correctly.
+        // Calls Program.ResolveNvidiaAdapterResourceName() directly - it is internal, not private,
+        // so (unlike CliOptionsFixture's reflection-based call into buildFormTitleText) no
+        // reflection is needed here - the same reasoning as MatchingFixture calling
+        // ApplicationSettingMatcher directly: a hand-copied mirror of the bitness check here could
+        // drift from what Program.cs actually runs and this fixture would never notice.
+        private static void CheckResourceNameMatchesProcessBitness(Checklist checklist)
+        {
+            checklist.Lines.Add("N0: the embedded resource picked matches this process's bitness:");
+            string expected = Environment.Is64BitProcess ? "vibranceDLL64.dll" : "vibranceDLL.dll";
+            string actual = Program.ResolveNvidiaAdapterResourceName();
+            checklist.Check(actual == expected,
+                string.Format("Program.ResolveNvidiaAdapterResourceName()=\"{0}\" expected=\"{1}\" (Is64BitProcess={2})",
+                    actual, expected, Environment.Is64BitProcess));
+        }
+
         // N1.
         private static byte[] CheckResourceExists(Checklist checklist)
         {
-            checklist.Lines.Add("N1: embedded vibranceDLL.dll resource exists and is non-empty:");
+            checklist.Lines.Add(string.Empty);
+            checklist.Lines.Add("N1: embedded " + EmbeddedDllFileName + " resource exists and is non-empty:");
             using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(EmbeddedDllResourceName))
             {
                 if (stream == null)
@@ -323,6 +391,125 @@ namespace vibrance.GUI.NVIDIA
                 }
             }
             return methods;
+        }
+
+        // N20 - Slice 2 (handle-width fix, native/vibranceDLL/README.md item 8): Marshal.Prelink
+        // (N4-N15) cannot catch a wrong-but-marshalable parameter width on its own - it JITs the
+        // marshalling stub without calling it, and an undecorated __cdecl export carries no type
+        // information to check a C# declaration against, so a handle parameter left "int" instead
+        // of widened to "IntPtr" would resolve and prelink cleanly and every check above would stay
+        // green. This reflects over the same [DllImport]-bound methods N4-N15 already found and
+        // asserts each one's parameter and return types are exactly what they should be post-fix -
+        // the table this mirrors is the one in docs/CODEBASE_GUIDE.md's §7.3.
+        private static void CheckDllImportTypesMatchExpectedSignatures(Checklist checklist)
+        {
+            checklist.Lines.Add(string.Empty);
+            checklist.Lines.Add("N20: every bound method's parameter and return types match the expected (post-width-fix) signature:");
+
+            Dictionary<string, ExpectedSignature> expected = BuildExpectedSignatures();
+            foreach (MethodInfo method in GetBoundMethods().OrderBy(m => m.Name))
+            {
+                ExpectedSignature signature;
+                if (!expected.TryGetValue(method.Name, out signature))
+                {
+                    checklist.Check(false, method.Name + ": no expected signature recorded for this method - update this check");
+                    continue;
+                }
+
+                ParameterInfo[] parameters = method.GetParameters();
+                bool returnTypeMatches = method.ReturnType == signature.ReturnType;
+                bool parameterCountMatches = parameters.Length == signature.ParameterTypes.Length;
+                bool parameterTypesMatch = parameterCountMatches;
+                if (parameterCountMatches)
+                {
+                    for (int i = 0; i < parameters.Length; i++)
+                    {
+                        if (parameters[i].ParameterType != signature.ParameterTypes[i])
+                        {
+                            parameterTypesMatch = false;
+                        }
+                    }
+                }
+
+                checklist.Check(returnTypeMatches && parameterTypesMatch,
+                    string.Format("{0}: return={1} params=({2}), expected return={3} params=({4})",
+                        method.Name,
+                        method.ReturnType.Name,
+                        string.Join(", ", parameters.Select(p => p.ParameterType.Name).ToArray()),
+                        signature.ReturnType.Name,
+                        string.Join(", ", signature.ParameterTypes.Select(t => t.Name).ToArray())));
+            }
+        }
+
+        // One (returnType, parameterTypes) pair per bound method name, keyed by the C# method name
+        // (not the native EntryPoint) since that is what GetBoundMethods()/MethodInfo.Name expose.
+        // IntPtr appears everywhere a handle crosses the boundary; a plain "int" is only ever
+        // correct for a genuinely 32-bit value (an index, a level, or getActiveOutputs'/
+        // getDVCInfo's own output-mask-shaped values, none of which are handles).
+        private static Dictionary<string, ExpectedSignature> BuildExpectedSignatures()
+        {
+            Dictionary<string, ExpectedSignature> expected = new Dictionary<string, ExpectedSignature>();
+            expected["initializeLibrary"] = new ExpectedSignature(typeof(bool));
+            expected["unloadLibrary"] = new ExpectedSignature(typeof(bool));
+            expected["getActiveOutputs"] = new ExpectedSignature(typeof(int), typeof(IntPtr[]), typeof(IntPtr[]));
+            expected["enumeratePhsyicalGPUs"] = new ExpectedSignature(typeof(void), typeof(IntPtr[]));
+            expected["getGpuName"] = new ExpectedSignature(typeof(bool), typeof(IntPtr[]), typeof(StringBuilder));
+            expected["getDVCInfo"] = new ExpectedSignature(typeof(bool), typeof(NvDisplayDvcInfo).MakeByRefType(), typeof(IntPtr));
+            expected["enumerateNvidiaDisplayHandle"] = new ExpectedSignature(typeof(IntPtr), typeof(int));
+            expected["setDVCLevel"] = new ExpectedSignature(typeof(bool), typeof(IntPtr), typeof(int));
+            expected["isWindowActive"] = new ExpectedSignature(typeof(bool), typeof(IntPtr).MakeByRefType());
+            expected["equalsDVCLevel"] = new ExpectedSignature(typeof(bool), typeof(IntPtr), typeof(int));
+            expected["getGpuSystemType"] = new ExpectedSignature(typeof(NvSystemType), typeof(IntPtr));
+            expected["getAssociatedNvidiaDisplayHandle"] = new ExpectedSignature(typeof(IntPtr), typeof(string), typeof(int));
+            return expected;
+        }
+
+        private class ExpectedSignature
+        {
+            public ExpectedSignature(Type returnType, params Type[] parameterTypes)
+            {
+                ReturnType = returnType;
+                ParameterTypes = parameterTypes;
+            }
+
+            public Type ReturnType { get; private set; }
+            public Type[] ParameterTypes { get; private set; }
+        }
+
+        // Test-only P/Invoke into vibrance_abi_echoHandle (see that export's own comment in
+        // vibrance_c.h) - deliberately declared here, not on NvidiaDynamicVibranceProxy, so it is
+        // never counted among N19's twelve production bindings.
+        [DllImport(
+            "vibranceDLL.dll",
+            EntryPoint = "vibrance_abi_echoHandle",
+            CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr vibrance_abi_echoHandle(IntPtr handle);
+
+        // N23 - the one check in this fixture that can catch a genuine handle-width regression with
+        // no GPU attached. N20 only pins the *declared* C# types; Marshal.Prelink itself proves
+        // those resolve and marshal without throwing even when the declared width is wrong (see
+        // N20's own comment) - it never actually calls anything. This instead calls the trivial
+        // native passthrough and checks that the actual bytes crossing the real __cdecl ABI
+        // boundary survive intact, using a value with the high 32 bits set on x64 - exactly what a
+        // C# "int" parameter/return (instead of IntPtr) would silently truncate.
+        private static void CheckAbiEchoHandleRoundTrips(Checklist checklist)
+        {
+            checklist.Lines.Add(string.Empty);
+            checklist.Lines.Add("N23: vibrance_abi_echoHandle round-trips a handle-shaped value with the high bits set intact:");
+
+            IntPtr testValue = IntPtr.Size == 8
+                ? new IntPtr(unchecked((long)0x1122334455667788))
+                : new IntPtr(unchecked((int)0x12345678));
+            try
+            {
+                IntPtr echoed = vibrance_abi_echoHandle(testValue);
+                checklist.Check(echoed == testValue,
+                    string.Format("sent 0x{0:X}, got back 0x{1:X}", testValue.ToInt64(), echoed.ToInt64()));
+            }
+            catch (Exception ex)
+            {
+                checklist.Check(false, "vibrance_abi_echoHandle threw " + ex.GetType().Name + ": " + ex.Message);
+            }
         }
 
         private class Checklist

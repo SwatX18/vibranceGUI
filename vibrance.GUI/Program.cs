@@ -2,6 +2,7 @@
 using System.Runtime.InteropServices;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -319,9 +320,12 @@ namespace vibrance.GUI
 
             if (effectiveAdapter == GraphicsAdapter.Amd)
             {
-                Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy = (x, y) => new AmdDynamicVibranceProxy(Environment.Is64BitOperatingSystem
-                    ? new AmdAdapter64()
-                    : (IAmdAdapter)new AmdAdapter32(), x, y);
+                // Process bitness, not OS bitness - see the comment on GraphicsAdapter's
+                // _amdDllName for why (adl64's "atiadlxy.dll" has no 64-bit build at all).
+                IAmdAdapter amdAdapter = Environment.Is64BitProcess
+                    ? (IAmdAdapter)new AmdAdapter32()
+                    : (Environment.Is64BitOperatingSystem ? (IAmdAdapter)new AmdAdapter64() : new AmdAdapter32());
+                Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy = (x, y) => new AmdDynamicVibranceProxy(amdAdapter, x, y);
                 int? amdCliVibranceLevelOverride = ResolveCliVibranceOverride(vibranceRequest, GraphicsAdapter.Amd,
                     AmdDynamicVibranceProxy.AmdMinLevel, AmdDynamicVibranceProxy.AmdMaxLevel);
                 vibranceGui = new VibranceGUI(getProxy,
@@ -335,12 +339,35 @@ namespace vibrance.GUI
             }
             else if (effectiveAdapter == GraphicsAdapter.Nvidia)
             {
-                const string nvidiaAdapterName = "vibranceDLL.dll";
-                string resourceName = $"{typeof(Program).Namespace}.NVIDIA.{nvidiaAdapterName}";
+                // Two native builds of the same source are embedded (see
+                // native/vibranceDLL/README.md); pick the one matching this process, not the OS -
+                // an x86 process cannot call into an x64 DLL or vice versa. The embedded resource
+                // name and the on-disk extraction name are kept as separate variables (rather than
+                // one name serving both roles, as before): NvidiaDynamicVibranceProxy.cs's
+                // [DllImport] attributes hardcode the literal "vibranceDLL.dll" (out of scope to
+                // change here - see native/vibranceDLL/README.md), so the *file name* on disk must
+                // stay "vibranceDLL.dll" for both architectures. What has to differ per architecture
+                // is the *directory* each one is extracted into - %APPDATA%\vibranceGUI\x86 or \x64
+                // - or an x86 and x64 build run on the same machine would fight over one file and
+                // File.WriteAllBytes would throw a sharing violation against whichever copy is
+                // already loaded. Loading by the resulting absolute path still satisfies the later
+                // bare "vibranceDLL.dll" DllImport lookups, the same way NvidiaInteropFixture's own
+                // absolute-path LoadLibrary does (see its N3 comment) - Windows' loader matches an
+                // already-loaded module by base file name regardless of which directory it came
+                // from, so no SetDllDirectory change is needed either.
+                string nvidiaAdapterResourceName = ResolveNvidiaAdapterResourceName();
+                string nvidiaAdapterDirectory = Path.Combine(CommonUtils.GetVibrance_GUI_AppDataPath(),
+                    Environment.Is64BitProcess ? "x64" : "x86");
+                if (!Directory.Exists(nvidiaAdapterDirectory))
+                {
+                    Directory.CreateDirectory(nvidiaAdapterDirectory);
+                }
+                string nvidiaAdapterFileName = Path.Combine(nvidiaAdapterDirectory, "vibranceDLL.dll");
+                string resourceName = String.Format("{0}.NVIDIA.{1}", typeof(Program).Namespace, nvidiaAdapterResourceName);
                 CommonUtils.LoadUnmanagedLibraryFromResource(
                     Assembly.GetExecutingAssembly(),
                     resourceName,
-                    nvidiaAdapterName);
+                    nvidiaAdapterFileName);
                 Marshal.PrelinkAll(typeof(NvidiaDynamicVibranceProxy));
 
                 int? nvidiaCliVibranceLevelOverride = ResolveCliVibranceOverride(vibranceRequest, GraphicsAdapter.Nvidia,
@@ -542,6 +569,16 @@ namespace vibrance.GUI
             // 64-bit Windows - the common case - would claim "x64" while actually being x86.
             string architecture = Environment.Is64BitProcess ? "x64" : "x86";
             return String.Format(" ({0}, {1}, {2}) {3}", adapter.ToString().ToUpper(), architecture, Application.ProductVersion, forcedExecution);
+        }
+
+        // Pulled out of the NVIDIA startup branch above so NvidiaInteropFixture can reach it by
+        // reflection (the same reasoning as buildFormTitleText just above) and assert the selection
+        // itself, not merely that whichever resource happens to be embedded loads. Environment.
+        // Is64BitProcess, not Is64BitOperatingSystem, for the same reason as buildFormTitleText's
+        // architecture token: an x86 build on 64-bit Windows must still pick the x86 DLL.
+        internal static string ResolveNvidiaAdapterResourceName()
+        {
+            return Environment.Is64BitProcess ? "vibranceDLL64.dll" : "vibranceDLL.dll";
         }
     }
 }

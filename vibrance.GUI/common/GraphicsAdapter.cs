@@ -76,9 +76,31 @@ namespace vibrance.GUI.common
         private static readonly string[] AmdAdapterNameTokens = { "AMD", "Radeon", "ATI" };
 
         private const string _nvidiaDllName = "nvapi.dll";
-        private static readonly string _amdDllName = Environment.Is64BitOperatingSystem
-            ? AMD.vendor.adl64.AdlImport.AtiadlFileName
-            : AMD.vendor.adl32.AdlImport.AtiadlFileName;
+        // NOTE: the adl32/adl64 namespace names are inverted relative to the file each one loads -
+        // adl64.AdlImport binds "atiadlxy.dll", a 32-bit-only bridge binary that exists nowhere but
+        // SysWOW64 (no 64-bit build exists at all), while adl32.AdlImport binds "atiadlxx.dll",
+        // which System32/SysWOW64 file redirection resolves to the 64-bit or 32-bit copy depending
+        // on the *calling process's* bitness. An x64 process therefore has exactly one option that
+        // can load at all: adl32 -> "atiadlxx.dll". A 32-bit process keeps picking whichever file it
+        // always has (still gated on OS bitness, unchanged from before) since the two ADL binding
+        // sets are otherwise byte-identical (no 64-bit-shaped structs) and both already work for a
+        // 32-bit process. Previously this whole selection was keyed off
+        // Environment.Is64BitOperatingSystem, so an x64 process on a 64-bit OS picked adl64 ->
+        // "atiadlxy.dll", which has no 64-bit build and fails to load outright.
+        private static readonly string _amdDllName = Environment.Is64BitProcess
+            ? AMD.vendor.adl32.AdlImport.AtiadlFileName
+            : (Environment.Is64BitOperatingSystem
+                ? AMD.vendor.adl64.AdlImport.AtiadlFileName
+                : AMD.vendor.adl32.AdlImport.AtiadlFileName);
+
+        /// <summary>
+        /// The ADL file name resolved above, exposed read-only so GraphicsAdapterFixture can assert
+        /// the process-bitness selection without touching any driver file.
+        /// </summary>
+        public static string AmdDllName
+        {
+            get { return _amdDllName; }
+        }
 
 
         public static GraphicsAdapter GetAdapter()
@@ -95,7 +117,12 @@ namespace vibrance.GUI.common
             }
             if (IsAdapterAvailable(_amdDllName))
             {
-                IAmdAdapter amdAdapter = Environment.Is64BitOperatingSystem ? (IAmdAdapter)new AmdAdapter64() :new AmdAdapter32();
+                // Mirrors the _amdDllName selection above (see the comment there for why this is
+                // process bitness, not OS bitness, and why AmdAdapter64/adl64 is only reachable for
+                // a 32-bit process).
+                IAmdAdapter amdAdapter = Environment.Is64BitProcess
+                    ? (IAmdAdapter)new AmdAdapter32()
+                    : (Environment.Is64BitOperatingSystem ? (IAmdAdapter)new AmdAdapter64() : new AmdAdapter32());
                 if (amdAdapter.IsAvailable())
                 {
                     return GraphicsAdapter.Amd;

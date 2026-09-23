@@ -119,13 +119,13 @@ namespace vibrance.GUI.common
 
             IntPtr desktop = GetDesktopWindow();
             string gameDeviceName = Screen.FromHandle(desktop).DeviceName;
-            int seededHandle = device.HandleFor(gameDeviceName);
+            IntPtr seededHandle = device.HandleFor(gameDeviceName);
 
             VibranceInfo vibranceInfo = new VibranceInfo();
             vibranceInfo.isWindowsLevelKnown = true;
             vibranceInfo.userVibranceSettingDefault = 77;
             vibranceInfo.affectPrimaryMonitorOnly = false;
-            vibranceInfo.displayHandles = new List<int> { seededHandle };
+            vibranceInfo.displayHandles = new List<IntPtr> { seededHandle };
             NvidiaDynamicVibranceProxy.ResetForTests(device, vibranceInfo, settings);
 
             bool applied = NewNvidiaProxy().ApplyStartupForegroundProfile(desktop, "TestStartupS2", null);
@@ -443,13 +443,13 @@ namespace vibrance.GUI.common
         // device calls" assertion (S2, S3, S4) does not have to infer it from LevelFor alone.
         private class FakeNvidiaVibranceDevice : INvidiaVibranceDevice
         {
-            private readonly Dictionary<string, int> _handlesByDeviceName = new Dictionary<string, int>();
-            private readonly Dictionary<int, int> _levelsByHandle = new Dictionary<int, int>();
+            private readonly Dictionary<string, IntPtr> _handlesByDeviceName = new Dictionary<string, IntPtr>();
+            private readonly Dictionary<IntPtr, int> _levelsByHandle = new Dictionary<IntPtr, int>();
             private int _nextHandle = 1;
 
             public int SetLevelCallCount;
 
-            public int HandleFor(string deviceName)
+            public IntPtr HandleFor(string deviceName)
             {
                 return ResolveOrAssign(deviceName);
             }
@@ -462,12 +462,12 @@ namespace vibrance.GUI.common
                 return _levelsByHandle.TryGetValue(ResolveOrAssign(deviceName), out level) ? level : int.MinValue;
             }
 
-            private int ResolveOrAssign(string deviceName)
+            private IntPtr ResolveOrAssign(string deviceName)
             {
-                int handle;
+                IntPtr handle;
                 if (!_handlesByDeviceName.TryGetValue(deviceName, out handle))
                 {
-                    handle = _nextHandle++;
+                    handle = new IntPtr(_nextHandle++);
                     _handlesByDeviceName[deviceName] = handle;
                 }
                 return handle;
@@ -478,22 +478,22 @@ namespace vibrance.GUI.common
                 return true;
             }
 
-            public int TryResolveDisplayHandle(string deviceName)
+            public IntPtr TryResolveDisplayHandle(string deviceName)
             {
                 if (string.IsNullOrEmpty(deviceName))
                 {
-                    return -1;
+                    return NvidiaDynamicVibranceProxy.InvalidDisplayHandle;
                 }
                 return ResolveOrAssign(deviceName);
             }
 
-            public bool IsAtLevel(int displayHandle, int level)
+            public bool IsAtLevel(IntPtr displayHandle, int level)
             {
                 int current;
                 return _levelsByHandle.TryGetValue(displayHandle, out current) && current == level;
             }
 
-            public bool SetLevel(int displayHandle, int level)
+            public bool SetLevel(IntPtr displayHandle, int level)
             {
                 SetLevelCallCount++;
                 _levelsByHandle[displayHandle] = level;
