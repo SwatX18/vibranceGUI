@@ -9,13 +9,15 @@
 > **Provenance.** Synthesised from two full-source archaeology passes over `master` as it then stood,
 > commit `919a9f2` (assembly version `2.3.1.1`), performed 2026-08-24, plus direct reading of the
 > source. It has been kept current with `master` since, and describes `688ca85` (version `2.7.0`,
-> `vibrance.GUI/Properties/AssemblyInfo.cs:35-36`). Statements about the prebuilt native
-> `vibranceDLL.dll` come from parsing its PE headers and hand-decoding x86 at named RVAs; they are
-> marked **VERIFIED (binary)**. Claims that could not be confirmed by execution are marked
-> **INFERENCE** or **UNCERTAIN** and must not be repeated as fact.
+> `vibrance.GUI/Properties/AssemblyInfo.cs:35-36`), plus `work/native-dll-from-source` on top of that.
+> Statements about `vibranceDLL.dll` as it shipped through `2.7.0` come from parsing its PE headers and
+> hand-decoding x86 at named RVAs; they are marked **VERIFIED (binary)** and, per §7.2, describe that
+> specific historical binary except where noted as still true of the DLL as built from source today.
+> Claims that could not be confirmed by execution are marked **INFERENCE** or **UNCERTAIN** and must not
+> be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 601 automated checks across twelve fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 636 automated checks across thirteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -104,7 +106,7 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
   app shows an error and exits.
 - **NVIDIA laptops** are declared unsupported by the README, but the code *no longer enforces this*:
   the laptop rejection message exists as a constant and is never shown
-  (`vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:159-161` (`NvapiErrorSystypeUnsupported`), dead — see [§12](#12-known-defects--risk-register)).
+  (`vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:185-187` (`NvapiErrorSystypeUnsupported`), dead — see [§12](#12-known-defects--risk-register)).
 - **It never asks for administrator rights.** There is no application manifest at all, so it runs
   `asInvoker`. One visible consequence: elevated games do not show up in the built-in process picker,
   because opening their process handle fails (`vibrance.GUI/common/ProcessExplorer.cs:75-76`, `GetPathFromProcessId`).
@@ -119,8 +121,8 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
 
 | I want to change… | Go to |
 |---|---|
-| What happens when a game gains or loses focus (the heart of the app) | `vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:263-394` (`OnWinEventHook`) and `vibrance.GUI/AMD/AmdDynamicVibranceProxy.cs:146-246` (`OnWinEventHook`) |
-| How a foreground window is matched to a watched game | `ApplicationSettingMatcher.FindMatch` (`vibrance.GUI/common/ApplicationSettingMatcher.cs:47-83`), called from `NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`) / `AmdDynamicVibranceProxy.cs:152` (`OnWinEventHook`) — exact `ApplicationSetting.Name` vs `ProcessName` first, then the longest `InstallDirectory` that prefixes the process image path |
+| What happens when a game gains or loses focus (the heart of the app) | `vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:289-420` (`OnWinEventHook`) and `vibrance.GUI/AMD/AmdDynamicVibranceProxy.cs:146-246` (`OnWinEventHook`) |
+| How a foreground window is matched to a watched game | `ApplicationSettingMatcher.FindMatch` (`vibrance.GUI/common/ApplicationSettingMatcher.cs:47-83`), called from `NvidiaDynamicVibranceProxy.cs:295` (`OnWinEventHook`) / `AmdDynamicVibranceProxy.cs:152` (`OnWinEventHook`) — exact `ApplicationSetting.Name` vs `ProcessName` first, then the longest `InstallDirectory` that prefixes the process image path |
 | How foreground changes are detected at all | `vibrance.GUI/common/WinEventHook.cs` — one system-wide `SetWinEventHook` ranging `EVENT_SYSTEM_FOREGROUND`..`EVENT_SYSTEM_MINIMIZEEND`, filtered back down to those two events in `WinEventProc` |
 | Which GPU vendor is chosen, and the "both drivers found" dialog | `vibrance.GUI/common/GraphicsAdapter.cs:84-109` (`GetAdapter`) |
 | Slider ranges, defaults, level→label mapping | `vibrance.GUI/Program.cs:294-331` (`Main`) (five numbers per vendor) and `vibrance.GUI/common/SettingsController.cs:246-255` (`ReadVibranceSettings`) (a second, inconsistent copy) |
@@ -130,7 +132,7 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
 | The per-game dialog (ingame level, resolution) | `vibrance.GUI/common/VibranceSettings.cs` |
 | The running-process picker | `vibrance.GUI/common/ProcessExplorer.cs` |
 | Resolution switching / `DispChangeBadFlags` errors | `vibrance.GUI/common/ResolutionHelper.cs:250-383` (`ChangeResolutionEx`) — see [§6.4](#64-the-optional-resolution-switch) |
-| NVIDIA native calls (P/Invoke declarations) | `vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:45-128` — the implementation is a **prebuilt binary from another repository** |
+| NVIDIA native calls (P/Invoke declarations) | `vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:44-154` — the native implementation is built in this repo from vendored source at `native/vibranceDLL/` (§7.2/§7.3) |
 | AMD native calls | `vibrance.GUI/AMD/vendor/AmdAdapter32.cs` (and its clone `AmdAdapter64.cs`) plus `vibrance.GUI/AMD/vendor/adl32/`, `adl64/` |
 | Startup wiring / which proxy gets built | `vibrance.GUI/Program.cs` — the only composition root |
 | Adding a source file to the build | `vibrance.GUI/vibrance.GUI.csproj:91-232` (`Compile`) — pre-SDK project, every file listed by hand |
@@ -150,22 +152,29 @@ not persist that choice across restarts (see [§9.4](#94-value-clamping-on-load)
    just taken focus. `ResolutionHelper.cs` no longer has a `using System.Windows.Forms` or any
    `MessageBox` call site (the word itself still appears once, in a doc comment describing this very
    fact); see [§6.4](#64-the-optional-resolution-switch) and **D2**.
-3. **The build is x86-only, and stays that way until someone rebuilds the native DLL.**
+3. **The build is x86-only, and stays that way until someone retargets the native DLL too.**
    `vibrance.GUI/NVIDIA/vibranceDLL.dll` is a PE32 i386 image (VERIFIED binary), and `PlatformTarget`
-   is `x86` in all four configurations (`vibrance.GUI.csproj:32,43,64,73`, `PlatformTarget`).
-4. **The NVIDIA native layer is not in this repository.** `vibranceDLL.dll` is a checked-in binary
-   built 2017-01-02 from `juvlarN/vibranceDLL` (embedded PDB path, VERIFIED binary). Its 12 bound
-   exports are the entire NVIDIA capability surface; adding one means rebuilding that other project.
+   is `x86` in all four configurations (`vibrance.GUI.csproj:32,43,64,73`, `PlatformTarget`). As of
+   `work/native-dll-from-source` the native binding mechanism itself no longer stands in the way of a
+   64-bit build (§7.3, §7.5) - what still does is that nothing has retargeted `PlatformTarget`, and the
+   native project has not been built `Release|x64`.
+4. **The NVIDIA native layer used to live outside this repository - it no longer does.** Before
+   `work/native-dll-from-source`, `vibranceDLL.dll` was a checked-in binary built 2017-01-02 from
+   `juvlarN/vibranceDLL` (embedded PDB path, VERIFIED binary), and its 12 bound exports were the entire
+   NVIDIA capability surface with no way to add to them from this repository. The DLL is now built here
+   from vendored source at `native/vibranceDLL/` (§7.2); adding a capability means adding a method to
+   `vibranceDLL::vibrance` and a wrapper in `vibrance_c.h`/`.cpp`, then rebuilding in place (§13.2) - no
+   other project involved.
 5. **NVIDIA proxy state is `static`.** `_vibranceInfo`, `_applicationSettings`,
    `_windowsResolutionSettings`, `_gameScreen` and the hook handler are all static
-   (`NvidiaDynamicVibranceProxy.cs:165-169,263`, `_vibranceInfo`), making the class a de-facto singleton — a second
+   (`NvidiaDynamicVibranceProxy.cs:191-195,289`, `_vibranceInfo`), making the class a de-facto singleton — a second
    instance silently clobbers the first. The AMD proxy is instance-scoped **except** `_gameScreen`
    (`AmdDynamicVibranceProxy.cs:24`, `_gameScreen`).
 
 Runner-up, because it wastes a lot of debugging time: **`SetVibranceIngameLevel` is a no-op.** Both
 implementations write `VibranceInfo.userVibranceSettingActive`, and *nothing in the solution ever reads
 that field*. The intended live preview while dragging the ingame slider does not work
-(`NvidiaDynamicVibranceProxy.cs:799-802` (`SetVibranceIngameLevel`), `AmdDynamicVibranceProxy.cs:108-111`, `SetVibranceIngameLevel`).
+(`NvidiaDynamicVibranceProxy.cs:852-855` (`SetVibranceIngameLevel`), `AmdDynamicVibranceProxy.cs:108-111`, `SetVibranceIngameLevel`).
 
 ### 2.3 Repo state: this is a fork, and `master` is current
 
@@ -210,7 +219,7 @@ Read this before basing work on `master` or trying to reproduce a user's bug rep
 | Project style | pre-SDK MSBuild, `ToolsVersion 4.0`, every source file listed explicitly (`csproj:91-225`, `Compile`) |
 | Solution | `vibrance.GUI.sln`, format 12.00, "# Visual Studio 2012", one project |
 | NuGet packages | none, as of v2.6.0 — `Fody`, `Costura.Fody`, and the unused `CommonServiceLocator` were all removed; the build requires no NuGet restore |
-| Native dependencies | `nvapi.dll` (NVIDIA, resolved dynamically inside the prebuilt DLL); `atiadlxy.dll` / `atiadlxx.dll` (AMD, static `DllImport`); plus `user32`, `kernel32`, `psapi`, `advapi32` |
+| Native dependencies | `nvapi.dll` (NVIDIA, resolved dynamically inside `vibranceDLL.dll`, itself now built in this repo from `native/vibranceDLL/` — §7.2); `atiadlxy.dll` / `atiadlxx.dll` (AMD, static `DllImport`); plus `user32`, `kernel32`, `psapi`, `advapi32` |
 | Size | 64 tracked files in the repo; 58 items in the project; 48 `.cs` files, ~4,622 lines of C# |
 
 ### 3.2 Building
@@ -229,7 +238,7 @@ Because the project targets `v4.0`, you need a toolchain that can still target .
 **A C# 6 compiler is mandatory despite the 4.0 target framework.** The solution header says "Visual
 Studio 2012", but the source uses interpolated strings (`Program.cs:313` (`Main`), `VibranceGUI.cs:577` (`backgroundWorker_ProgressChanged`),
 `VibranceSettings.cs:247`, `reloadTitle`) and a get-only auto-property initialiser
-(`NVIDIA/NvidiaDynamicVibranceProxy.cs:823` (`GraphicsAdapter`) — `public GraphicsAdapter GraphicsAdapter { get; } = GraphicsAdapter.Nvidia;`).
+(`NVIDIA/NvidiaDynamicVibranceProxy.cs:876` (`GraphicsAdapter`) — `public GraphicsAdapter GraphicsAdapter { get; } = GraphicsAdapter.Nvidia;`).
 Building with the VS 2012/2013 compiler fails: target framework and language version are independent.
 
 Output paths by configuration (`csproj:36,46,61,69`, `OutputPath`):
@@ -264,8 +273,7 @@ concrete:
    x64 process because vibranceGUI is running as x86 process."* (`common/ProcessExplorer.cs:63-72`, `GetAllProcesses`).
 
 `IntPtr` being 4 bytes is also load-bearing for some P/Invoke signatures — e.g. `getGpuSystemType` is
-declared taking an `int` in C# where the native side takes an `int*`
-(see [§7.5](#75-the-__thiscall-as-stdcall-binding--the-single-biggest-contributor-hazard)).
+declared taking an `int` in C# where the native side takes an `int*` (**D32**, [§12.4](#124-native-boundary-hazards)).
 
 ### 3.4 The `Debug|Any CPU` trap — with a correction
 
@@ -299,21 +307,29 @@ build now references no NuGet packages at all (§3.2).
 **The native DLL was never Costura's job.** `vibranceDLL.dll` is deployed via plain MSBuild plus
 hand-written extraction, untouched by the Costura removal:
 
-- `vibrance.GUI.csproj:243` (`EmbeddedResource`) — `<EmbeddedResource Include="NVIDIA\vibranceDLL.dll" />`, giving the
+- `vibrance.GUI.csproj:245` (`EmbeddedResource`) — `<EmbeddedResource Include="NVIDIA\vibranceDLL.dll" />`, giving the
   manifest resource name `vibrance.GUI.NVIDIA.vibranceDLL.dll`;
-- `Program.cs:312-317` (`Main`) reconstructs exactly that name and calls
+- `Program.cs:338-343` (`Main`) reconstructs exactly that name and calls
   `CommonUtils.LoadUnmanagedLibraryFromResource(...)`;
 - `AMD/vendor/utils/CommonUtils.cs:20-36` reads the resource, **writes it to
   `%APPDATA%\vibranceGUI\vibranceDLL.dll`, overwriting on every launch**, and calls
   `kernel32!LoadLibrary("vibranceDLL.dll")`, which resolves through the directory registered with
-  `SetDllDirectory` (`Program.cs:260` (`Main`), and again in the `NativeMethods` static constructor,
+  `SetDllDirectory` (`Program.cs:286` (`Main`), and again in the `NativeMethods` static constructor,
   `AMD/vendor/utils/NativeMethods.cs:8-11` — so the call is made twice).
 
 Two consequences. The extraction helper lives in the **AMD** utils namespace but is used only by the
 NVIDIA path — a misfiled utility, not a behavioural bug. And `File.WriteAllBytes` on a locked file
 throws `IOException`, while neither the extraction nor the following
-`Marshal.PrelinkAll(typeof(NvidiaDynamicVibranceProxy))` (`Program.cs:318`, `Main`) sits in a `try`/`catch` — so
-a locked or mismatched DLL is an unhandled exception out of `Main`, not a friendly error.
+`Marshal.PrelinkAll(typeof(NvidiaDynamicVibranceProxy))` (`Program.cs:344`, `Main`) sits in a `try`/`catch` — so
+a locked or mismatched DLL is an unhandled exception out of `Main`, not a friendly error. This exact
+call (N16) plus one `Marshal.Prelink` per bound method (N4-N15) are exercised headlessly by
+`NvidiaInteropFixture` — §3.7, §7.3 — so a bad entry-point name or calling convention is caught by the
+fixture suite, naming the specific method, rather than only at a user's next launch. That fixture
+deliberately does **not** call `CommonUtils.LoadUnmanagedLibraryFromResource` (the very code cited two
+paragraphs up) — it extracts to a private directory and loads by absolute path instead, specifically so
+that a locked `%APPDATA%\vibranceGUI\vibranceDLL.dll` (i.e. vibranceGUI already running, same as this
+paragraph's own `IOException` case) cannot make the *fixture* fail for a reason that has nothing to do
+with the binding layer.
 
 ### 3.6 Running it
 
@@ -334,11 +350,22 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 601 of them across twelve
-  `*Fixture.cs` files — ten in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`
-  — compiled into the app and run through thirteen `--selftest-*` flags dispatched early in
-  `Program.cs`, but *after* the single-instance mutex (`Program.cs:77`, second-instance bail at
-  `:92`, the flags at `:119-266`), so a fixture will not run while vibranceGUI is already open.
+- **There is no test project**, but there are automated checks: 636 of them across thirteen
+  `*Fixture.cs` files — ten in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
+  (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
+  fourteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
+  (`Program.cs:78`, second-instance bail at `:92`, the flags at `:120-284`), so a fixture will not run
+  while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
+  reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`
+  at all, since every `--selftest-*` flag does) instead has its `Run()` called directly by reflection —
+  see the note at `Program.cs:104-110` and `NvidiaInteropFixture.cs`'s own header comment for why it
+  extracts `vibranceDLL.dll` to a private temp directory and loads it by absolute path, rather than
+  calling `CommonUtils.LoadUnmanagedLibraryFromResource` against the shared `%APPDATA%\vibranceGUI`
+  Program.cs itself uses: that call's `File.WriteAllBytes` would throw a sharing-violation `IOException`
+  against a real instance's already-open copy of the file. The mutex itself can never let that collision
+  reach a normal second launch - it is specifically the **headless reflection harness** that matters
+  here, since calling `NvidiaInteropFixture.Run()` directly bypasses `Main()`, and therefore the mutex,
+  entirely, making the live instance's file lock reachable a way a normal launch never would.
   They report through `Checklist` (PASS/FAIL/SKIP), not a third-party assertion library, so
   searching for `Assert.` or
   `*Test*` finds nothing and wrongly suggests the project is untested.
@@ -358,6 +385,9 @@ vibranceGUI/
 ├── .travis.yml                    dead CI (travis-ci.org, mono beta) — see §3.7
 ├── .gitattributes                 *.sln / *.csproj merge=union — see §3.7
 ├── vibrance.GUI.sln               one project; Debug|Any CPU is NOT remapped to x86 (§3.4)
+├── native/vibranceDLL/             vendored C++ source for vibranceDLL.dll (§7.2) — its own
+│                                    vibranceDLL.sln, built separately; see its own README.md
+│                                    for the upstream commit vendored and every change made to it
 └── vibrance.GUI/
     ├── Program.cs                 ENTRY POINT and the only composition root (§5.3)
     ├── App.config                 supportedRuntime v4.0
@@ -425,7 +455,7 @@ vibranceGUI/
     │   ├── GraphicsAdapter.cs         vendor enum + detection (§6.1)
     │   │
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
-    │   ├── CliOptionsFixture.cs        48 checks
+    │   ├── CliOptionsFixture.cs        52 checks
     │   ├── GammaRestoreFixture.cs      21 checks
     │   ├── GraphicsAdapterFixture.cs   38 checks
     │   ├── HdrVibranceFixture.cs       58 checks
@@ -456,10 +486,14 @@ vibranceGUI/
     │       └── StartMenuShortcutSourceFixture.cs  14 checks
     │
     ├── NVIDIA/                    NVIDIA vendor path (§7)
-    │   ├── NvidiaDynamicVibranceProxy.cs   IVibranceProxy impl + 12 P/Invokes into vibranceDLL
+    │   ├── NvidiaDynamicVibranceProxy.cs   IVibranceProxy impl + 12 Cdecl P/Invokes into vibranceDLL
+    │   ├── NvidiaInteropFixture.cs         31 checks — self-test fixture, run via --selftest-nvapi
+    │   │                                    (§3.7); lives here rather than common/ since it is
+    │   │                                    NVIDIA-binding-specific, not app-shell logic
     │   ├── NvidiaTypes.cs                  NV_DISPLAY_DVC_INFO, NvApiStatus (dead), NvSystemType
     │   ├── NvidiaVibranceValueWrapper.cs   raw DVC level → "50%".."100%" label map
-    │   └── vibranceDLL.dll                 PREBUILT NATIVE BINARY, source is in another repo (§7.2)
+    │   └── vibranceDLL.dll                 built from ../../native/vibranceDLL/ (§7.2); a compile-time
+    │                                        input, overwritten in place and rebuilt, not linked
     │
     ├── AMD/                       AMD vendor path (§8)
     │   ├── AmdDynamicVibranceProxy.cs      IVibranceProxy impl
@@ -517,7 +551,7 @@ graph TD
     end
 
     subgraph native["Native / driver"]
-        DLL["vibranceDLL.dll<br/>PE32 i386, prebuilt 2017"]
+        DLL["vibranceDLL.dll<br/>PE32 i386, built from native/vibranceDLL/"]
         NVAPI["nvapi.dll<br/>Digital Vibrance"]
         ADLA["AmdAdapter32 / AmdAdapter64"]
         ADL["atiadlxx.dll / atiadlxy.dll<br/>ADL_Display_Color_Set"]
@@ -572,7 +606,7 @@ property), no `IDisposable`, no events, no async:
 **The interface is not the real contract.** Three things escape it:
 
 1. **Construction.** The constructors differ in shape —
-   `NvidiaDynamicVibranceProxy(settings, resolutions)` (`NvidiaDynamicVibranceProxy.cs:185`) vs
+   `NvidiaDynamicVibranceProxy(settings, resolutions)` (`NvidiaDynamicVibranceProxy.cs:211`) vs
    `AmdDynamicVibranceProxy(IAmdAdapter, settings, resolutions)` (`AmdDynamicVibranceProxy.cs:26`) —
    and `Program.cs:215-217,236-237` (`Main`) papers over the difference with two different lambdas.
 2. **Value semantics.** The five numbers that define a vendor's scale (default Windows level, slider
@@ -698,7 +732,7 @@ Step by step, with the details that matter:
    only list the per-game dialog ever offers ([§12](#12-known-defects--risk-register)).
 7. **The proxy constructor is where the driver comes up.** Both proxies subscribe to the hook only if
    initialisation succeeded; both catch every exception, show a dialog, and then **return a live but
-   non-functional object** (`NvidiaDynamicVibranceProxy.cs:203-212` (`NvidiaDynamicVibranceProxy`), `AmdDynamicVibranceProxy.cs:48-57`, `AmdDynamicVibranceProxy`).
+   non-functional object** (`NvidiaDynamicVibranceProxy.cs:229-238` (`NvidiaDynamicVibranceProxy`), `AmdDynamicVibranceProxy.cs:48-57`, `AmdDynamicVibranceProxy`).
 8. **The startup worker** (`VibranceGUI.cs:422-485`, `backgroundWorker_DoWork`) busy-waits `Thread.Sleep(500)` until
    `IsHandleCreated`, then marshals `ReadVibranceSettings` onto the UI thread, and — **only if
    `GetVibranceInfo().isInitialized`** — reports progress (status "Running!", green), enables the
@@ -746,7 +780,7 @@ The mechanism underneath:
 - **The delegate is rooted** in an instance field (`WinEventHook.cs:176`) and the instance in a static
   (`:174`), so the classic "GC collected my callback" crash is avoided — by luck rather than by a
   `GCHandle`.
-- **The match rule** is one call in each proxy (`NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`),
+- **The match rule** is one call in each proxy (`NvidiaDynamicVibranceProxy.cs:295` (`OnWinEventHook`),
   `AmdDynamicVibranceProxy.cs:152`, `OnWinEventHook`):
 
   ```csharp
@@ -774,7 +808,7 @@ The mechanism underneath:
 - **The `_applicationSettings.Count > 0` test no longer gates the whole handler.** **Fixed** on
   `work/stability-pass` (`466de41`, issue #138): it is now only a short-circuit around the match
   lookup, so an empty list yields a `null` `ApplicationSetting` and falls straight through to the
-  revert branch (`NvidiaDynamicVibranceProxy.cs:268-272` (`OnWinEventHook`),
+  revert branch (`NvidiaDynamicVibranceProxy.cs:294-298` (`OnWinEventHook`),
   `AmdDynamicVibranceProxy.cs:151-155`, `OnWinEventHook`). Deleting your last watched application
   while its game holds the foreground now restores vibrance, the resolution and the gamma ramp on
   the next foreground change (**D9**).
@@ -804,7 +838,7 @@ The mechanism underneath:
 The two handlers implement noticeably different behaviour. This table is the most useful thing to have
 open when you are debugging a vendor-specific report:
 
-| Aspect | NVIDIA (`NvidiaDynamicVibranceProxy.cs:263-394`, `OnWinEventHook`) | AMD (`AmdDynamicVibranceProxy.cs:146-246`, `OnWinEventHook`) |
+| Aspect | NVIDIA (`NvidiaDynamicVibranceProxy.cs:289-420`, `OnWinEventHook`) | AMD (`AmdDynamicVibranceProxy.cs:146-246`, `OnWinEventHook`) |
 |---|---|---|
 | "Is this really the foreground?" | native `isWindowActive(ref hwnd)` (`:342`, `OnWinEventHook`) — the DLL compares against `GetForegroundWindow()` (VERIFIED binary) | inline `GetForegroundWindow() != processHandle` (`:228`, `OnWinEventHook`), own P/Invoke at `:143-144` |
 | Which display gets the game level | per-window, via `getAssociatedNvidiaDisplayHandle(screen.DeviceName)`, now behind the `INvidiaVibranceDevice` seam (`:679-691`, `TryResolveDisplayHandle`) and called from `ApplyGameVibranceLevel` (`:453`) — the old `GetApplicationDisplayHandle` helper is deleted | `Screen.FromHandle(...).DeviceName` matched against the ADL adapter's `DisplayName` (`AmdAdapter32.cs:140`, `SetSaturationOnDisplay`) |
@@ -838,7 +872,7 @@ production implementation, calling `EnumDisplaySettings`/`ChangeDisplaySettingsE
 **The call.** Both proxies now call two public members directly instead of their own duplicated
 helpers: `ResolutionHelper.IsResolutionChangeNeeded(deviceName, target)` (`:190-193`) as a guard, then
 `ResolutionHelper.ChangeResolutionEx(target, deviceName, isRevert)` (`:232-235`) to act
-(`NvidiaDynamicVibranceProxy.cs:311-324,360-378` (`OnWinEventHook`); `AmdDynamicVibranceProxy.cs:200-213,236-250`, `OnWinEventHook`). The
+(`NvidiaDynamicVibranceProxy.cs:337-350,386-404` (`OnWinEventHook`); `AmdDynamicVibranceProxy.cs:200-213,236-250`, `OnWinEventHook`). The
 `isRevert` flag selects which of two different give-up bounds applies (below) and which wording a
 failure notification uses.
 
@@ -1101,7 +1135,7 @@ while (vibranceInfo.shouldRun) { /* check the foreground window */ Thread.Sleep(
 That commit introduced `WinEventHook.cs` and replaced the poll with event-driven detection. The
 leftovers are still in the tree and are **all dead**: `VibranceInfo.shouldRun` and
 `VibranceInfo.sleepInterval` (`common/Definitions.cs:27-28`, `shouldRun`), `SetShouldRun` on the interface,
-`SetSleepInterval` (`NvidiaDynamicVibranceProxy.cs:804-807`, not even on the interface), the empty
+`SetSleepInterval` (`NvidiaDynamicVibranceProxy.cs:857-860`, not even on the interface), the empty
 `HandleDvc()` stub (`:761-763`), and — on the native side — the `handleDVC` export, which still
 contains the in-DLL polling loop and the string `"DVC Level Thread exited!"` (VERIFIED binary).
 
@@ -1190,10 +1224,10 @@ source; the ellipses mark text abbreviated for this table only.
 | "Ignoring --set-vibrance N: the valid range for NVIDIA is 0-63." (AMD: 0-300) | `Program.cs:382` (`ResolveCliVibranceOverride`) | the value parsed but is out of the vendor's range. The app then **continues** without applying it, rather than exiting |
 | "Failed to determine your Graphic GraphicsAdapter type (NVIDIA/AMD). … Intel laptops are not supported … Error: " + the Win32 error message | `ErrorGraphicsAdapterUnknown`, `Program.cs:23`, shown `:248-253` (`Main`) | `GetAdapter() == Unknown`. Yes → opens the maintainer's Twitter. **The app exits either way** |
 | "Both NVIDIA and AMD graphic drivers have been found on your system. … Use the program \"Display Driver Uninstaller\" …" | `ErrorGraphicsAdapterAmbiguous`, `Program.cs:24`, shown `:350-358` (`ShowLegacyAmbiguousDriverDialog`) | both vendor DLLs found in SysWOW64. Yes → opens the Guru3D DDU page. **The app exits either way** — and on a hybrid laptop this advice is wrong (**D3**) |
-| *(a raw .NET exception dump — unlocalised stack trace)* | `MessageBox.Show(ex.ToString())` — `NvidiaDynamicVibranceProxy.cs:205` (`NvidiaDynamicVibranceProxy`), `AmdDynamicVibranceProxy.cs:50` (`AmdDynamicVibranceProxy`) | first dialog on **any** exception inside a proxy constructor |
-| "VibranceProxy failed to initialize! Press Ok to open the vibranceGUI Steam Guide in your browser. Scroll down to section \"Troubleshooting, Errors, Q&A\"." | `NvapiErrorInitFailed`, `NvidiaDynamicVibranceProxy.cs:157-158`; shown `:206` and **reused by AMD** at `AmdDynamicVibranceProxy.cs:51` (`AmdDynamicVibranceProxy`) | immediately after that dump. OK → `https://vibrancegui.com/vibrance/guide` (**D21**) |
-| "VibranceProxy failed to initialize! Graphics card system type (Desktop / Laptop) is unknown!" | `NvapiErrorSystypeUnknown`, `NvidiaDynamicVibranceProxy.cs:162`, shown `:228` (`InitializeProxy`) | any enumerated GPU reports `NvSystemTypeUnknown`. Really means "the NvAPI call failed" (**D19**) |
-| "VibranceProxy detected that you are running a Laptop with integrated NVIDIA card. …" | `NvapiErrorSystypeUnsupported`, `NvidiaDynamicVibranceProxy.cs:159-161` | **never — dead constant** (**D20**) |
+| *(a raw .NET exception dump — unlocalised stack trace)* | `MessageBox.Show(ex.ToString())` — `NvidiaDynamicVibranceProxy.cs:231` (`NvidiaDynamicVibranceProxy`), `AmdDynamicVibranceProxy.cs:50` (`AmdDynamicVibranceProxy`) | first dialog on **any** exception inside a proxy constructor |
+| "VibranceProxy failed to initialize! Press Ok to open the vibranceGUI Steam Guide in your browser. Scroll down to section \"Troubleshooting, Errors, Q&A\"." | `NvapiErrorInitFailed`, `NvidiaDynamicVibranceProxy.cs:183-184`; shown `:232` and **reused by AMD** at `AmdDynamicVibranceProxy.cs:51` (`AmdDynamicVibranceProxy`) | immediately after that dump. OK → `https://vibrancegui.com/vibrance/guide` (**D21**) |
+| "VibranceProxy failed to initialize! Graphics card system type (Desktop / Laptop) is unknown!" | `NvapiErrorSystypeUnknown`, `NvidiaDynamicVibranceProxy.cs:188`, shown `:254` (`InitializeProxy`) | any enumerated GPU reports `NvSystemTypeUnknown`. Really means "the NvAPI call failed" (**D19**) |
+| "VibranceProxy detected that you are running a Laptop with integrated NVIDIA card. …" | `NvapiErrorSystypeUnsupported`, `NvidiaDynamicVibranceProxy.cs:185-187` | **never — dead constant** (**D20**) |
 | "Current resolution mode could not be determined. Switching back to your Windows resolution will not work." | `ShowResolutionReadFailureDialog` (`VibranceGUI.cs:1359`), passed as the `onUnreadableDevice` callback to `WindowsResolutionRefresher.Refresh` only when `RebuildWindowsResolutionSettings`'s `showFailureDialog` is true | `EnumDisplaySettings` failed for a monitor. Shown only from the constructor's own build — the `SystemEvents.DisplaySettingsChanged` refresh path (`showFailureDialog: false`) never shows it, deliberately: see [§6.4](#64-the-optional-resolution-switch). The callback's `deviceName` parameter is unused in the message on purpose — it exists so `ResolutionChangeFixture` can assert *which* device reported, not to make this dialog start naming devices |
 | *(historical)* "Changing the resolution failed: DispChangeBadflags" (or any other `DispChange` member name) | **removed** — `ResolutionHelper.cs` has no `using System.Windows.Forms` and no `MessageBox` call site after `work/resolution-change` | was a staging `ChangeDisplaySettingsEx` failure, raised **inside the foreground-change callback**, repeating on every subsequent switch (**D2**, issues #114/#132 — see [§6.4](#64-the-optional-resolution-switch) for the replacement: a `notifyIcon` balloon tip via `ResolutionHelper.ResolutionChangeFailed`) |
 | Balloon tips: "Registered to Autostart!" / "Registering to Autostart failed!" / "Updated Autostart Path!" / "Updating Autostart Path failed!" / "Unregistered from Autostart!" / "Unregistering from Autostart failed!" | `VibranceGUI.cs:638-660` (`checkBoxAutostart_CheckedChanged`) | the autostart checkbox — **including when it is set programmatically at startup** ([§9.5](#95-autostart)) |
@@ -1205,7 +1239,7 @@ Everything not in this table **fails silently to the user** — less so than it 
 difference is "written to the log file", not "shown". Still discarded outright: a `false` return from
 `initializeLibrary`; `AdlMainControlCreate` (`AmdAdapter32.cs:20,27`, `Init`); and the one NVIDIA write
 path that ignores `INvidiaVibranceDevice.SetLevel`'s result — the all-displays restore branch taken
-when "affect primary monitor only" is off (`NvidiaDynamicVibranceProxy.cs:532`,
+when "affect primary monitor only" is off (`NvidiaDynamicVibranceProxy.cs:558`,
 `RestoreWindowsVibranceLevel`). Now checked, but only logged: the other two NVIDIA write paths,
 `ApplyGameVibranceLevel` (`:470`) and `RestoreOneDisplay` (`:580`), which report once per device
 through `Program.LogSafely`; and `AdlDisplayColorSet`, whose status `SetSaturationOnDisplay` now
@@ -1249,7 +1283,7 @@ performance bug from doing too much work too often on the UI thread, and this ad
 to an app that sits in the tray permanently, so that ordering is load-bearing rather than tidy.
 
 Both proxies then implement `RecheckForegroundHdrLevel`
-(`NvidiaDynamicVibranceProxy.cs:657`, `AmdDynamicVibranceProxy.cs:449`), re-resolving and re-applying
+(`NvidiaDynamicVibranceProxy.cs:683`, `AmdDynamicVibranceProxy.cs:449`), re-resolving and re-applying
 whichever profile owns the foreground window, under the same skip rules the automatic apply branch
 follows.
 
@@ -1270,9 +1304,9 @@ VibranceGUI (shell)
    │  IVibranceProxy
    ▼
 NvidiaDynamicVibranceProxy.cs        C#, 12 P/Invokes, ALL state static
-   │  DllImport("vibranceDLL.dll"), CallingConvention.StdCall
+   │  DllImport("vibranceDLL.dll"), CallingConvention.Cdecl
    ▼
-vibranceDLL.dll                      prebuilt native C++ (PE32 i386, 2017) — SOURCE NOT IN THIS REPO
+vibranceDLL.dll                      native C++, built in this repo from native/vibranceDLL/ (§7.2)
    │  LoadLibraryA("nvapi.dll") + nvapi_QueryInterface(<13 ids>)
    ▼
 nvapi.dll → NVIDIA display driver → Digital Vibrance on the panel
@@ -1280,58 +1314,121 @@ nvapi.dll → NVIDIA display driver → Digital Vibrance on the panel
 
 ### 7.2 What `vibranceDLL.dll` actually is
 
-**VERIFIED (binary).** `vibrance.GUI/NVIDIA/vibranceDLL.dll` is **163,840 bytes**, SHA-256
-`0f229f79934f21617337c28915a9449f7b2395b20d7fb0e4a02d14277163cea0`, **PE32 i386** (machine `0x14c`),
-6 sections, link timestamp **2017-01-02 18:22:43 UTC** — a native C++ MSVC Release build.
+**As of `work/native-dll-from-source`, `vibrance.GUI/NVIDIA/vibranceDLL.dll` is built in this repo**
+from vendored source at `native/vibranceDLL/` (upstream `https://github.com/juv/vibranceDLL`; see that
+directory's own `README.md` for the exact commit vendored and every change made to its build). It is a
+**compile-time input**, not a linked dependency: `Program.cs:338-344` extracts the embedded resource to
+`%APPDATA%\vibranceGUI\vibranceDLL.dll` and `Marshal.PrelinkAll`s it at every launch, unchanged by this
+work — see [§3.5](#35-how-the-native-nvidia-dll-is-deployed-not-what-you-would-guess). Rebuilding it is
+`native/vibranceDLL/vibrance.vcxproj`, `Release|Win32`, then copying the output over the checked-in DLL
+by hand; there is no MSBuild wiring from `vibrance.GUI.csproj` into the native project, by design (a C#
+build must not require a full C++ toolchain to succeed).
 
-- Its embedded PDB path is `C:\Users\juv\Documents\GitHub\vibranceDLL\Release\vibranceDLL.pdb`, i.e.
-  **the source lives in a separate repository, `juvlarN/vibranceDLL`**. Commit `06b40fb` in this repo
-  ("Updated vibranceDLL to https://github.com/juvlarN/vibranceDLL/commit/e2b480f2…") confirms the
-  workflow: the DLL is built there and the binary is copied in here.
-- **There is no version resource** (no `VS_VERSION_INFO`), so the binary cannot be version-checked at
-  runtime and you cannot tell two builds apart except by hash.
-- **It does not statically import `nvapi.dll`.** Its import table is only `KERNEL32.dll` (77 functions
-  including `LoadLibraryA`, `GetProcAddress`, `GetSystemDirectoryW`), `USER32.dll` (`FindWindowW`,
-  `GetWindowTextA`, `GetWindowTextLengthW`, `MessageBoxA`, `GetForegroundWindow`) and `ADVAPI32.dll`
-  (`SystemFunction036`). NvAPI is resolved dynamically at init ([§7.4](#74-the-initialisation-handshake)).
+**The paragraphs below up to and including [§7.6](#76-what-each-native-call-really-does-verified-binary)
+were VERIFIED against the *previously shipped* prebuilt 2017 binary** (see the history below); they are
+kept because `native/vibranceDLL/vibrance/vibrance.cpp` — the logic that actually talks to NvAPI — was
+**not modified** by this work, so what each call *does* (§7.4, §7.6, §7.7) is still accurate. What is now
+stale is anything about that specific binary's own bytes: its exact size, hash, link timestamp, and its
+embedded PDB path all describe the file that used to be checked in, not the one a rebuild now produces.
+The export table also changed shape: the old binary carried two `printError` overloads and a `?test@`
+export that this vendored source does not produce (see `native/vibranceDLL/README.md` — those trace to
+a fork, `juvlarN/vibranceDLL`, not to `juv/vibranceDLL` upstream), and it now additionally carries 12
+undecorated `vibrance_*` exports (§7.3) that did not exist before this work at all.
+
+**Historical record, for the binary as it shipped before this work (VERIFIED binary):**
+`163,840 bytes`, SHA-256 `0f229f79934f21617337c28915a9449f7b2395b20d7fb0e4a02d14277163cea0`, **PE32
+i386** (machine `0x14c`), 6 sections, link timestamp **2017-01-02 18:22:43 UTC**.
+
+- Its embedded PDB path was `C:\Users\juv\Documents\GitHub\vibranceDLL\Release\vibranceDLL.pdb`, i.e.
+  **the source used to live in a separate repository, `juvlarN/vibranceDLL`** (a fork of the
+  `juv/vibranceDLL` now vendored at `native/vibranceDLL/` — see that directory's `README.md`). Commit
+  `06b40fb` in this repo ("Updated vibranceDLL to
+  https://github.com/juvlarN/vibranceDLL/commit/e2b480f2…") confirms the old workflow: the DLL was built
+  there and the binary copied in here by hand — the same "copy the binary in by hand" step this work
+  keeps, just against source now vendored in this repo instead of an external one.
+- **There is no version resource** (no `VS_VERSION_INFO`) on either the old or the rebuilt binary, so
+  neither can be version-checked at runtime; only a hash tells two builds apart.
+- **It does not statically import `nvapi.dll`.** The old binary's import table was only `KERNEL32.dll`
+  (77 functions including `LoadLibraryA`, `GetProcAddress`, `GetSystemDirectoryW`), `USER32.dll`
+  (`FindWindowW`, `GetWindowTextA`, `GetWindowTextLengthW`, `MessageBoxA`, `GetForegroundWindow`) and
+  `ADVAPI32.dll` (`SystemFunction036`). The rebuilt binary's import table is a strict subset of that -
+  just `KERNEL32.dll` and `USER32.dll` (VERIFIED, this build) - because `/MT` static-links the CRT
+  (`native/vibranceDLL/vibrance/vibrance.vcxproj`'s `<RuntimeLibrary>`, see that directory's `README.md`
+  item 3); without it, v143's default `/MD` would additionally import `MSVCP140.dll`, `VCRUNTIME140.dll`
+  and `api-ms-win-crt-*.dll`, a VC++ redistributable dependency the app does not otherwise require. NvAPI
+  is resolved dynamically at init either way ([§7.4](#74-the-initialisation-handshake)).
 - Deployment is described in [§3.5](#35-how-the-native-nvidia-dll-is-deployed-not-what-you-would-guess):
   embedded as an MSBuild resource, extracted by hand to `%APPDATA%\vibranceGUI\` on every launch.
 
-**Practical consequence:** the NVIDIA capability surface of vibranceGUI is frozen at whatever those 13
-exports do. Anything new on the NVIDIA side requires building the *other* repository.
+**Practical consequence:** the NVIDIA capability surface of vibranceGUI is still frozen at whatever the
+16 methods `vibrance.h:91-106` declares do (12 of those 16 are C#-bound; all 16, plus the compiler-
+generated constructor/destructor/`operator=`, are 19 mangled exports in total - §7.3) - `vibrance.cpp`
+was not touched - but extending it no longer requires
+a separate repository: add a method to `vibranceDLL::vibrance` (`native/vibranceDLL/vibrance/vibrance.h`
+/ `.cpp`) and a matching `extern "C"` wrapper to `vibrance_c.h`/`.cpp` (§7.3), rebuild, and copy the
+output over the checked-in DLL. See [§13.2](#132-adding-a-driver-capability-contrast-hue-gamma-colour-settings)
+for the full recipe.
 
 ### 7.3 The P/Invoke surface
 
-All entry points are **MSVC-mangled C++ member functions** of `vibranceDLL::vibrance`
-(`?name@vibrance@vibranceDLL@@QAE…`, where `QAE` means `public: __thiscall`). All are declared in C#
-as `CallingConvention.StdCall` **with no `this` argument** — see the hazard in
-[§7.5](#75-the-__thiscall-as-stdcall-binding--the-single-biggest-contributor-hazard).
+**As of `work/native-dll-from-source`, all entry points are undecorated `__cdecl` free functions**
+named `vibrance_<originalName>`, exported from a purely additive `extern "C"` wrapper layer
+(`native/vibranceDLL/vibrance/vibrance_c.h`/`.cpp`) that sits in front of `vibranceDLL::vibrance`
+unchanged. Each wrapper constructs its own local `vibranceDLL::vibrance` (the class has no data members
+and empty ctor/dtor, so this costs nothing) and forwards the call as a normal, compiler-managed C++
+member-function call - real `this`, no hand-faked calling convention. All 12 are declared in C# as
+`CallingConvention.Cdecl`. `__cdecl` (not `__stdcall`) is the point: it is the one calling convention
+that exists unchanged on both x86 and x64, so the exported name is identical on both, and this binding
+mechanism needs no ABI change to eventually build x64 - see the (now closed) hazard in
+[§7.5](#75-the-__thiscall-as-stdcall-binding--the-single-biggest-contributor-hazard-fixed).
 
-| # | C# declaration (`NvidiaDynamicVibranceProxy.cs`) | Native signature | CharSet |
+This replaces binding by 32-bit-only MSVC-mangled member-function name
+(`?name@vibrance@vibranceDLL@@QAE…`, where `QAE` means `public: __thiscall`) with no `this` argument -
+the mechanism every one of these entries used before this work, and which the DLL's export table still
+also carries unchanged (`vibrance.h`/`.cpp` were not touched - the mangled exports still exist, just
+unused by C# now).
+
+| # | C# declaration (`NvidiaDynamicVibranceProxy.cs`) | Native `vibrance_*` export (`vibrance_c.h`) | CharSet |
 |---|---|---|---|
-| 1 | `bool initializeLibrary()` `:45-50` | `bool()` | Auto |
-| 2 | `bool unloadLibrary()` `:52-57` (`unloadLibrary`) | `bool()` | Auto |
-| 3 | `int getActiveOutputs(int[], int[])` `:60-65` (`getActiveOutputs`) | `int(int* const[], int* const[])` | Auto |
-| 4 | `void enumeratePhsyicalGPUs(int[])` `:67-72` (`enumeratePhsyicalGPUs`) | `void(int* const[])` | Auto |
-| 5 | `bool getGpuName(int[], StringBuilder)` `:74-79` (`getGpuName`) | `bool(int* const[], char*)` | **Ansi** |
-| 6 | `bool getDVCInfo(ref NvDisplayDvcInfo, int)` `:81-86` (`getDVCInfo`) | `bool(NV_DISPLAY_DVC_INFO*, int)` | **Ansi** |
-| 7 | `int enumerateNvidiaDisplayHandle(int)` `:88-93` (`enumerateNvidiaDisplayHandle`) | `int(int)` | Auto |
-| 8 | `bool setDVCLevel(int, int)` `:95-100` (`setDVCLevel`) | `bool(int,int)` | Auto |
-| 9 | `bool isWindowActive(ref IntPtr)` `:102-107` (`isWindowActive`) | `bool(HWND*)` | Auto |
-| 10 | `bool equalsDVCLevel(int, int)` `:109-114` (`equalsDVCLevel`) | `bool(int,int)` | Auto |
-| 11 | `NvSystemType getGpuSystemType(int)` `:116-121` (`getGpuSystemType`) | `int(int*)` — **native takes a pointer, C# passes an `int` by value** | Auto |
-| 12 | `int getAssociatedNvidiaDisplayHandle(string, int)` `:123-128` (`getAssociatedNvidiaDisplayHandle`) | `int(const char*, int)` | **Ansi** |
-| — | *(removed)* `bool isCsgoStarted(ref IntPtr)` | was bound and never called; **deleted** by `62541a6`, on `master` since `4fb598c`. The export itself is still in the DLL — see [§7.6](#76-what-each-native-call-really-does-verified-binary) | — |
+| 1 | `bool initializeLibrary()` `:64-69` | `int vibrance_initializeLibrary(void)` | Auto |
+| 2 | `bool unloadLibrary()` `:71-76` (`unloadLibrary`) | `int vibrance_unloadLibrary(void)` | Auto |
+| 3 | `int getActiveOutputs(int[], int[])` `:79-84` (`getActiveOutputs`) | `int vibrance_getActiveOutputs(int**, int**)` | Auto |
+| 4 | `void enumeratePhsyicalGPUs(int[])` `:86-91` (`enumeratePhsyicalGPUs`) | `void vibrance_enumeratePhsyicalGPUs(int**)` | Auto |
+| 5 | `bool getGpuName(int[], StringBuilder)` `:93-98` (`getGpuName`) | `int vibrance_getGpuName(int**, char*)` | **Ansi** |
+| 6 | `bool getDVCInfo(ref NvDisplayDvcInfo, int)` `:100-105` (`getDVCInfo`) | `int vibrance_getDVCInfo(void*, int)` | **Ansi** |
+| 7 | `int enumerateNvidiaDisplayHandle(int)` `:107-112` (`enumerateNvidiaDisplayHandle`) | `int vibrance_enumerateNvidiaDisplayHandle(int)` | Auto |
+| 8 | `bool setDVCLevel(int, int)` `:114-119` (`setDVCLevel`) | `int vibrance_setDVCLevel(int,int)` | Auto |
+| 9 | `bool isWindowActive(ref IntPtr)` `:121-126` (`isWindowActive`) | `int vibrance_isWindowActive(void**)` | Auto |
+| 10 | `bool equalsDVCLevel(int, int)` `:128-133` (`equalsDVCLevel`) | `int vibrance_equalsDVCLevel(int,int)` | Auto |
+| 11 | `NvSystemType getGpuSystemType(int)` `:142-147` (`getGpuSystemType`) | `int vibrance_getGpuSystemType(int*)` — **native takes a pointer, C# passes an `int` by value** | Auto |
+| 12 | `int getAssociatedNvidiaDisplayHandle(string, int)` `:149-154` (`getAssociatedNvidiaDisplayHandle`) | `int vibrance_getAssociatedNvidiaDisplayHandle(const char*, int)` | **Ansi** |
+| — | *(removed)* `bool isCsgoStarted(ref IntPtr)` | was bound and never called; **deleted** by `62541a6`, on `master` since `4fb598c`. The mangled export is still in the DLL, and now also has no `vibrance_*` wrapper (never wired up, since it was never bound) — see [§7.6](#76-what-each-native-call-really-does-verified-binary) | — |
 | — | *(removed)* `GetWindowTextLength` / `GetWindowTextA` | `user32.dll`, both dead; **deleted** by the same commit. The identically named pair in `common/WinEventHook.cs` served the same dead purpose (an unread window title) and was deleted too, on `work/156-foreground-hot-path` | — |
 
-**The typo `enumeratePhsyicalGPUs` is in the exported symbol itself**, so it must be preserved verbatim
-in any rebinding. Do not "fix" the spelling on the C# side.
+Every export's return type is `int` (0/1), including the six wrapping a native `bool`-returning method
+- never `bool` - specifically to close **D30** (below): a C++ `bool` return is one byte in `AL`, but
+C#'s default marshalling of a `bool` return expects a 4-byte Win32 `BOOL`, and MSVC only zero-extends
+`AL` into `EAX` by happenstance, not by contract. `vibrance_getGpuSystemType` and the two `void`/`int`-
+already natives (`enumerateNvidiaDisplayHandle`, `getAssociatedNvidiaDisplayHandle`, `getActiveOutputs`)
+needed no such change. The C# side is unaffected - `NvidiaDynamicVibranceProxy.cs`'s own methods still
+return `bool` where they did before; only how the native call is *found and invoked* changed, not the
+managed signatures calling it (Task 5 of this work was explicitly scoped to leave every managed
+signature - types, `[In, Out]`, `ref`, `StringBuilder`, `bool` returns - exactly as it was).
 
-**Exports present in the DLL but not bound by C#** (VERIFIED binary export table, 21 entries):
-constructor, destructor, `operator=`, `?getInterfaceVersionString@`, `?handleDVC@`, two `?printError@`
-overloads, `?test@`. `handleDVC` is the legacy in-DLL polling loop — it contains the string
-`"DVC Level Thread exited!"` and calls `FindWindowW(NULL, L"Counter-Strike: Global Offensive")` — and
-the C# side still carries a matching **empty** `HandleDvc()` stub (`:761-764`).
+**The typo `enumeratePhsyicalGPUs` is in the exported symbol itself** - preserved verbatim in the new
+`vibrance_enumeratePhsyicalGPUs` wrapper too - so it must be preserved verbatim in any rebinding. Do not
+"fix" the spelling on either the C++ or the C# side.
+
+**Exports present in the DLL but not bound by C#** (VERIFIED binary export table for the binary as
+previously shipped, 21 entries): constructor, destructor, `operator=`, `?getInterfaceVersionString@`,
+`?handleDVC@`, two `?printError@` overloads, `?test@`. `handleDVC` is the legacy in-DLL polling loop —
+it contains the string `"DVC Level Thread exited!"` and calls `FindWindowW(NULL, L"Counter-Strike:
+Global Offensive")` — and the C# side still carries a matching **empty** `HandleDvc()` stub (`:761-764`).
+The rebuilt DLL's export table (VERIFIED, this build) carries the same 19 mangled `vibrance.h` exports
+(constructor/destructor/`operator=` plus the 13 named `vibrance.h` methods including the 12 bound ones
+and `getInterfaceVersionString`) but neither `printError` overload nor `?test@` - those traced to the
+`juvlarN/vibranceDLL` fork, not to `juv/vibranceDLL` upstream (`native/vibranceDLL/README.md`) - plus
+the 12 new undecorated `vibrance_*` exports from this work, 31 in total.
 
 ### 7.4 The initialisation handshake
 
@@ -1369,35 +1466,51 @@ tables, not from the binary itself.)*
 **Driver-version assumption:** because all 12 checked IDs must resolve, the DLL effectively demands a
 driver that exposes `NvAPI_GetDVCInfoEx` (a 2013-era addition) **even though it never calls it**. Any
 driver missing any one of them makes `initializeLibrary` return `false`, after which the C# constructor
-silently skips `InitializeProxy()` (`:192-195`, `NvidiaDynamicVibranceProxy`), `isInitialized` stays `false`, and **no error dialog is
+silently skips `InitializeProxy()` (`:218-221`, `NvidiaDynamicVibranceProxy`), `isInitialized` stays `false`, and **no error dialog is
 shown** — the user gets a dead window with every control greyed out.
 
-### 7.5 The `__thiscall`-as-StdCall binding — the single biggest contributor hazard
+### 7.5 The `__thiscall`-as-StdCall binding — the single biggest contributor hazard (FIXED)
 
-The exports are `__thiscall` member functions; C# declares them `StdCall` and passes no `this`
-pointer. **This works, and the reason it works is fragile:**
+**FIXED on `work/native-dll-from-source`.** Until that work, the exports were `__thiscall` member
+functions; C# declared them `StdCall` and passed no `this` pointer. **That worked, and the reason it
+worked was fragile** - documented below as it was VERIFIED against the binary as previously shipped,
+because the reasoning explains why the fix (§7.3) had to change the *binding mechanism*, not just patch
+around the fragility:
 
-- **VERIFIED (binary):** the constructor `??0vibrance@vibranceDLL@@QAE@XZ` at RVA `0x2f70` is
-  `8b c1 c3` — `mov eax, ecx; ret`. The destructor at `0x2f80` is a bare `ret`. **The class carries no
-  instance state**; everything lives in module globals at `0x10028328`–`0x1002835c`.
-- **VERIFIED (binary):** none of the bound exports reads the incoming `ECX`. For example
-  `setDVCLevel` (RVA `0x2c20`) is
+- **VERIFIED (binary, as previously shipped):** the constructor `??0vibrance@vibranceDLL@@QAE@XZ` at
+  RVA `0x2f70` was `8b c1 c3` — `mov eax, ecx; ret`. The destructor at `0x2f80` was a bare `ret`. **The
+  class carried no instance state**; everything lived in module globals. This still holds true of
+  `native/vibranceDLL/vibrance/vibrance.cpp` today - the vendored source's ctor/dtor are still both
+  empty bodies (§7.2) - but it is no longer what makes the binding safe (see below).
+- **VERIFIED (binary, as previously shipped):** none of the bound exports read the incoming `ECX`. For
+  example `setDVCLevel` (RVA `0x2c20`) was
   `push ebp; mov ebp,esp; push [ebp+0Ch]; push 0; push [ebp+08h]; call [NvAPI_SetDVCLevel]; add esp,0Ch; test eax,eax; sete al; pop ebp; ret 8`
-  — arguments come only from `[ebp+8]`/`[ebp+0Ch]`, and cleanup is callee-side `ret 8`, byte-for-byte
+  — arguments came only from `[ebp+8]`/`[ebp+0Ch]`, and cleanup was callee-side `ret 8`, byte-for-byte
   compatible with `__stdcall(int,int)`.
 
-**So the binding is safe only because the C++ class is stateless. If anyone ever adds a member field to
-the C++ `vibrance` class, every one of these P/Invokes breaks with garbage-`this` corruption.** Write
-this on a sticky note before touching `juvlarN/vibranceDLL`.
+**So the old binding was safe only because the C++ class was stateless. If anyone had ever added a
+member field to the C++ `vibrance` class, every one of these P/Invokes would have broken with
+garbage-`this` corruption.** That is no longer true: the 12 entry points now bound
+(`NvidiaDynamicVibranceProxy.cs:44-154`, §7.3) are undecorated `__cdecl` free functions in
+`native/vibranceDLL/vibrance/vibrance_c.cpp`, each of which builds its own local
+`vibranceDLL::vibrance` and calls the real method on it - a normal, compiler-managed C++ member call
+with a real `this` pointer, emitted by the C++ compiler itself rather than faked from C#. Adding a
+member field to `vibrance` today would change what that local instance costs to construct, not corrupt
+`this` for every caller - the class of bug this section used to warn about cannot recur through this
+mechanism. (**D29**.)
 
-**Related hazard — INFERENCE, not confirmed at runtime.** All the `bool`-returning exports set only
-**AL** (`sete al` / `mov al,1` / `xor al,al`), leaving the upper 24 bits of `EAX` holding whatever the
-last NvAPI status left there. C#'s default marshalling of a `bool` *return value* is a 4-byte Win32
+**Related hazard, also FIXED on `work/native-dll-from-source` (was INFERENCE, never confirmed at
+runtime).** All the `bool`-returning mangled exports set only **AL** (`sete al` / `mov al,1` /
+`xor al,al`), leaving the upper 24 bits of `EAX` holding whatever the last NvAPI status left there.
+C#'s default marshalling of a `bool` *return value* is a 4-byte Win32
 `BOOL`, i.e. the whole of `EAX` tested against zero. Concretely, `initializeLibrary`'s failure exit at
-RVA `0x2f63` is `xor al,al; ret`, reached from a pointer null-check, so `EAX` can still hold a non-zero
-function pointer with a zeroed low byte → **a failed init could be observed as `true` in C#.** This is
-cheap to test and would explain "it says it's running but nothing happens" reports. It has not been
-tested.
+RVA `0x2f63` was `xor al,al; ret`, reached from a pointer null-check, so `EAX` could in principle still
+hold a non-zero function pointer with a zeroed low byte → **a failed init could have been observed as
+`true` in C#.** Never confirmed as having actually happened, so - symmetrically with **D30** - it cannot
+be confirmed as no longer happening either; what changed is that it is no longer *possible*. Every
+`vibrance_*` wrapper that fronts a `bool`-returning method (`native/vibranceDLL/vibrance/vibrance_c.cpp`)
+now returns `int`, built from an explicit `cond ? 1 : 0` rather than a passthrough of `AL` - there is no
+stale byte left for C# to read, by construction, not by chance.
 
 ### 7.6 What each native call really does (VERIFIED binary)
 
@@ -1420,7 +1533,7 @@ vibranceGUI can only ever address a GPU's first output.
 
 ### 7.7 C#-side initialisation, and the startup reset it used to cause
 
-`InitializeProxy()` (`NvidiaDynamicVibranceProxy.cs:215-261`), in order:
+`InitializeProxy()` (`NvidiaDynamicVibranceProxy.cs:241-287`), in order:
 
 1. `enumeratePhsyicalGPUs` into an `int[64]` (`NvapiMaxPhysicalGpus = 64`, `:132`).
 2. For every non-zero handle, `getGpuSystemType(handle)`; if **any** returns `NvSystemTypeUnknown`,
@@ -1464,13 +1577,13 @@ laptop-specific rejection message that the README implies exists
 
 | Property | Value | Source |
 |---|---|---|
-| Raw driver range | `0 … 63` | `NvapiMaxLevel = 63` (`:154`) |
-| Neutral / default | `0` | `NvapiDefaultLevel = 0` (`:155`) — displayed as "50%" |
-| Slider min / max / default | `0` / `63` / `0` | `Program.cs:325-328` (`Main`) → `VibranceGUI.cs:203-204` (`VibranceGUI`), `VibranceSettings.cs:39-41` (`VibranceSettings`) |
+| Raw driver range | `0 … 63` | `NvapiMaxLevel = 63` (`:180`) |
+| Neutral / default | `0` | `NvapiDefaultLevel = 0` (`:181`) — displayed as "50%" |
+| Slider min / max / default | `0` / `63` / `0` | `Program.cs:348-352` (`Main`, the NVIDIA branch's `new VibranceGUI(...)` call) → `VibranceGUI.cs:203-204` (`VibranceGUI`), `VibranceSettings.cs:39-41` (`VibranceSettings`) |
 | Slider → driver | **identity** — the trackbar value *is* the DVC level | `VibranceGUI.cs:507` (`trackBarWindowsLevel_Scroll`), `VibranceSettings.cs:78,109` (`trackBarIngameLevel_Scroll`) |
 | Slider → label | `NvidiaVibranceValueWrapper.Find(value).Percentage` | `common/TrackbarLabelHelper.cs:17` (`ResolveVibranceLabelLevel`) |
 | Clamping | **driver-side only** — the DLL passes the level through unmodified (VERIFIED binary) | `setDVCLevel` RVA `0x2c20` |
-| Driver-reported range | **never queried** — `getDVCInfo` is still bound but is now called from nowhere, so `minLevel`/`maxLevel` are never even read | `NvidiaDynamicVibranceProxy.cs:81-86`; `NVIDIA/NvidiaTypes.cs:14-15` |
+| Driver-reported range | **never queried** — `getDVCInfo` is still bound but is now called from nowhere, so `minLevel`/`maxLevel` are never even read | `NvidiaDynamicVibranceProxy.cs:100-105`; `NVIDIA/NvidiaTypes.cs:14-15` |
 
 `NvidiaVibranceValueWrapper` (`vibrance.GUI/NVIDIA/NvidiaVibranceValueWrapper.cs`) maps raw levels to
 the percentages the NVIDIA Control Panel shows:
@@ -1503,8 +1616,9 @@ C# half of it is now bounded (`466de41`, `work/stability-pass`).** What it was:
 - `EnumerateDisplayHandles()` was `for (int i = 0, displayHandle = 0; displayHandle != -1; i++)`
   and **terminated only on `-1`**.
 - **VERIFIED (binary), and still true today:** `enumerateNvidiaDisplayHandle` returns `-1` *only* for
-  `NVAPI_END_ENUMERATION (-7)`; for any other non-zero status it returns `0`. `vibranceDLL.dll` has
-  not been rebuilt, so this half is exactly as it was.
+  `NVAPI_END_ENUMERATION (-7)`; for any other non-zero status it returns `0`. `vibrance.cpp`'s own logic
+  was not touched by `work/native-dll-from-source` (§7.2) - only the binding mechanism around it changed
+  - so this half is exactly as it was, even though the DLL bytes themselves are now a fresh build.
 - On a machine with `nvapi.dll` present but no usable NVIDIA GPU, the expected statuses are
   `NVAPI_NVIDIA_DEVICE_NOT_FOUND (-6)` or `NVAPI_API_NOT_INITIALIZED (-4)` — **neither is `-7`**.
 - Result: the loop never exited, hammering a P/Invoke into the driver as fast as it could while
@@ -1517,12 +1631,13 @@ drops handles it has already seen (`:436-437`). On that same no-GPU machine it n
 P/Invokes, once, and returns `[0]`; both restore paths skip the null handle `0` (`:520-523`,
 `RestoreWindowsVibranceLevel`; `:543-546`, `AllDisplaysAtLevel`). The bound and the dedupe are driven
 by a stub in `StabilityFixture.CheckDisplayHandleEnumeration` (`common/StabilityFixture.cs:43`), so
-both are checkable with no GPU and no prebuilt DLL.
+both are checkable with no GPU and no native DLL at all.
 
 **Read that as "the loop can no longer run away", not "issue #138 is confirmed closed."** The symptom
 was never reproduced here, so the link from this loop to the CPU reports remains **INFERENCE**; and
 the native half is untouched, so making `enumerateNvidiaDisplayHandle` return `-1` for every non-`0`
-status is still an available second fix that would need a rebuild of `juvlarN/vibranceDLL`.
+status is still an available second fix - one that, as of `work/native-dll-from-source`, means editing
+`native/vibranceDLL/vibrance/vibrance.cpp` (§7.2) and rebuilding in this repo, rather than a separate one.
 
 **Silent dead GUI.** If `initializeLibrary` returns `false` (broken NvAPI, missing entry points), the
 constructor skips `InitializeProxy`, `isInitialized` stays `false`, and no dialog is shown at all
@@ -2022,8 +2137,14 @@ one getter — there is no view-model, no binding and no messaging.
 
 ### 10.1 `VibranceGUI` — the main window
 
-`ClientSize 419×524`, `FixedSingle`, no maximise box, title `vibranceGUI` — to which `Program.cs:510` (`buildFormTitleText`)
-appends `" (NVIDIA, 2.7.0)"` or `" (AMD, …)"` — the version comes from
+`ClientSize 419×524`, `FixedSingle`, no maximise box, title `vibranceGUI` — to which `Program.cs:525` (`buildFormTitleText`)
+appends `" (NVIDIA, x86, 2.8.0)"` or `" (AMD, x64, …)"` — adapter, then architecture, then version, in
+that order. The architecture token is `Environment.Is64BitProcess ? "x64" : "x86"`, deliberately not
+`Is64BitOperatingSystem` — the x64 port (`native/vibranceDLL`) means x86 and x64 builds will both be
+downloadable, and a bug report naming a build must be tied to the code that actually produced it, the
+same reasoning that put the version number here (commit `3ffc505`). `Is64BitOperatingSystem` would be
+wrong: it reports the OS, not this process, so an x86 build running on 64-bit Windows — the common case
+today, since every build is currently x86 — would wrongly claim `x64`. The version comes from
 `Application.ProductVersion`, so it tracks `AssemblyFileVersion` with no code change.
 
 | Region | Controls |
@@ -2176,7 +2297,7 @@ attribute is a leftover; the struct holds a `String` and a `List<int>` and is ne
 | Field | Type | Alive? |
 |---|---|---|
 | `isInitialized` | `bool` | **yes** — the shell's only health signal (`VibranceGUI.cs:329,347,974`, `backgroundWorker_DoWork`) |
-| `activeOutput` | `int` | written once (`NvidiaDynamicVibranceProxy.cs:238`, `InitializeProxy`), never read |
+| `activeOutput` | `int` | written once (`NvidiaDynamicVibranceProxy.cs:264`, `InitializeProxy`), never read |
 | `defaultHandle` | `int` | live — an NVIDIA display handle |
 | `userVibranceSettingDefault` | `int` | live — the desktop level used on revert |
 | `userVibranceSettingActive` | `int` | **dead** — written by `SetVibranceIngameLevel`, never read |
@@ -2290,14 +2411,16 @@ returned `-1`. **VERIFIED (binary), and still true:** that export returns `-1` *
 (`NVAPI_NVIDIA_DEVICE_NOT_FOUND`) or `-4` (`NVAPI_API_NOT_INITIALIZED`), so the loop spun forever —
 one core at 100 % plus unbounded growth of `displayHandles` — inside the proxy constructor on the UI
 thread, so the window never appeared. Fixed on the C# side only: the loop is bounded at
-`NvapiMaxDisplays` (`vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:438`, `EnumerateDisplayHandles`)
-and dedupes as it goes (`:436-437`), both driven by a stub in
+`NvapiMaxDisplays` (`vibrance.GUI/NVIDIA/NvidiaDynamicVibranceProxy.cs:464`, `EnumerateDisplayHandles`)
+and dedupes as it goes (`:470-471`), both driven by a stub in
 `StabilityFixture.CheckDisplayHandleEnumeration` (`common/StabilityFixture.cs:43`).
 
 **Two things did not change, and both matter before anyone calls #138 closed.** The native side still
-returns `0` for every non-`-7` failure — `vibranceDLL.dll` was not rebuilt, so "make that export
-return `-1` for every non-`0` status" is still the other half of the fix, and still needs the
-`juvlarN/vibranceDLL` repository. And the symptom was never reproduced at runtime: the link from this
+returns `0` for every non-`-7` failure — `vibrance.cpp`'s logic was not touched by
+`work/native-dll-from-source` (§7.2), so "make that export return `-1` for every non-`0` status" is
+still the other half of the fix. That other half no longer needs a separate repository - it would now
+be a change to `native/vibranceDLL/vibrance/vibrance.cpp` and a rebuild in this repo - but it has not
+been made. And the symptom was never reproduced at runtime: the link from this
 loop to the reported CPU usage is still **INFERENCE**, so what landed is "this loop can no longer run
 away", not a confirmed fix for the issue.
 
@@ -2357,7 +2480,7 @@ registry write re-fired on **every** foreground event, forever. Fixed by
 [§7.9](#79-nvidia-specific-failure-modes)): (a) `GraphicsAdapter.cs:86-95` (`GetAdapter`) returns `Ambiguous` whenever
 both vendor DLLs exist in SysWOW64 and `Program.cs:342-348` (`Main`) then quits, showing DDU advice that is wrong
 for a hybrid machine; (b) on muxless Optimus `getAssociatedNvidiaDisplayHandle` returns `-1`, so
-`ApplyGameVibranceLevel` skips the vibrance write (`NvidiaDynamicVibranceProxy.cs:461-470`) — since
+`ApplyGameVibranceLevel` skips the vibrance write (`NvidiaDynamicVibranceProxy.cs:487-496`) — since
 `0c3057b` it logs once per device and lets the rest of the handler run, but the user still sees
 nothing; (c) a powered-down dGPU
 makes `getGpuSystemType` fail, which the DLL flattens to `Unknown`, which aborts init with a
@@ -2420,7 +2543,7 @@ application stranded the vibrance.** Both handlers used to wrap *both* branches 
 revert branch never ran again — vibrance, the resolution and the gamma ramp all stuck, with no
 way back short of restarting. The test now only short-circuits the match lookup: an empty list yields
 a `null` `ApplicationSetting` and falls through to the revert branch
-(`NvidiaDynamicVibranceProxy.cs:268-272` (`OnWinEventHook`), `AmdDynamicVibranceProxy.cs:151-155`,
+(`NvidiaDynamicVibranceProxy.cs:294-298` (`OnWinEventHook`), `AmdDynamicVibranceProxy.cs:151-155`,
 `OnWinEventHook`).
 
 **D10 — settings changed within five seconds of exit are lost**, because the save is a
@@ -2440,7 +2563,7 @@ exception, after the file has already been truncated by `XmlWriter.Create`.
 ### 12.3 Silently wrong behaviour
 
 **D13 — `SetVibranceIngameLevel` does nothing.** Both implementations write
-`VibranceInfo.userVibranceSettingActive` (`NvidiaDynamicVibranceProxy.cs:799-802` (`SetVibranceIngameLevel`),
+`VibranceInfo.userVibranceSettingActive` (`NvidiaDynamicVibranceProxy.cs:852-855` (`SetVibranceIngameLevel`),
 `AmdDynamicVibranceProxy.cs:108-111`, `SetVibranceIngameLevel`), which nothing reads. The live preview in the per-game dialog
 (`VibranceSettings.cs:111`, `trackBarIngameLevel_Scroll`) is inert.
 
@@ -2460,7 +2583,7 @@ value still `0` at that point, because the saved level is not pushed in until `V
 (`backgroundWorker_DoWork`). Every launch therefore stamped `0` onto an arbitrary display, which on a
 multi-monitor machine was often not the primary and was never one `affectPrimaryMonitorOnly` had been
 consulted about. The write is deleted, with the reasoning recorded in place at
-`NvidiaDynamicVibranceProxy.cs:244-259` (`InitializeProxy`); `RestoreWindowsVibranceLevel`'s
+`NvidiaDynamicVibranceProxy.cs:270-285` (`InitializeProxy`); `RestoreWindowsVibranceLevel`'s
 `isWindowsLevelKnown` guard (`:508-511`, `RestoreWindowsVibranceLevel`) stops a foreground event that
 lands before `SetVibranceWindowsLevel` from writing the still-unknown level in its place. Detail in
 [§7.7](#77-c-side-initialisation-and-the-startup-reset-it-used-to-cause).
@@ -2496,17 +2619,17 @@ assignment went with `0c3057b`.
 **D19 — the "system type is unknown" dialog is a hardware-sounding message for a software failure.**
 **VERIFIED (binary):** the DLL returns `NvSystemTypeUnknown` for *any* NvAPI failure in
 `getGpuSystemType`. It aborts init for the whole app if **any** enumerated GPU reports it
-(`NvidiaDynamicVibranceProxy.cs:225-233`, `InitializeProxy`).
+(`NvidiaDynamicVibranceProxy.cs:251-259`, `InitializeProxy`).
 
 **D20 — the laptop rejection message is dead code.** `NvapiErrorSystypeUnsupported`
-(`NvidiaDynamicVibranceProxy.cs:159-161`, `NvapiErrorSystypeUnsupported`) is referenced by nothing, and `NvSystemTypeLaptop` is not
+(`NvidiaDynamicVibranceProxy.cs:185-187`, `NvapiErrorSystypeUnsupported`) is referenced by nothing, and `NvSystemTypeLaptop` is not
 rejected anywhere — even though the README still says NVIDIA laptops are unsupported.
 
 **D21 — AMD users see NVIDIA-worded error text.** `AmdDynamicVibranceProxy.cs:51-55` (`AmdDynamicVibranceProxy`) reuses
 `NvidiaDynamicVibranceProxy.NvapiErrorInitFailed` and its Steam-guide link.
 
 **D22 — a failed initialisation produces a live but non-functional proxy.** Both constructors catch
-everything, show a dialog and return normally (`NvidiaDynamicVibranceProxy.cs:203-212` (`NvidiaDynamicVibranceProxy`),
+everything, show a dialog and return normally (`NvidiaDynamicVibranceProxy.cs:229-238` (`NvidiaDynamicVibranceProxy`),
 `AmdDynamicVibranceProxy.cs:48-57`, `AmdDynamicVibranceProxy`). And **AMD sets `isInitialized = true` *before* calling `Init()`**
 (`:37-38`, `AmdDynamicVibranceProxy`), so an exception inside `Init()` leaves the proxy marked initialised.
 
@@ -2534,7 +2657,7 @@ the next save for another reason.
 triggered that profile, wherever it lived. `ApplicationSettingMatcher.FindMatch`
 (`common/ApplicationSettingMatcher.cs:47-83`) now falls back to a longest-prefix match of
 the process image path against `ApplicationSetting.InstallDirectory` when no name matches, which is
-what both proxies call (`NvidiaDynamicVibranceProxy.cs:269` (`OnWinEventHook`),
+what both proxies call (`NvidiaDynamicVibranceProxy.cs:295` (`OnWinEventHook`),
 `AmdDynamicVibranceProxy.cs:152`, `OnWinEventHook`). **Still open for the name pass**, which is the
 one that fires most of the time: it is unchanged and still exact-name-only (`:89-94`, `NameMatches`),
 so a profile carrying no `InstallDirectory` — every hand-added entry — still matches any process of
@@ -2549,22 +2672,42 @@ nothing until the user alt-tabbed away and back. Closed by
 
 ### 12.4 Native-boundary hazards
 
-**D29 — the `__thiscall`-as-`StdCall` binding depends on the C++ class staying stateless.**
-VERIFIED binary analysis in
-[§7.5](#75-the-__thiscall-as-stdcall-binding--the-single-biggest-contributor-hazard). Adding a member
-field to the C++ `vibrance` class breaks all 12 P/Invokes.
+**D29 — FIXED on `work/native-dll-from-source`. The `__thiscall`-as-`StdCall` binding depended on the
+C++ class staying stateless.** Historical VERIFIED binary analysis in
+[§7.5](#75-the-__thiscall-as-stdcall-binding--the-single-biggest-contributor-hazard-fixed): adding a
+member field to the C++ `vibrance` class used to break all 12 P/Invokes, because C# faked the calling
+convention and passed no `this`. All 12 are now bound through undecorated `__cdecl` free functions
+(`native/vibranceDLL/vibrance/vibrance_c.h`/`.cpp`, §7.3) that forward to a real, compiler-managed C++
+member call with a real `this` - so this specific hazard no longer exists, independent of whether
+`vibrance` ever gains a member field. (Today it still has none - see §7.5 - but that is no longer what
+makes the binding safe.)
 
-**D30 — bool returns may carry stale high bytes. INFERENCE, unverified at runtime.** The exports set
-only `AL`; C# marshals a `bool` return as a 4-byte `BOOL`. A failed `initializeLibrary` could therefore
-be observed as `true`. Cheap to test; would explain "it says Running but nothing happens" reports.
+**D30 — FIXED on `work/native-dll-from-source`. Bool returns could carry stale high bytes.** The
+mangled exports set only `AL`; C#'s default marshalling of a `bool` return reads all 4 bytes of `EAX`
+as a Win32 `BOOL`, so a failed `initializeLibrary` could in principle be observed as `true` if a stale
+non-zero value happened to sit in `EAX`'s upper 24 bits. The new `vibrance_*` wrappers (§7.3) all return
+`int` (0 or 1), built from an explicit `cond ? 1 : 0`, which cannot carry stale bytes - closing this for
+every one of the 6 wrappers around a native `bool`-returning method. Never verified as having fired at
+runtime before the fix, so it cannot be verified as un-fired now either; it is simply no longer possible
+by construction.
 
 **D31 — `getActiveOutputs` has an `int[]` vs `int*[]` type mismatch across the boundary** and is
-functionally dead (`NvidiaDynamicVibranceProxy.cs:60-65` (`getActiveOutputs`), `:238` (`InitializeProxy`); native RVA `0x2d20`). Its result is
-stored in `VibranceInfo.activeOutput`, which nothing reads.
+functionally dead (`NvidiaDynamicVibranceProxy.cs:79-84` (`getActiveOutputs`), `:264` (`InitializeProxy`); native RVA `0x2d20` in the binary as previously shipped). Confirmed from source, not just
+disassembly, now that `native/vibranceDLL/vibrance/vibrance.cpp`'s `getActiveOutputs` is in this repo:
+`for(int i = 0; i < sizeof(gpuHandles)/sizeof(gpuHandles[0]); i++)` where `gpuHandles` is a function
+parameter of type `int**` - `sizeof` a pointer over `sizeof` a pointer is always `1`, so the loop always
+runs exactly once regardless of how many GPUs exist. Its result is stored in `VibranceInfo.activeOutput`,
+which nothing reads. **Not fixed by this work** — `vibrance.cpp` was deliberately left unmodified (§7.2).
 
 **D32 — `getGpuSystemType` is declared taking an `int` in C# and an `int*` in C++**
-(`NvidiaDynamicVibranceProxy.cs:116-121`, `getGpuSystemType`). It works only because NvAPI GPU handles *are* pointers and the
-process is 32-bit; the type lie will bite anyone porting to x64.
+(`NvidiaDynamicVibranceProxy.cs:142-147`, `getGpuSystemType`). It works only because NvAPI GPU handles
+*are* pointers and the process is 32-bit; the type lie will bite anyone porting to x64. **Still open,
+deliberately, after `work/native-dll-from-source`:** the new `vibrance_getGpuSystemType` wrapper takes
+`int *gpuHandle`, matching `vibrance.h` exactly (§7.3) — the mismatch is entirely on the C# side, which
+still passes `gpuHandle` by value on purpose, with a comment recording it at the call site
+(`NvidiaDynamicVibranceProxy.cs:135-141`). Fixing it is a behaviour change, and this work was scoped to
+binding-mechanism parity only; folding an unrelated behaviour fix into a build-system slice was judged
+the worse place to make it.
 
 **D33 — the native DLL does not null-check `NvAPI_GetAssociatedNvidiaDisplayHandle`** at init
 (VERIFIED binary, [§7.4](#74-the-initialisation-handshake)), so on a driver that lacks it, init succeeds
@@ -2575,7 +2718,7 @@ only a GPU's first output can ever be addressed.
 
 **D35 — every redundancy check is a driver round-trip inside the callback.** `equalsDVCLevel` performs a
 real `NvAPI_GetDVCInfo` call (VERIFIED binary), and the revert path can call it once per display
-(`NvidiaDynamicVibranceProxy.cs:546-561`, `AllDisplaysAtLevel`) — all on the UI thread.
+(`NvidiaDynamicVibranceProxy.cs:572-587`, `AllDisplaysAtLevel`) — all on the UI thread.
 
 **D36 — most ADL return codes are still ignored, but no longer the one that matters.**
 `AdlMainControlCreate` (`AmdAdapter32.cs:20,27`, `Init`) and `AdlAdapterNumberOfAdaptersGet` (`:24`,
@@ -2590,11 +2733,11 @@ away, deliberately — see the comment at `AmdDynamicVibranceProxy.cs:327-336`
 sibling one line later (`:22`). Safe only because `Init()` is always preceded by `IsAvailable()`.
 
 **D38 — `UnloadLibraryEx` dereferences `_hook` unconditionally**
-(`NvidiaDynamicVibranceProxy.cs:827`, `UnloadLibraryEx`); an NRE there aborts cleanup *before* `unloadLibrary()` runs. It is
+(`NvidiaDynamicVibranceProxy.cs:880`, `UnloadLibraryEx`); an NRE there aborts cleanup *before* `unloadLibrary()` runs. It is
 survivable today only because `CleanUp` checks `isInitialized` first.
 
-**D39 — the prebuilt DLL cannot be version-checked.** No `VS_VERSION_INFO` resource
-([§7.2](#72-what-vibrancedlldll-actually-is)); the only identity is its hash.
+**D39 — `vibranceDLL.dll` cannot be version-checked, prebuilt or freshly built.** No `VS_VERSION_INFO`
+resource on either ([§7.2](#72-what-vibrancedlldll-actually-is)); the only identity is its hash.
 
 **D40 — the driver-capability floor is accidental.** The DLL requires 12 NvAPI interface IDs to resolve,
 **including `NvAPI_GetDVCInfoEx`, which it never uses** ([§7.4](#74-the-initialisation-handshake)).
@@ -2634,7 +2777,7 @@ dropped (`VibranceGUI.cs:1250,1293` (`ReadVibranceSettings`); `ProcessExplorer.c
 
 **D48 — detection `LoadLibrary` handles are never freed** (`common/GraphicsAdapter.cs:386`, `IsAdapterAvailable`); the
 extracted `%APPDATA%\vibranceGUI\vibranceDLL.dll` is never deleted; `NvAPI_Unload` runs only on the
-clean shutdown path (`NvidiaDynamicVibranceProxy.cs:828`, `UnloadLibraryEx`).
+clean shutdown path (`NvidiaDynamicVibranceProxy.cs:881`, `UnloadLibraryEx`).
 
 ### 12.6 Threading and re-entrancy
 
@@ -2665,7 +2808,7 @@ re-established in-process.
 | Item | Location |
 |---|---|
 | **D54** `WinEvent` constant block — only 2 of 71 constants used | `common/WinEventHook.cs:27-171` (145 dead lines) |
-| Polling-loop fossils: `shouldRun`, `sleepInterval`, `SetShouldRun`, `SetSleepInterval`, empty `HandleDvc()` | `common/Definitions.cs:27-28` (`shouldRun`); `NvidiaDynamicVibranceProxy.cs:804-807` (`SetSleepInterval`) |
+| Polling-loop fossils: `shouldRun`, `sleepInterval`, `SetShouldRun`, `SetSleepInterval`, empty `HandleDvc()` | `common/Definitions.cs:27-28` (`shouldRun`); `NvidiaDynamicVibranceProxy.cs:857-860` (`SetSleepInterval`) |
 | `SetVibranceIngameLevel` / `userVibranceSettingActive` write-only pair (**D13**) | `common/IVibranceProxy.cs:36`, `common/Definitions.cs:20` (`userVibranceSettingActive`) |
 | **Removed:** `WinEventHookEventArgs.Process` (never assigned or read), `WindowText`/`MainWindowTitle` (assigned, never read), `ProcessId` (assigned, never read) and the `GetWindowTextLength`/`GetWindowTextA` calls that fed the first two | deleted on `work/156-foreground-hot-path`; see `common/WinEventHookEventArgs.cs`, `common/WinEventHook.cs` ([§11.6](#116-wineventhookeventargs)) |
 | The `refreshRate` key is read into a buffer and discarded; nothing has ever written it. (`SetVibranceSetting` itself is live — three single-key writers go through it, [§9.2](#92-file-formats)) | `common/SettingsController.cs:33,280-286` (`SzKeyNameRefreshRate`) |
@@ -2673,7 +2816,7 @@ re-established in-process.
 | The `ProgressPercentage == 2` branch ("NVAPI Unloaded: …") is unreachable; only `ReportProgress(1)` is ever called | `VibranceGUI.cs:331,438-441` (`backgroundWorker_DoWork`) |
 | `observerStatusLabel` shows a static string forever | `VibranceGUI.Designer.cs:303-311` (`InitializeComponent`) |
 | `NvApiStatus` — the entire 100+ member enum, unreferenced | `NVIDIA/NvidiaTypes.cs:25-56` |
-| **Removed:** the `isCsgoStarted` P/Invoke and the two `user32` text P/Invokes, deleted by `62541a6`. The dead `char[64] sz` local survives | `NvidiaDynamicVibranceProxy.cs:240` (`InitializeProxy`) |
+| **Removed:** the `isCsgoStarted` P/Invoke and the two `user32` text P/Invokes, deleted by `62541a6`. The dead `char[64] sz` local survives | `NvidiaDynamicVibranceProxy.cs:266` (`InitializeProxy`) |
 | ADL: `AdlDisplayColorGet`, `ADL_Main_Memory_Free`, `AdlCheckLibrary.GetProcAddress`, and the unused constants (`AdlFail`, `AdlDriverOk`, `AdlMaxDisplays`, `AdlDisplayColorBrightness/Contrast/Hue/Temperature`, …) | `AMD/vendor/adl32/ADL.cs:44-59,69-75,189-203`; `ADLCheckLibrary.cs:45-53` |
 | `isActive` assigned and never read | `AMD/vendor/AmdAdapter32.cs:43,53` |
 | Native exports unreachable from C#: `handleDVC`, `test`, `getInterfaceVersionString`, both `printError` overloads | `vibranceDLL.dll` (VERIFIED binary) |
@@ -2694,7 +2837,7 @@ into `AMD.vendor.adl32`/`adl64`. Meanwhile `AMD/vendor/utils/CommonUtils.cs` hos
 extraction.
 
 **D57 — the same logic exists twice, in several places.** `OnWinEventHook` is a near-duplicate across
-the two proxies (`NvidiaDynamicVibranceProxy.cs:263-394` (`OnWinEventHook`) vs `AmdDynamicVibranceProxy.cs:146-246`, `OnWinEventHook`);
+the two proxies (`NvidiaDynamicVibranceProxy.cs:289-420` (`OnWinEventHook`) vs `AmdDynamicVibranceProxy.cs:146-246`, `OnWinEventHook`);
 `AmdAdapter32.cs` and `AmdAdapter64.cs` are 195/197 identical; `adl32/**` and `adl64/**` differ by one
 string; the vendor level ranges are duplicated *and disagree* between `Program.cs:303-306` (`Main`) and
 `SettingsController.cs:251-255` (`ReadVibranceSettings`); `GetForegroundWindow` logic exists both natively (NVIDIA) and as a C#
@@ -2715,11 +2858,11 @@ pair this used to call out is deleted from both proxies; both now call
   `LoadLibrary`-by-name calls.
 - **Hardcoded external URLs**, all opened with `Process.Start` on a user click: the maintainer's X/Twitter
   (`Program.cs:23,251` (`ErrorGraphicsAdapterUnknown`); `VibranceGUI.cs:29,548,553`, `TwitterLink`), the
-  Guru3D DDU page (`Program.cs:470`, `ShowLegacyAmbiguousDriverDialog`), the Steam guide (`NvidiaDynamicVibranceProxy.cs:163`, `GuideLink`).
+  Guru3D DDU page (`Program.cs:470`, `ShowLegacyAmbiguousDriverDialog`), the Steam guide (`NvidiaDynamicVibranceProxy.cs:189`, `GuideLink`).
   The PayPal donation link and its `buttonPaypal_Click` handler are **gone** (`7782a4f`).
 - **Hardcoded names and limits**: the mutex `vibranceGUI~Mutex`, `AppName = "vibranceGUI"`, the `Run`
   key, both settings filenames, `vibranceGUI.log`; `AdlMaxAdapters = 40` (`ADL.cs:51`);
-  `NvapiMaxPhysicalGpus = 64` (`NvidiaDynamicVibranceProxy.cs:132`); the AMD `0..300` range, named
+  `NvapiMaxPhysicalGpus = 64` (`NvidiaDynamicVibranceProxy.cs:158`); the AMD `0..300` range, named
   constants since `62541a6` (`AMD/AmdDynamicVibranceProxy.cs:15-17`) but still a guess, and no longer
   carrying the `// todo` that said so; and `"Counter-Strike: Global Offensive"` **compiled into the
   native DLL** (VERIFIED binary).
@@ -2818,16 +2961,28 @@ Pitfalls specific to this codebase:
 `AdlDisplayColorSet(adapterIndex, displayIndex, Adl.AdlDisplayColorContrast, value)` — **in both
 `AmdAdapter32.cs` and `AmdAdapter64.cs`**.
 
-**NVIDIA cannot be extended from C# alone.** New functionality needs a new `vibranceDLL.dll` built from
-`juvlarN/vibranceDLL`, then a new `[DllImport]` block with the exact MSVC-mangled `EntryPoint`
-(`NvidiaDynamicVibranceProxy.cs:45-128`). **Get the mangled name from `dumpbin /exports` on the rebuilt
-DLL — do not hand-write it.** Keep the C++ class **stateless** (**D29**). Update the embedded resource;
-note that `%APPDATA%\vibranceGUI\vibranceDLL.dll` is overwritten at every start, so stale copies
-self-heal, but a running instance locks the file.
+**NVIDIA cannot be extended from C# alone, but as of `work/native-dll-from-source` it no longer needs a
+separate repository either.** New functionality needs a new method on `vibranceDLL::vibrance`
+(`native/vibranceDLL/vibrance/vibrance.h`/`.cpp`) plus a matching `extern "C"` wrapper in
+`native/vibranceDLL/vibrance/vibrance_c.h`/`.cpp` — an undecorated `__cdecl` free function named
+`vibrance_<method>` that builds a local `vibranceDLL::vibrance` and forwards the call, returning `int`
+rather than `bool` if the method does (§7.3, §7.5). Then a new `[DllImport]` block in
+`NvidiaDynamicVibranceProxy.cs` (currently `:44-154`) with `EntryPoint = "vibrance_<method>"` and
+`CallingConvention.Cdecl` — **the exact name you gave the wrapper, hand-written; there is no mangling to
+extract with `dumpbin /exports` any more.** (`dumpbin /exports` is still worth running once after any
+native rebuild, not to *get* a name but to *confirm* the wrapper you added actually appears undecorated
+- see [§4](#4-repository-map)'s task 4 checklist in `native/vibranceDLL/README.md` for the checks a
+rebuild should pass, in particular the import-table check.) Keeping the C++ class **stateless** is no
+longer what makes the binding safe (**D29**, fixed) — but it is still good practice, since every wrapper
+constructs a fresh instance per call. Rebuild `native/vibranceDLL/vibrance.vcxproj` `Release|Win32`, and copy the output over
+`vibrance.GUI/NVIDIA/vibranceDLL.dll` — no `.csproj` change is needed to pick it up, since the
+`<EmbeddedResource>` entry (`vibrance.GUI.csproj:245`) already points at that path and the C# build
+just embeds whatever bytes are there. Note that `%APPDATA%\vibranceGUI\vibranceDLL.dll` is overwritten
+at every app start, so a stale extracted copy self-heals, but a running instance locks the file.
 
 **Do this first, whatever else you do.** Wire up the two driver reads that are bound and dead:
 `ADL_Display_Color_Get` (`adl32/ADL.cs:189-203`) and NVIDIA's `getDVCInfo`
-(`NvidiaDynamicVibranceProxy.cs:81-86`), which carries `NvDisplayDvcInfo.minLevel`/`maxLevel`
+(`NvidiaDynamicVibranceProxy.cs:100-105`), which carries `NvDisplayDvcInfo.minLevel`/`maxLevel`
 (`NVIDIA/NvidiaTypes.cs:14-15`). Neither is called from anywhere today — `getDVCInfo`'s last
 call site went with the startup write (**D15**), so those two fields are not "fetched and ignored",
 they are never fetched at all. Sourcing the UI ranges from the driver instead of the hardcoded
@@ -2842,13 +2997,22 @@ they are never fetched at all. Sourcing the UI ranges from the driver instead of
    (`VibranceGUI.cs:174-175,335`, `VibranceGUI`).
 3. **Never do slow, blocking or modal work in `OnWinEventHook`.** It runs on the UI thread, during a
    foreground transition, often over a fullscreen game (**D2**, **D49**).
-4. **Never add member state to the C++ `vibrance` class** without converting every P/Invoke to a
-   `this`-safe form (**D29**).
-5. **Never "correct" the mangled entry-point names**, including the typo `enumeratePhsyicalGPUs`.
-6. **Never build AnyCPU or x64.** The native DLL is PE32 i386
-   ([§3.3](#33-the-x86-rule-and-why-it-is-not-negotiable)).
+4. **Adding member state to the C++ `vibrance` class no longer corrupts every P/Invoke** (**D29**,
+   fixed on `work/native-dll-from-source` — each `vibrance_*` wrapper builds its own instance and makes
+   a real, compiler-managed member call, §7.5). It is still worth keeping the class stateless anyway:
+   every wrapper constructs a fresh one per call, so member state would need to live somewhere that
+   outlives a single call regardless, i.e. back in namespace-scope globals, which is where it already
+   lives (`vibrance.cpp`'s NvAPI function pointers, `shouldRun`, `defaultHandle`).
+5. **Never "correct" the exported entry-point names**, including the typo `enumeratePhsyicalGPUs` — now
+   preserved as `vibrance_enumeratePhsyicalGPUs` (§7.3) as much as it was in the old mangled name.
+6. **Never build AnyCPU or x64 — for now.** The native DLL is still built and shipped PE32 i386 only
+   ([§3.3](#33-the-x86-rule-and-why-it-is-not-negotiable)); `work/native-dll-from-source` made the
+   binding mechanism itself architecture-agnostic (§7.3, §7.5) precisely so a future x64 slice is a
+   rebuild-and-retarget, not another binding rewrite, but that slice has not happened yet.
 7. **Never assume `isInitialized == true` means the driver works.** AMD sets it before `Init()`
-   (**D22**), and **D30** suggests the NVIDIA return value itself may be untrustworthy.
+   (**D22**). **D30**'s specific worry (a failed NVIDIA init observed as `true` because of a stale byte
+   in `EAX`) is fixed, but that says nothing about whether the driver call itself actually succeeded in
+   any deeper sense — `isInitialized` was never a strong guarantee and still is not one.
 8. **Never mutate the `VibranceInfo` returned by `GetVibranceInfo()`** — it is a struct copy.
 9. **Never change the settings file shape without a migration plan.** There is no schema version and no
    legacy handling; old files either parse or reset to defaults, silently (**§9.3**).
@@ -2869,8 +3033,12 @@ Merged from both archaeology passes, de-duplicated. These are genuinely unanswer
 
 **Native / NVIDIA**
 
-1. Is `vibranceDLL.dll`'s source (`juvlarN/vibranceDLL`) still available and buildable? The binary here
-   is from **2017-01-02** and has no version resource to check against (**D39**).
+1. ~~Is `vibranceDLL.dll`'s source (`juvlarN/vibranceDLL`) still available and buildable?~~ **ANSWERED
+   on `work/native-dll-from-source`:** `juvlarN/vibranceDLL` itself was not confirmed reachable, but its
+   upstream, `juv/vibranceDLL`, is - and is now vendored at `native/vibranceDLL/` and builds cleanly with
+   MSVC v143 (§7.2). The previously shipped binary (from **2017-01-02**, per its link timestamp) has no
+   version resource to check against, and neither does a fresh build (**D39**) - only a hash tells them
+   apart, and a byte-identical rebuild of the old binary was never the goal (§7.2).
 2. Does `NvAPI_SetDVCLevel` still function on current NVIDIA driver branches, or has Digital Vibrance
    moved to the newer colour-settings API? (The `feature/add-color-settings` branch suggests this was
    being explored; issues #149 and #156 point the same way.) (**D41**)

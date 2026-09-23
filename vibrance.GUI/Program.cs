@@ -36,6 +36,7 @@ namespace vibrance.GUI
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
         private const string CliSelfTestMessageBoxCaption = "vibranceGUI command line self test";
+        private const string NvapiSelfTestMessageBoxCaption = "vibranceGUI NVIDIA interop self test";
         private const string HelpMessageBoxCaption = "vibranceGUI command line options";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
 
@@ -256,6 +257,18 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, StartupForegroundFixture.Run().ToArray()),
                     StartupSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again, and for the same reason: every check either reads the embedded
+            // resource's own bytes or resolves/prelinks a P/Invoke against a copy loaded from a
+            // fixture-private directory - nvapi is only ever touched inside initializeLibrary(),
+            // which this never calls - so this needs no GPU, no NVIDIA driver and writes to no
+            // display. See NvidiaInteropFixture's own header comment.
+            if (args.Contains("--selftest-nvapi"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, NvidiaInteropFixture.Run().ToArray()),
+                    NvapiSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -520,7 +533,15 @@ namespace vibrance.GUI
             {
                 forcedExecution = "*NVIDIA forced*";
             }
-            return String.Format(" ({0}, {1}) {2}", adapter.ToString().ToUpper(), Application.ProductVersion, forcedExecution);
+
+            // Environment.Is64BitProcess, not Is64BitOperatingSystem - the x64 port (see
+            // native\vibranceDLL) means x86 and x64 builds will both be downloadable, and a bug
+            // report naming a build must be tied to the code that actually produced it, the same
+            // reasoning that put the version number here (commit 3ffc505). Is64BitOperatingSystem
+            // would be wrong: it reports the OS, not this process, so a 32-bit build running on
+            // 64-bit Windows - the common case - would claim "x64" while actually being x86.
+            string architecture = Environment.Is64BitProcess ? "x64" : "x86";
+            return String.Format(" ({0}, {1}, {2}) {3}", adapter.ToString().ToUpper(), architecture, Application.ProductVersion, forcedExecution);
         }
     }
 }
