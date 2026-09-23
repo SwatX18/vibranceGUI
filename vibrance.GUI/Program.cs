@@ -533,7 +533,15 @@ namespace vibrance.GUI
             {
                 forcedExecution = "*NVIDIA forced*";
             }
-            return String.Format(" ({0}, {1}) {2}", adapter.ToString().ToUpper(), Application.ProductVersion, forcedExecution);
+
+            // Environment.Is64BitProcess, not Is64BitOperatingSystem - the x64 port (see
+            // native\vibranceDLL) means x86 and x64 builds will both be downloadable, and a bug
+            // report naming a build must be tied to the code that actually produced it, the same
+            // reasoning that put the version number here (commit 3ffc505). Is64BitOperatingSystem
+            // would be wrong: it reports the OS, not this process, so a 32-bit build running on
+            // 64-bit Windows - the common case - would claim "x64" while actually being x86.
+            string architecture = Environment.Is64BitProcess ? "x64" : "x86";
+            return String.Format(" ({0}, {1}, {2}) {3}", adapter.ToString().ToUpper(), architecture, Application.ProductVersion, forcedExecution);
         }
     }
 }

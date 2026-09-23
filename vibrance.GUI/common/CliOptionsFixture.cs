@@ -2,7 +2,9 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Windows.Forms;
 
 namespace vibrance.GUI.common
 {
@@ -55,6 +57,7 @@ namespace vibrance.GUI.common
             CheckVendorRangeValidation(checklist);
             CheckHelpText(checklist);
             CheckRelayTransport(checklist);
+            CheckFormTitleText(checklist);
 
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
@@ -160,6 +163,87 @@ namespace vibrance.GUI.common
             checklist.Check(joined.Contains("--selftest"), "mentions the --selftest-* family");
             checklist.Check(joined.Contains("0-63") && joined.Contains("0-300"),
                 "states both vendors' real ranges, not just one");
+        }
+
+        /// <summary>
+        /// Program.buildFormTitleText, by reflection since it is a private static - same reasoning
+        /// as HdrVibranceFixture reaching RealHdrStateReader.TryGetColorInfo the same way: a
+        /// hand-copied mirror of the format string here could drift from what Program.cs actually
+        /// builds and this fixture would never notice.
+        ///
+        /// The architecture token is computed from THIS test process's own Environment.Is64BitProcess,
+        /// not hardcoded to "x86" - a Slice 2 tripwire that fails the moment buildFormTitleText
+        /// stops reflecting the actual bitness it runs as (whether hardcoded to a literal, or
+        /// swapped for Is64BitOperatingSystem, which would answer for the OS rather than this
+        /// process - wrong on the common case of an x86 build on 64-bit Windows). Complements
+        /// NvidiaInteropFixture's own N2, which pins the DLL's PE machine type against IntPtr.Size
+        /// the same way.
+        /// </summary>
+        private static void CheckFormTitleText(Checklist checklist)
+        {
+            checklist.Lines.Add(string.Empty);
+            checklist.Lines.Add("buildFormTitleText - adapter, architecture and version, in that order:");
+
+            MethodInfo method = typeof(Program).GetMethod("buildFormTitleText", BindingFlags.NonPublic | BindingFlags.Static);
+            if (method == null)
+            {
+                checklist.Check(false, "buildFormTitleText not found via reflection - renamed?");
+                return;
+            }
+
+            // GetMethod alone only guards a RENAME. A RESHAPE (a parameter added, removed or
+            // reordered) still finds the method, and Invoke below would throw
+            // TargetParameterCountException straight out of this check and, unhandled, take every
+            // check after it down with it - see HdrVibranceFixture's own CheckNoThrow-shaped guard
+            // on TryGetColorInfo for the same concern.
+            ParameterInfo[] parameters = method.GetParameters();
+            if (parameters.Length != 3)
+            {
+                checklist.Check(false, string.Format("buildFormTitleText now takes {0} parameters, not 3 - update this check", parameters.Length));
+                return;
+            }
+
+            string expectedArchitecture = Environment.Is64BitProcess ? "x64" : "x86";
+
+            string neutral = InvokeBuildFormTitleText(checklist, method, GraphicsAdapter.Nvidia, false, false);
+            if (neutral != null)
+            {
+                int adapterIndex = neutral.IndexOf("NVIDIA", StringComparison.Ordinal);
+                int architectureIndex = neutral.IndexOf(expectedArchitecture, StringComparison.Ordinal);
+                int versionIndex = neutral.IndexOf(Application.ProductVersion, StringComparison.Ordinal);
+                checklist.Check(
+                    adapterIndex >= 0 && architectureIndex > adapterIndex && versionIndex > architectureIndex,
+                    string.Format("adapter, then architecture ({0}), then version appear in that order: \"{1}\"", expectedArchitecture, neutral));
+                checklist.Check(!neutral.Contains("*AMD forced*") && !neutral.Contains("*NVIDIA forced*"),
+                    "no forced-execution suffix when neither adapter is forced");
+            }
+
+            string amdForced = InvokeBuildFormTitleText(checklist, method, GraphicsAdapter.Amd, true, false);
+            if (amdForced != null)
+            {
+                checklist.Check(amdForced.Contains("*AMD forced*"), "the *AMD forced* suffix still appears when isForcedAmdAdapterExecution is true");
+            }
+
+            string nvidiaForced = InvokeBuildFormTitleText(checklist, method, GraphicsAdapter.Nvidia, false, true);
+            if (nvidiaForced != null)
+            {
+                checklist.Check(nvidiaForced.Contains("*NVIDIA forced*"), "the *NVIDIA forced* suffix still appears when isForcedNvidiaAdapterExecution is true");
+            }
+        }
+
+        private static string InvokeBuildFormTitleText(Checklist checklist, MethodInfo method, GraphicsAdapter adapter,
+            bool isForcedAmdAdapterExecution, bool isForcedNvidiaAdapterExecution)
+        {
+            try
+            {
+                return (string)method.Invoke(null, new object[] { adapter, isForcedAmdAdapterExecution, isForcedNvidiaAdapterExecution });
+            }
+            catch (Exception ex)
+            {
+                Exception real = ex.InnerException ?? ex;
+                checklist.Check(false, string.Format("buildFormTitleText threw invoking it: {0}: {1}", real.GetType().Name, real.Message));
+                return null;
+            }
         }
 
         /// <summary>

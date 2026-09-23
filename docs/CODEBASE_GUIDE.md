@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 632 automated checks across thirteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 636 automated checks across thirteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -350,7 +350,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 632 of them across thirteen
+- **There is no test project**, but there are automated checks: 636 of them across thirteen
   `*Fixture.cs` files — ten in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
   fourteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
@@ -455,7 +455,7 @@ vibranceGUI/
     │   ├── GraphicsAdapter.cs         vendor enum + detection (§6.1)
     │   │
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
-    │   ├── CliOptionsFixture.cs        48 checks
+    │   ├── CliOptionsFixture.cs        52 checks
     │   ├── GammaRestoreFixture.cs      21 checks
     │   ├── GraphicsAdapterFixture.cs   38 checks
     │   ├── HdrVibranceFixture.cs       58 checks
@@ -2137,8 +2137,14 @@ one getter — there is no view-model, no binding and no messaging.
 
 ### 10.1 `VibranceGUI` — the main window
 
-`ClientSize 419×524`, `FixedSingle`, no maximise box, title `vibranceGUI` — to which `Program.cs:510` (`buildFormTitleText`)
-appends `" (NVIDIA, 2.7.0)"` or `" (AMD, …)"` — the version comes from
+`ClientSize 419×524`, `FixedSingle`, no maximise box, title `vibranceGUI` — to which `Program.cs:525` (`buildFormTitleText`)
+appends `" (NVIDIA, x86, 2.8.0)"` or `" (AMD, x64, …)"` — adapter, then architecture, then version, in
+that order. The architecture token is `Environment.Is64BitProcess ? "x64" : "x86"`, deliberately not
+`Is64BitOperatingSystem` — the x64 port (`native/vibranceDLL`) means x86 and x64 builds will both be
+downloadable, and a bug report naming a build must be tied to the code that actually produced it, the
+same reasoning that put the version number here (commit `3ffc505`). `Is64BitOperatingSystem` would be
+wrong: it reports the OS, not this process, so an x86 build running on 64-bit Windows — the common case
+today, since every build is currently x86 — would wrongly claim `x64`. The version comes from
 `Application.ProductVersion`, so it tracks `AssemblyFileVersion` with no code change.
 
 | Region | Controls |
