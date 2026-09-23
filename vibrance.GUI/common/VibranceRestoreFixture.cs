@@ -165,12 +165,12 @@ namespace vibrance.GUI.common
             FakeNvidiaVibranceDevice device = new FakeNvidiaVibranceDevice();
             NvidiaDynamicVibranceProxy.ResetForTests(device, new VibranceInfo(), new List<ApplicationSetting>());
 
-            List<int> displayHandles = new List<int> { -1, 0, 501 };
+            List<IntPtr> displayHandles = new List<IntPtr> { NvidiaDynamicVibranceProxy.InvalidDisplayHandle, IntPtr.Zero, new IntPtr(501) };
             const int windowsLevel = 33;
 
             NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, false, null, displayHandles, windowsLevel, true);
 
-            bool onlyValidHandleWritten = device.SetLevelCalls.Count == 1 && device.SetLevelCalls[0] == 501;
+            bool onlyValidHandleWritten = device.SetLevelCalls.Count == 1 && device.SetLevelCalls[0] == new IntPtr(501);
             checklist.Check(onlyValidHandleWritten, string.Format(
                 "N13: SetLevel is only called for the valid handle (501), never for -1 or 0, got [{0}]",
                 string.Join(",", device.SetLevelCalls)));
@@ -191,7 +191,7 @@ namespace vibrance.GUI.common
             const string primary = "\\\\.\\DISPLAY_TESTONLY_N12_PRIMARY";
             VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
 
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<int>(), 30, false);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<IntPtr>(), 30, false);
 
             checklist.Check(device.SetLevelCalls.Count == 0,
                 "N12: RestoreWindowsVibranceLevel is a no-op when isWindowsLevelKnown is false, even with a non-empty work-list and a primary target");
@@ -213,14 +213,14 @@ namespace vibrance.GUI.common
 
             // Three decoy handles that would be written if this fell back to the all-displays
             // branch - it must not, with the flag on.
-            List<int> decoyDisplayHandles = new List<int> { 9001, 9002, 9003 };
+            List<IntPtr> decoyDisplayHandles = new List<IntPtr> { new IntPtr(9001), new IntPtr(9002), new IntPtr(9003) };
 
             NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primaryDeviceName, decoyDisplayHandles, windowsLevel, true);
 
             checklist.Check(device.SetLevelCalls.Count == 2,
                 string.Format("N2: exactly two SetLevel calls (the work-list entry + the primary), got {0}", device.SetLevelCalls.Count));
 
-            bool noDecoyTouched = !device.SetLevelCalls.Contains(9001) && !device.SetLevelCalls.Contains(9002) && !device.SetLevelCalls.Contains(9003);
+            bool noDecoyTouched = !device.SetLevelCalls.Contains(new IntPtr(9001)) && !device.SetLevelCalls.Contains(new IntPtr(9002)) && !device.SetLevelCalls.Contains(new IntPtr(9003));
             checklist.Check(noDecoyTouched, "N2: none of the three decoy displayHandles entries were written to");
         }
 
@@ -240,11 +240,11 @@ namespace vibrance.GUI.common
             VibranceRestoreHelper.RecordGameLevelApplied(d2);
             VibranceRestoreHelper.RecordGameLevelApplied(d3);
 
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, d1, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, d1, new List<IntPtr>(), windowsLevel, true);
 
-            int h1 = device.HandleFor(d1);
-            int h2 = device.HandleFor(d2);
-            int h3 = device.HandleFor(d3);
+            IntPtr h1 = device.HandleFor(d1);
+            IntPtr h2 = device.HandleFor(d2);
+            IntPtr h3 = device.HandleFor(d3);
 
             bool distinctHandles = h1 != h2 && h2 != h3 && h1 != h3;
             bool allWritten = device.IsAtLevel(h1, windowsLevel) && device.IsAtLevel(h2, windowsLevel) && device.IsAtLevel(h3, windowsLevel);
@@ -264,13 +264,13 @@ namespace vibrance.GUI.common
             const int windowsLevel = 12;
 
             VibranceRestoreHelper.RecordGameLevelApplied(worklistDevice);
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<IntPtr>(), windowsLevel, true);
 
             checklist.Check(VibranceRestoreHelper.HoldingCount == 0,
                 string.Format("N4: HoldingCount is 0 after a fully successful restore, got {0}", VibranceRestoreHelper.HoldingCount));
 
             device.ResolvedDeviceNames.Clear();
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<IntPtr>(), windowsLevel, true);
 
             checklist.Check(device.ResolvedDeviceNames.Count == 1 && device.ResolvedDeviceNames[0] == primary,
                 string.Format("N4: the second restore's scope is the primary alone - worklistDevice was already drained, got [{0}]",
@@ -290,14 +290,14 @@ namespace vibrance.GUI.common
             VibranceRestoreHelper.RecordGameLevelApplied(d2);
             device.FailNextSetLevel(d2);
 
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<IntPtr>(), windowsLevel, true);
 
             checklist.Check(VibranceRestoreHelper.HoldingCount == 1,
                 string.Format("N5: a display whose write failed is still on the work-list, got HoldingCount={0}", VibranceRestoreHelper.HoldingCount));
 
             // The underlying failure is gone now (FailNextSetLevel only failed the one call) - the
             // next restore (as the next foreground event would trigger) must retry and succeed.
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<IntPtr>(), windowsLevel, true);
             checklist.Check(VibranceRestoreHelper.HoldingCount == 0,
                 "N5: a later restore, with the underlying failure gone, drains it");
         }
@@ -315,9 +315,9 @@ namespace vibrance.GUI.common
             VibranceRestoreHelper.RecordGameLevelApplied(d2);
             device.SetUnresolvable(d2);
 
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<IntPtr>(), windowsLevel, true);
 
-            bool neverCalledWithInvalidHandle = !device.SetLevelCalls.Contains(-1) && !device.SetLevelCalls.Contains(0);
+            bool neverCalledWithInvalidHandle = !device.SetLevelCalls.Contains(NvidiaDynamicVibranceProxy.InvalidDisplayHandle) && !device.SetLevelCalls.Contains(IntPtr.Zero);
             checklist.Check(neverCalledWithInvalidHandle && device.SetLevelCalls.Count == 0,
                 "N6: SetLevel was never called - not with -1, not with 0 - for a display NvAPI cannot resolve");
             checklist.Check(VibranceRestoreHelper.HoldingCount == 1, "N6: the unresolvable display stays on the work-list");
@@ -335,7 +335,7 @@ namespace vibrance.GUI.common
             VibranceRestoreHelper.RecordGameLevelApplied(d2);
             device.SeedLevel(d2, windowsLevel);
 
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, null, new List<IntPtr>(), windowsLevel, true);
 
             checklist.Check(device.SetLevelCalls.Count == 0, "N7: no SetLevel call was made for a display already at the Windows level");
             checklist.Check(VibranceRestoreHelper.HoldingCount == 0, "N7: it is still drained from the work-list via the read-back alone");
@@ -401,13 +401,13 @@ namespace vibrance.GUI.common
             const string leftoverWorkListDevice = "\\\\.\\DISPLAY_TESTONLY_N9_LEFTOVER";
             VibranceRestoreHelper.RecordGameLevelApplied(leftoverWorkListDevice);
 
-            List<int> displayHandles = new List<int> { 501, 502, 503 };
+            List<IntPtr> displayHandles = new List<IntPtr> { new IntPtr(501), new IntPtr(502), new IntPtr(503) };
             const int windowsLevel = 33;
 
             NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, false, null, displayHandles, windowsLevel, true);
 
             bool allWrittenOnce = device.SetLevelCalls.Count == 3 &&
-                device.SetLevelCalls.Contains(501) && device.SetLevelCalls.Contains(502) && device.SetLevelCalls.Contains(503);
+                device.SetLevelCalls.Contains(new IntPtr(501)) && device.SetLevelCalls.Contains(new IntPtr(502)) && device.SetLevelCalls.Contains(new IntPtr(503));
             checklist.Check(allWrittenOnce, string.Format(
                 "N9 (pin, passes pre-fix too): all three seeded displayHandles entries were written exactly once each, got [{0}]",
                 string.Join(",", device.SetLevelCalls)));
@@ -428,7 +428,7 @@ namespace vibrance.GUI.common
             const int windowsLevel = 21;
 
             // Stands in for HandleDvcExit's own call, with an empty work-list and the flag on.
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<IntPtr>(), windowsLevel, true);
             checklist.Check(device.SetLevelCalls.Count == 1 && device.SetLevelCalls[0] == device.HandleFor(primary),
                 "N10: the first call (empty work-list, flag on) writes the primary exactly once");
 
@@ -436,7 +436,7 @@ namespace vibrance.GUI.common
             // - with the primary already at the Windows level, must make no SetLevel call at all:
             // the read-back decides, not an unconditional write.
             device.SetLevelCalls.Clear();
-            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<int>(), windowsLevel, true);
+            NvidiaDynamicVibranceProxy.RestoreWindowsVibranceLevel(device, true, primary, new List<IntPtr>(), windowsLevel, true);
             checklist.Check(device.SetLevelCalls.Count == 0,
                 "N10: a later call, with the primary already at the Windows level, makes no SetLevel call");
         }
@@ -925,13 +925,13 @@ namespace vibrance.GUI.common
         // afterward, exactly like a real display's handle staying stable for the process lifetime.
         private class FakeNvidiaVibranceDevice : INvidiaVibranceDevice
         {
-            private readonly Dictionary<string, int> _handlesByDeviceName = new Dictionary<string, int>();
-            private readonly Dictionary<int, int> _levelsByHandle = new Dictionary<int, int>();
+            private readonly Dictionary<string, IntPtr> _handlesByDeviceName = new Dictionary<string, IntPtr>();
+            private readonly Dictionary<IntPtr, int> _levelsByHandle = new Dictionary<IntPtr, int>();
             private readonly HashSet<string> _unresolvable = new HashSet<string>();
-            private readonly HashSet<int> _failNextSetLevel = new HashSet<int>();
+            private readonly HashSet<IntPtr> _failNextSetLevel = new HashSet<IntPtr>();
             private int _nextHandle = 1;
 
-            public readonly List<int> SetLevelCalls = new List<int>();
+            public readonly List<IntPtr> SetLevelCalls = new List<IntPtr>();
             public readonly List<string> ResolvedDeviceNames = new List<string>();
 
             public void SetUnresolvable(string deviceName)
@@ -949,17 +949,17 @@ namespace vibrance.GUI.common
                 _failNextSetLevel.Add(ResolveOrAssign(deviceName));
             }
 
-            public int HandleFor(string deviceName)
+            public IntPtr HandleFor(string deviceName)
             {
                 return ResolveOrAssign(deviceName);
             }
 
-            private int ResolveOrAssign(string deviceName)
+            private IntPtr ResolveOrAssign(string deviceName)
             {
-                int handle;
+                IntPtr handle;
                 if (!_handlesByDeviceName.TryGetValue(deviceName, out handle))
                 {
-                    handle = _nextHandle++;
+                    handle = new IntPtr(_nextHandle++);
                     _handlesByDeviceName[deviceName] = handle;
                 }
                 return handle;
@@ -970,23 +970,23 @@ namespace vibrance.GUI.common
                 return true;
             }
 
-            public int TryResolveDisplayHandle(string deviceName)
+            public IntPtr TryResolveDisplayHandle(string deviceName)
             {
                 ResolvedDeviceNames.Add(deviceName);
                 if (string.IsNullOrEmpty(deviceName) || _unresolvable.Contains(deviceName))
                 {
-                    return -1;
+                    return NvidiaDynamicVibranceProxy.InvalidDisplayHandle;
                 }
                 return ResolveOrAssign(deviceName);
             }
 
-            public bool IsAtLevel(int displayHandle, int level)
+            public bool IsAtLevel(IntPtr displayHandle, int level)
             {
                 int current;
                 return _levelsByHandle.TryGetValue(displayHandle, out current) && current == level;
             }
 
-            public bool SetLevel(int displayHandle, int level)
+            public bool SetLevel(IntPtr displayHandle, int level)
             {
                 SetLevelCalls.Add(displayHandle);
                 if (_failNextSetLevel.Remove(displayHandle))

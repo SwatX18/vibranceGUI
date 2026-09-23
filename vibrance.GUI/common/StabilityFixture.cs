@@ -47,9 +47,11 @@ namespace vibrance.GUI.common
             // Every call hands back a fresh handle, so nothing but the bound itself can end the
             // loop - this is the shape that spun #138's loop forever pre-fix. What that actually
             // did to the process is not reproduced here (see EnumerateDisplayHandles's own comment):
-            // this only proves the bound now ends it.
-            List<int> unbounded = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
-                delegate(int index) { return index; });
+            // this only proves the bound now ends it. IntPtr(index + 1), not IntPtr(index): index
+            // 0 must never look like InvalidDisplayHandle's own value by accident, and this stub
+            // needs a handle that is never IntPtr.Zero either, matching a real handle's shape.
+            List<IntPtr> unbounded = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
+                delegate(int index) { return new IntPtr(index + 1); });
             checklist.Check(unbounded.Count == NvidiaDynamicVibranceProxy.NvapiMaxDisplays,
                 string.Format("an enumerator that never returns -1 stops at NvapiMaxDisplays ({0}), got {1}",
                     NvidiaDynamicVibranceProxy.NvapiMaxDisplays, unbounded.Count));
@@ -59,24 +61,24 @@ namespace vibrance.GUI.common
             // a separate, latent bug on that restore path: a driver stuck on one handle would fill
             // the list with copies of it, each getting its own setDVCLevel call on every foreground
             // change.
-            List<int> constant = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
-                delegate(int index) { return 7; });
-            checklist.Check(constant.Count == 1 && constant[0] == 7,
+            List<IntPtr> constant = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
+                delegate(int index) { return new IntPtr(7); });
+            checklist.Check(constant.Count == 1 && constant[0] == new IntPtr(7),
                 "a driver that always returns the same handle yields exactly one entry, not " +
                 NvidiaDynamicVibranceProxy.NvapiMaxDisplays + " copies of it");
 
             // Not just an immediate repeat - a duplicate recurring later in the sequence is
             // dropped too, and the first-seen order of the survivors is kept.
             int[] sequence = { 1, 2, 1, 3, 2 };
-            List<int> interleaved = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
-                delegate(int index) { return index < sequence.Length ? sequence[index] : -1; });
-            checklist.Check(SequenceEqual(interleaved, new List<int> { 1, 2, 3 }),
+            List<IntPtr> interleaved = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
+                delegate(int index) { return index < sequence.Length ? new IntPtr(sequence[index]) : NvidiaDynamicVibranceProxy.InvalidDisplayHandle; });
+            checklist.Check(SequenceEqual(interleaved, new List<IntPtr> { new IntPtr(1), new IntPtr(2), new IntPtr(3) }),
                 "duplicates are dropped wherever they recur in the sequence");
 
             // OnWinEventHook's restore path calls TrueForAll/ForEach on this unconditionally -
             // it must be an allocated empty list, never null, even when nothing enumerates.
-            List<int> none = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
-                delegate(int index) { return -1; });
+            List<IntPtr> none = NvidiaDynamicVibranceProxy.EnumerateDisplayHandles(
+                delegate(int index) { return NvidiaDynamicVibranceProxy.InvalidDisplayHandle; });
             checklist.Check(none != null && none.Count == 0,
                 "an enumerator that returns -1 immediately yields a non-null, empty list");
 
@@ -209,7 +211,7 @@ namespace vibrance.GUI.common
             checklist.Lines.Add(string.Empty);
         }
 
-        private static bool SequenceEqual(List<int> actual, List<int> expected)
+        private static bool SequenceEqual(List<IntPtr> actual, List<IntPtr> expected)
         {
             if (actual.Count != expected.Count)
                 return false;

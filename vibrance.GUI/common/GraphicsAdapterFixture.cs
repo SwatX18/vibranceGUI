@@ -4,15 +4,20 @@ using System.Collections.Generic;
 namespace vibrance.GUI.common
 {
     /// <summary>
-    /// The reference expectations for the two pure functions GPU selection turns on, as literal
-    /// data. No GUI, no display devices, no driver files. Run by vibrance.GUI.exe --selftest-gpu.
+    /// The reference expectations for the pure functions GPU selection turns on, as literal data.
+    /// No GUI, no display devices, no driver files. Run by vibrance.GUI.exe --selftest-gpu.
     ///
-    /// Both functions decide whether the application starts at all and which proxy it builds, and
-    /// both are cheap to get subtly wrong. The word-boundary cases below are here because a bare
-    /// substring match on "ATI" classified "Workstation Virtual Display" as an AMD adapter: a
-    /// virtual display driver would have turned an honest Ambiguous into a confident wrong answer.
-    /// The truth table is here because the AMD branch used to be evaluated first, which swallowed
-    /// --force-nvidia on any system that detected as AMD.
+    /// GetVendorFromAdapterName and ApplyForcedAdapter decide whether the application starts at all
+    /// and which proxy it builds, and both are cheap to get subtly wrong. The word-boundary cases
+    /// below are here because a bare substring match on "ATI" classified "Workstation Virtual
+    /// Display" as an AMD adapter: a virtual display driver would have turned an honest Ambiguous
+    /// into a confident wrong answer. The truth table is here because the AMD branch used to be
+    /// evaluated first, which swallowed --force-nvidia on any system that detected as AMD.
+    ///
+    /// AmdDllName's process-bitness selection is checked the same way, for the same reason as
+    /// NvidiaInteropFixture's §N0: it decides which ADL binding gets loaded, and getting it wrong on
+    /// an x64 build is a hard failure with no 64-bit "atiadlxy.dll" to fall back to (see the comment
+    /// on GraphicsAdapterHelper's _amdDllName).
     /// </summary>
     public static class GraphicsAdapterFixture
     {
@@ -71,6 +76,32 @@ namespace vibrance.GUI.common
                     nvidia.ToString().PadRight(8),
                     both));
             }
+
+            lines.Add(string.Empty);
+            lines.Add("AMD ADL DLL name is selected by process bitness, not OS bitness:");
+            // adl64.AdlImport binds "atiadlxy.dll", a 32-bit-only bridge binary with no 64-bit
+            // build at all; adl32.AdlImport binds "atiadlxx.dll", which System32/SysWOW64 file
+            // redirection resolves to the 64-bit or 32-bit copy depending on the calling process
+            // (the two namespace names are inverted relative to what they load - see the comment
+            // on GraphicsAdapterHelper's _amdDllName). A 64-bit process therefore has exactly one
+            // name that can ever load: "atiadlxx.dll". This does not touch any driver file - it
+            // only reads the DLL name GraphicsAdapterHelper already resolved at class load time.
+            bool amdDllNameIsKnown = GraphicsAdapterHelper.AmdDllName == "atiadlxx.dll" ||
+                GraphicsAdapterHelper.AmdDllName == "atiadlxy.dll";
+            total++;
+            if (amdDllNameIsKnown)
+                passed++;
+            lines.Add(string.Format("[{0}] AmdDllName=\"{1}\" is one of the two known ADL file names",
+                amdDllNameIsKnown ? "PASS" : "FAIL", GraphicsAdapterHelper.AmdDllName));
+
+            bool amd64ProcessPicksAtiadlxx = !Environment.Is64BitProcess ||
+                GraphicsAdapterHelper.AmdDllName == "atiadlxx.dll";
+            total++;
+            if (amd64ProcessPicksAtiadlxx)
+                passed++;
+            lines.Add(string.Format(
+                "[{0}] a 64-bit process selects \"atiadlxx.dll\" (the only ADL binding with a real 64-bit build): AmdDllName=\"{1}\", Is64BitProcess={2}",
+                amd64ProcessPicksAtiadlxx ? "PASS" : "FAIL", GraphicsAdapterHelper.AmdDllName, Environment.Is64BitProcess));
 
             lines.Add(string.Empty);
             lines.Add(string.Format("PASSED {0}/{1}", passed, total));

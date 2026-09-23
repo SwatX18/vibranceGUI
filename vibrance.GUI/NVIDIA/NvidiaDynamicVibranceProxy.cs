@@ -28,15 +28,19 @@ namespace vibrance.GUI.NVIDIA
         // fix is not supposed to touch.
         bool IsWindowActive(ref IntPtr hWnd);
 
-        // getAssociatedNvidiaDisplayHandle. -1 when NvAPI cannot name deviceName's display; never
-        // called with a null or empty deviceName.
-        int TryResolveDisplayHandle(string deviceName);
+        // getAssociatedNvidiaDisplayHandle. InvalidDisplayHandle when NvAPI cannot name
+        // deviceName's display; never called with a null or empty deviceName. IntPtr, not int -
+        // NvAPI handles are genuine pointers (4 bytes on x86, 8 on x64), and typing one int
+        // truncates the upper 32 bits of whatever the driver hands back on x64. See
+        // NvidiaDynamicVibranceProxy.InvalidDisplayHandle's own comment for the -1 widening trap
+        // this same fix had to account for.
+        IntPtr TryResolveDisplayHandle(string deviceName);
 
         // equalsDVCLevel.
-        bool IsAtLevel(int displayHandle, int level);
+        bool IsAtLevel(IntPtr displayHandle, int level);
 
         // setDVCLevel.
-        bool SetLevel(int displayHandle, int level);
+        bool SetLevel(IntPtr displayHandle, int level);
     }
 
     class NvidiaDynamicVibranceProxy : IVibranceProxy
@@ -59,7 +63,13 @@ namespace vibrance.GUI.NVIDIA
         // would additionally mangle each name to "_foo@N" with N (and therefore the
         // name) differing per signature and per architecture. That is what lets
         // these bindings bind by plain name instead of a mangled, 32-bit-only
-        // symbol, and is why this slice needs no ABI change to eventually build x64.
+        // symbol, and meant the x64 port needed no change to *this* naming/calling-
+        // convention mechanism, nor to any entry-point name. It did not mean no ABI
+        // change at all: several parameters/return values below are IntPtr, not
+        // int, because NvAPI handles are genuine pointers (4 bytes on x86, 8 on
+        // x64) - an int here is only correct by accident on x86. See
+        // native/vibranceDLL/README.md item 8 and InvalidDisplayHandle's own
+        // comment below for the measurements behind that fix.
         #region DllImports
         [DllImport(
             "vibranceDLL.dll",
@@ -81,42 +91,42 @@ namespace vibrance.GUI.NVIDIA
             EntryPoint = "vibrance_getActiveOutputs",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
-        static extern int getActiveOutputs([In, Out] int[] gpuHandles, [In, Out] int[] outputIds);
+        static extern int getActiveOutputs([In, Out] IntPtr[] gpuHandles, [In, Out] IntPtr[] outputIds);
 
         [DllImport(
             "vibranceDLL.dll",
             EntryPoint = "vibrance_enumeratePhsyicalGPUs",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
-        static extern void enumeratePhsyicalGPUs([In, Out] int[] gpuHandles);
+        static extern void enumeratePhsyicalGPUs([In, Out] IntPtr[] gpuHandles);
 
         [DllImport(
             "vibranceDLL.dll",
             EntryPoint = "vibrance_getGpuName",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Ansi)]
-        static extern bool getGpuName([In, Out] int[] gpuHandles, StringBuilder szName);
+        static extern bool getGpuName([In, Out] IntPtr[] gpuHandles, StringBuilder szName);
 
         [DllImport(
             "vibranceDLL.dll",
             EntryPoint = "vibrance_getDVCInfo",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Ansi)]
-        static extern bool getDVCInfo(ref NvDisplayDvcInfo info, int defaultHandle);
+        static extern bool getDVCInfo(ref NvDisplayDvcInfo info, IntPtr defaultHandle);
 
         [DllImport(
             "vibranceDLL.dll",
             EntryPoint = "vibrance_enumerateNvidiaDisplayHandle",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
-        static extern int enumerateNvidiaDisplayHandle(int index);
+        static extern IntPtr enumerateNvidiaDisplayHandle(int index);
 
         [DllImport(
             "vibranceDLL.dll",
             EntryPoint = "vibrance_setDVCLevel",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
-        static extern bool setDVCLevel([In] int defaultHandle, [In] int level);
+        static extern bool setDVCLevel([In] IntPtr defaultHandle, [In] int level);
 
         [DllImport(
             "vibranceDLL.dll",
@@ -130,28 +140,30 @@ namespace vibrance.GUI.NVIDIA
             EntryPoint = "vibrance_equalsDVCLevel",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
-        static extern bool equalsDVCLevel([In] int defaultHandle, [In] int level);
+        static extern bool equalsDVCLevel([In] IntPtr defaultHandle, [In] int level);
 
-        // Pre-existing mismatch, kept exactly as-is: the native side (both the old
-        // mangled export and the new vibrance_getGpuSystemType wrapper) takes the
-        // GPU handle by pointer (int *gpuHandle - see vibrance.h), but this
-        // declaration passes gpuHandle by value. That has always been wrong, but
-        // changing it is a behaviour change, not a binding-mechanism change, and
-        // this slice is build-system/ABI parity only - so it is deliberately left
-        // for a separate fix rather than folded in here.
+        // IntPtr, not long: long is 64-bit on both architectures, which would be wrong on x86,
+        // where the native side returns a 32-bit value in EAX and the marshaller would instead
+        // read the 64-bit EDX:EAX pair. IntPtr is the one type that is exactly as wide as the
+        // native handle on both platforms. The native side (both the old mangled export and the
+        // vibrance_getGpuSystemType wrapper) takes the GPU handle by pointer (int *gpuHandle -
+        // see vibrance.h - already pointer-width and unaffected by the width fix below), so this
+        // declaration passing it by value is correct, not a mismatch: nothing on the native side
+        // ever dereferences it, so it is used purely as an opaque handle value, not a real
+        // pointer-to-int.
         [DllImport(
             "vibranceDLL.dll",
             EntryPoint = "vibrance_getGpuSystemType",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Auto)]
-        static extern NvSystemType getGpuSystemType(int gpuHandle);
+        static extern NvSystemType getGpuSystemType(IntPtr gpuHandle);
 
         [DllImport(
             "vibranceDLL.dll",
             EntryPoint = "vibrance_getAssociatedNvidiaDisplayHandle",
             CallingConvention = CallingConvention.Cdecl,
             CharSet = CharSet.Ansi)]
-        static extern int getAssociatedNvidiaDisplayHandle(string deviceName, [In] int length);
+        static extern IntPtr getAssociatedNvidiaDisplayHandle(string deviceName, [In] int length);
         #endregion
 
 
@@ -179,6 +191,17 @@ namespace vibrance.GUI.NVIDIA
 
         public const int NvapiMaxLevel = 63;
         public const int NvapiDefaultLevel = 0;
+
+        // The invalid-handle sentinel every native call below returns as NULL (see vibrance.cpp's
+        // enumerateNvidiaDisplayHandle/getAssociatedNvidiaDisplayHandle), read on the C# side as
+        // IntPtr(-1) - i.e. all bits set, 0xFFFFFFFF on x86 or 0xFFFFFFFFFFFFFFFF on x64. This is
+        // the reason every -1 guard below had to become IntPtr(-1) rather than staying a bare -1
+        // literal widened at the call site: a C# "int -1" implicitly widened to IntPtr is sign-
+        // extended to the same all-bits-set value on a 32-bit build, but comparing an IntPtr
+        // field/parameter against the bare literal "-1" does not compile at all (no implicit
+        // int-to-IntPtr conversion) - so every comparison needed an explicit IntPtr, and this
+        // constant is that one canonical value instead of "new IntPtr(-1)" repeated at each site.
+        public static readonly IntPtr InvalidDisplayHandle = new IntPtr(-1);
 
         public const string NvapiErrorInitFailed = "VibranceProxy failed to initialize! Press Ok to open the vibranceGUI Steam Guide in your browser. " +
             "Scroll down to section \"Troubleshooting, Errors, Q&A\".";
@@ -240,13 +263,13 @@ namespace vibrance.GUI.NVIDIA
 
         private void InitializeProxy()
         {
-            int[] gpuHandles = new int[NvapiMaxPhysicalGpus];
-            int[] outputIds = new int[NvapiMaxPhysicalGpus];
+            IntPtr[] gpuHandles = new IntPtr[NvapiMaxPhysicalGpus];
+            IntPtr[] outputIds = new IntPtr[NvapiMaxPhysicalGpus];
             enumeratePhsyicalGPUs(gpuHandles);
 
-            foreach (int gpuHandle in gpuHandles)
+            foreach (IntPtr gpuHandle in gpuHandles)
             {
-                if(gpuHandle != 0)
+                if(gpuHandle != IntPtr.Zero)
                 {
                     NvSystemType systemType = getGpuSystemType(gpuHandle);
                     if (systemType == NvSystemType.NvSystemTypeUnknown)
@@ -458,13 +481,13 @@ namespace vibrance.GUI.NVIDIA
         //
         // Always returns an allocated (possibly empty) list, never null: OnWinEventHook calls
         // TrueForAll/ForEach on _vibranceInfo.displayHandles unconditionally on the restore path.
-        internal static List<int> EnumerateDisplayHandles(Func<int, int> enumerateDisplayHandle)
+        internal static List<IntPtr> EnumerateDisplayHandles(Func<int, IntPtr> enumerateDisplayHandle)
         {
-            List<int> displayHandles = new List<int>();
+            List<IntPtr> displayHandles = new List<IntPtr>();
             for (int i = 0; i < NvapiMaxDisplays; i++)
             {
-                int displayHandle = enumerateDisplayHandle(i);
-                if (displayHandle == -1)
+                IntPtr displayHandle = enumerateDisplayHandle(i);
+                if (displayHandle == InvalidDisplayHandle)
                     break;
 
                 if (!displayHandles.Contains(displayHandle))
@@ -484,8 +507,8 @@ namespace vibrance.GUI.NVIDIA
         /// </summary>
         internal static bool ApplyGameVibranceLevel(INvidiaVibranceDevice device, string gameDeviceName, int ingameLevel)
         {
-            int displayHandle = device.TryResolveDisplayHandle(gameDeviceName);
-            if (displayHandle == -1 || displayHandle == 0)
+            IntPtr displayHandle = device.TryResolveDisplayHandle(gameDeviceName);
+            if (displayHandle == InvalidDisplayHandle || displayHandle == IntPtr.Zero)
             {
                 // 0 is a null NvDisplayHandle - InitializeProxy already treats 0 the same way for
                 // GPU handles above. Never fall back to enumerateNvidiaDisplayHandle(0): that
@@ -537,7 +560,7 @@ namespace vibrance.GUI.NVIDIA
         /// already correct" before writing, DVC does.
         /// </summary>
         internal static void RestoreWindowsVibranceLevel(INvidiaVibranceDevice device, bool affectPrimaryMonitorOnly,
-            string primaryDeviceName, IList<int> allDisplayHandles, int windowsLevel, bool isWindowsLevelKnown)
+            string primaryDeviceName, IList<IntPtr> allDisplayHandles, int windowsLevel, bool isWindowsLevelKnown)
         {
             if (!isWindowsLevelKnown)
             {
@@ -550,8 +573,8 @@ namespace vibrance.GUI.NVIDIA
                 {
                     for (int i = 0; i < allDisplayHandles.Count; i++)
                     {
-                        int handle = allDisplayHandles[i];
-                        if (handle == -1 || handle == 0)
+                        IntPtr handle = allDisplayHandles[i];
+                        if (handle == InvalidDisplayHandle || handle == IntPtr.Zero)
                         {
                             continue;
                         }
@@ -569,12 +592,12 @@ namespace vibrance.GUI.NVIDIA
             }
         }
 
-        private static bool AllDisplaysAtLevel(INvidiaVibranceDevice device, IList<int> displayHandles, int level)
+        private static bool AllDisplaysAtLevel(INvidiaVibranceDevice device, IList<IntPtr> displayHandles, int level)
         {
             for (int i = 0; i < displayHandles.Count; i++)
             {
-                int handle = displayHandles[i];
-                if (handle == -1 || handle == 0)
+                IntPtr handle = displayHandles[i];
+                if (handle == InvalidDisplayHandle || handle == IntPtr.Zero)
                 {
                     continue;
                 }
@@ -596,8 +619,8 @@ namespace vibrance.GUI.NVIDIA
         /// </summary>
         private static bool RestoreOneDisplay(INvidiaVibranceDevice device, string deviceName, int windowsLevel)
         {
-            int displayHandle = device.TryResolveDisplayHandle(deviceName);
-            if (displayHandle == -1 || displayHandle == 0)
+            IntPtr displayHandle = device.TryResolveDisplayHandle(deviceName);
+            if (displayHandle == InvalidDisplayHandle || displayHandle == IntPtr.Zero)
             {
                 LogDisplayFailureOnce(deviceName, string.Format(
                     "Could not resolve an NVIDIA display handle for screen {0}, its Windows vibrance level restore will retry on the next foreground change", deviceName));
@@ -777,11 +800,11 @@ namespace vibrance.GUI.NVIDIA
                 return isWindowActive(ref hWnd);
             }
 
-            public int TryResolveDisplayHandle(string deviceName)
+            public IntPtr TryResolveDisplayHandle(string deviceName)
             {
                 if (string.IsNullOrEmpty(deviceName))
                 {
-                    return -1;
+                    return InvalidDisplayHandle;
                 }
                 // The marshaller (CharSet.Ansi on the DllImport above) copies deviceName into its
                 // own native ANSI buffer for the duration of this one call and frees it afterward -
@@ -791,12 +814,12 @@ namespace vibrance.GUI.NVIDIA
                 return getAssociatedNvidiaDisplayHandle(deviceName, deviceName.Length);
             }
 
-            public bool IsAtLevel(int displayHandle, int level)
+            public bool IsAtLevel(IntPtr displayHandle, int level)
             {
                 return equalsDVCLevel(displayHandle, level);
             }
 
-            public bool SetLevel(int displayHandle, int level)
+            public bool SetLevel(IntPtr displayHandle, int level)
             {
                 return setDVCLevel(displayHandle, level);
             }
