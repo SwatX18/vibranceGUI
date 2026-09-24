@@ -173,6 +173,11 @@
     <Compile Include="common\VibranceRestoreRecord.cs" />
     <Compile Include="common\VibranceRestoreStore.cs" />
     <Compile Include="common\VibranceRestorePersistenceFixture.cs" />
+    <Compile Include="common\AtomicXmlFile.cs" />
+    <Compile Include="common\ResolutionRestoreRecord.cs" />
+    <Compile Include="common\ResolutionRestoreStore.cs" />
+    <Compile Include="common\ResolutionRestoreHelper.cs" />
+    <Compile Include="common\ResolutionRestorePersistenceFixture.cs" />
     <Compile Include="common\ResolutionChangeFixture.cs" />
     <Compile Include="common\TrackbarLabelHelper.cs" />
     <Compile Include="common\WinEventHook.cs" />

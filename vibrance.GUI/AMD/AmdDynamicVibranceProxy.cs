@@ -237,6 +237,16 @@ namespace vibrance.GUI.AMD
                     _vibranceInfo.isResolutionChangeApplied =
                         result == ResolutionHelper.ResolutionChangeResult.Applied ||
                         result == ResolutionHelper.ResolutionChangeResult.AppliedUnverified;
+
+                    // D4's resolution half - vendor-agnostic (ResolutionHelper is a shared static
+                    // both proxies drive), so AMD journals this exactly like NVIDIA does - see the
+                    // matching comment in NvidiaDynamicVibranceProxy's OnWinEventHook and
+                    // ResolutionRestoreHelper's own header.
+                    if (_vibranceInfo.isResolutionChangeApplied)
+                    {
+                        ResolutionRestoreHelper.RecordModeApplied(screen.DeviceName,
+                            applicationSetting.ResolutionSettings, _windowsResolutionSettings[screen.DeviceName].Item1);
+                    }
                 }
 
                 //test if color settings change is needed
@@ -274,6 +284,14 @@ namespace vibrance.GUI.AMD
                     if (result != ResolutionHelper.ResolutionChangeResult.Failed &&
                         result != ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
                         _vibranceInfo.isResolutionChangeApplied = false;
+
+                    // D4's resolution half, journaling rule 4 - see the matching comment in
+                    // NvidiaDynamicVibranceProxy's OnWinEventHook and
+                    // ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord's own header.
+                    if (ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord(result))
+                    {
+                        ResolutionRestoreHelper.ClearModeRecord(currentScreen.DeviceName);
+                    }
                 }
 
                 //apply windows color settings if color settings were previously changed

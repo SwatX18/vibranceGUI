@@ -397,6 +397,20 @@ namespace vibrance.GUI.NVIDIA
                     _vibranceInfo.isResolutionChangeApplied =
                         result == ResolutionHelper.ResolutionChangeResult.Applied ||
                         result == ResolutionHelper.ResolutionChangeResult.AppliedUnverified;
+
+                    // D4's resolution half (persisted restore, ResolutionRestoreHelper's own
+                    // header) - journals this display's (game mode, Windows mode) pair iff the
+                    // change actually landed. Only a landed write is ever recorded as owing a
+                    // restore, exactly like VibranceRestoreHelper.RecordGameLevelApplied's own
+                    // apply-branch call above. WindowsMode comes from THIS same dictionary entry's
+                    // Item1 - the same value the revert branch below reverts to - not a fresh read,
+                    // so the persisted record always names the mode this process itself would
+                    // revert to, never something a concurrent refresh happened to capture instead.
+                    if (_vibranceInfo.isResolutionChangeApplied)
+                    {
+                        ResolutionRestoreHelper.RecordModeApplied(screen.DeviceName,
+                            applicationSetting.ResolutionSettings, _windowsResolutionSettings[screen.DeviceName].Item1);
+                    }
                 }
 
                 //test if color settings change is needed
@@ -449,6 +463,15 @@ namespace vibrance.GUI.NVIDIA
                     if (result != ResolutionHelper.ResolutionChangeResult.Failed &&
                         result != ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
                         _vibranceInfo.isResolutionChangeApplied = false;
+
+                    // D4's resolution half, journaling rule 4 - see
+                    // ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord's own header for
+                    // why this is deliberately NOT the same condition as the flag-clearing "if"
+                    // just above (Suppressed clears the flag but must never clear the record).
+                    if (ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord(result))
+                    {
+                        ResolutionRestoreHelper.ClearModeRecord(currentScreen.DeviceName);
+                    }
                 }
 
                 //apply windows color settings if color settings were previously changed

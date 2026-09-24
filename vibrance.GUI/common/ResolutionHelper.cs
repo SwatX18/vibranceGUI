@@ -93,6 +93,20 @@ namespace vibrance.GUI.common
             Failed             // ChangeResolutionEx returned Failed (or Suppressed - see RestoreOnExit), or threw
         }
 
+        // What TryRestorePersistedMode below (D4's resolution replay, ResolutionRestoreHelper.
+        // ReplayPersistedRestore's own call site) decided for one persisted entry - see that
+        // method's own header for the full five-outcome decision table. Nested for the same reason
+        // ResolutionChangeResult/ExitRestoreResult are: callers write
+        // ResolutionHelper.PersistedRestoreOutcome.Restored, matching their own callers.
+        internal enum PersistedRestoreOutcome
+        {
+            AlreadyCorrect,
+            Restored,
+            NotOurs,
+            Unreadable,
+            WriteFailed
+        }
+
         private const int EnumCurrentSettings = -1;
 
         // How many consecutive failures ChangeResolutionEx tolerates for one (device, target,
@@ -538,6 +552,93 @@ namespace vibrance.GUI.common
                 LoggedLineCountForTests++;
                 return ExitRestoreResult.Failed;
             }
+        }
+
+        // D4's resolution replay verify gate (ResolutionRestoreHelper.ReplayPersistedRestore's own
+        // call site) - the resolution counterpart to NvidiaDynamicVibranceProxy.
+        // TryRestorePersistedDisplay, and deliberately as STRICT: RestoreOnExit/the ongoing apply-
+        // revert cycle both act on state THIS process created moments (or one session) earlier;
+        // this acts across an unbounded gap (however long the machine was off, or the display was
+        // used by something else entirely) on state it has no other way to vouch for, so it reads
+        // back before ever touching the driver, in this order:
+        //
+        //   device unreadable                          -> not readable yet, retry later -> Unreadable
+        //   already at windowsMode (tested FIRST)       -> nothing to do                 -> AlreadyCorrect
+        //   still at appliedMode, revert lands          -> this application's own doing   -> Restored
+        //   still at appliedMode, revert fails/suppressed -> verified ours, retry later    -> WriteFailed
+        //   at neither                                  -> changed by hand - LEAVE ALONE  -> NotOurs
+        //
+        // AlreadyCorrect is tested BEFORE the appliedMode check, deliberately: a display already
+        // sitting at windowsMode is, by construction, not at appliedMode either (barring the
+        // degenerate case where the two happen to be equal, which reaches the same right answer
+        // either way) - testing the other way round would misreport an already-settled display as
+        // NotOurs. This is also exactly why a display whose only persisted difference is
+        // DmDisplayFixedOutput can never reach here in the first place: the apply branch that would
+        // have journaled it is itself gated on IsResolutionChangeNeeded, which is
+        // "!target.MatchesAchievedMode(current)" - a target differing from the live mode ONLY in
+        // DmDisplayFixedOutput is never seen as needing a change, so it is never applied, never
+        // journaled, and never reaches this method through the normal write path. If a
+        // hand-edited resolutionRestore.xml manages to name one anyway, AlreadyCorrect drops it
+        // without writing - correct, since the driver never actually changed any of the four real
+        // fields either way.
+        //
+        // Equality throughout is MatchesAchievedMode - width, height, bits-per-pel, refresh - NOT
+        // Equals (all five fields, including DmDisplayFixedOutput) and NOT DmDisplayFixedOutput
+        // alone. Do NOT "fix" this to compare all five fields: see the paragraph above for exactly
+        // why that would misreport a whole class of records this replay is meant to settle quietly.
+        // appliedMode/windowsMode are still PERSISTED with all five fields intact
+        // (ResolutionRestoreEntry.AppliedMode/WindowsMode are ResolutionModeWrapper, unflattened) -
+        // windowsMode's fifth field, DmDisplayFixedOutput, is what the eventual ChangeResolutionEx
+        // call below still needs as the actual restore target; it is only the comparisons here that
+        // stay four-field.
+        //
+        // AppliedUnverified counts as Restored: CDS_UPDATEREGISTRY itself reported success and the
+        // mode most likely changed, so keeping the entry around risks a redundant second mode set
+        // on the NEXT launch rather than protecting anything.
+        //
+        // honourGiveUp: false, exactly like RestoreOnExit's own call - this bypasses
+        // ChangeResolutionEx's give-up suppression for one attempt, safe here for the identical
+        // reason RestoreOnExit's own comment gives: this is a fresh process, so _consecutiveFailures
+        // starts empty and this is the only attempt this key will ever see this launch - there is no
+        // foreground-change storm for the suppression guard to protect against. Suppressed is
+        // therefore unreachable in practice (as it is for RestoreOnExit) but handled explicitly
+        // below rather than left to an implicit fall-through, in case that ever changes.
+        //
+        // Callers must resolve deviceName through MonitorIdentity before calling this - never
+        // through the persisted entry's own DeviceNameAtWrite - and must discard any entry whose
+        // MonitorId does not currently resolve to an attached monitor BEFORE calling this at all;
+        // this method never sees (and so can never fall back to) DeviceNameAtWrite.
+        internal static PersistedRestoreOutcome TryRestorePersistedMode(
+            IDisplayModeDevice device, string deviceName, ResolutionModeWrapper appliedMode, ResolutionModeWrapper windowsMode)
+        {
+            Devmode currentMode;
+            if (!device.TryGetCurrentMode(deviceName, out currentMode))
+            {
+                return PersistedRestoreOutcome.Unreadable;
+            }
+
+            if (windowsMode.MatchesAchievedMode(currentMode))
+            {
+                return PersistedRestoreOutcome.AlreadyCorrect;
+            }
+
+            if (appliedMode.MatchesAchievedMode(currentMode))
+            {
+                ResolutionChangeResult result = ChangeResolutionEx(device, windowsMode, deviceName, true, false);
+                switch (result)
+                {
+                    case ResolutionChangeResult.Applied:
+                    case ResolutionChangeResult.AlreadyMatching:
+                    case ResolutionChangeResult.AppliedUnverified:
+                        return PersistedRestoreOutcome.Restored;
+                    default:
+                        // Failed, or Suppressed (unreachable with honourGiveUp false - see this
+                        // method's own header comment).
+                        return PersistedRestoreOutcome.WriteFailed;
+                }
+            }
+
+            return PersistedRestoreOutcome.NotOurs;
         }
 
         // OR's target's four controllable fields' bits into whatever dmFields EnumDisplaySettings

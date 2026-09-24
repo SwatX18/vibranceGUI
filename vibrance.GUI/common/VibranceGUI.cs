@@ -496,6 +496,14 @@ namespace vibrance.GUI.common
                 // one-line proxy call needs a wrapper at all.
                 ReplayPersistedVibranceRestore();
 
+                // D4's resolution half - see ReplayPersistedResolutionRestore's own header for the
+                // full contract, including why this is vendor-agnostic (unlike the vibrance replay
+                // just above). Placed right after it, and before ApplyStartupForegroundProfile
+                // below, for the same reason: that call can apply a NEW resolution to whatever is
+                // already in the foreground, and running this replay after it would risk undoing a
+                // correct apply the instant it landed.
+                ReplayPersistedResolutionRestore();
+
                 // Upstream #81, the last mechanism #137 left open: a game already running and
                 // already focused when vibranceGUI autostarts never fires a foreground CHANGE for
                 // WinEventHook to observe, so without this it sits at the Windows level until the
@@ -1554,6 +1562,40 @@ namespace vibrance.GUI.common
                 return;
             }
             _v.ReplayPersistedVibranceRestore();
+        }
+
+        /// <summary>
+        /// D4's resolution half (see backgroundWorker_DoWork's own call site comment for why this
+        /// has to run exactly where it does - right after the vibrance replay, before
+        /// ApplyStartupForegroundProfile).
+        ///
+        /// Vendor-agnostic, unlike ReplayPersistedVibranceRestore just above: ResolutionHelper is a
+        /// shared static both vendor proxies drive (unlike vibrance, which is NVIDIA-only because
+        /// INvidiaVibranceDevice is - see IVibranceProxy.ReplayPersistedVibranceRestore's own
+        /// header), so this calls straight through to ResolutionRestoreHelper, never through _v -
+        /// there is no per-vendor implementation to choose between, and AMD users get this restore
+        /// too.
+        ///
+        /// The Invoke marshal below is mandatory for exactly the same reason
+        /// ReplayPersistedVibranceRestore's own is - see that method's header for the full
+        /// reasoning: this also runs on a ThreadPool thread inside backgroundWorker_DoWork while
+        /// OnWinEventHook is already subscribed on the UI thread (both proxies' constructors have
+        /// already run by this point), and it reads and then deletes or rewrites the SAME
+        /// resolutionRestore.xml file the UI thread's own journaling writes to
+        /// (ResolutionRestoreHelper's RecordModeApplied/ClearModeRecord, reached from
+        /// OnWinEventHook). Without this marshal, ResolutionRestoreStore.Current.TryRead()/
+        /// Delete()/Write() here could race a UI-thread Write() on the same file, and the replay's
+        /// own TryGetCurrentMode/ChangeResolutionEx calls could race a real foreground event's
+        /// identical driver calls.
+        /// </summary>
+        private void ReplayPersistedResolutionRestore()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke((MethodInvoker)delegate { ReplayPersistedResolutionRestore(); });
+                return;
+            }
+            ResolutionRestoreHelper.ReplayPersistedRestore();
         }
 
         /// <summary>

@@ -1,7 +1,5 @@
 ﻿using System;
 using System.IO;
-using System.Xml;
-using System.Xml.Serialization;
 using vibrance.GUI.AMD.vendor.utils;
 
 namespace vibrance.GUI.common
@@ -70,97 +68,35 @@ namespace vibrance.GUI.common
             _filePath = filePath;
         }
 
+        // The atomic write-temp-then-File.Replace mechanics and the parse-or-discard read used to
+        // live here directly; both now live in AtomicXmlFile, shared with RealResolutionRestoreStore
+        // (D4's resolution half) rather than duplicated a second time - see that class's own header
+        // for the full reasoning. Behaviour is unchanged: TryRead/Write/Delete below do exactly what
+        // they always did, through the shared implementation.
         public VibranceRestoreRecord TryRead()
         {
-            try
-            {
-                if (!File.Exists(_filePath))
-                {
-                    return null;
-                }
-
-                using (XmlReader reader = XmlReader.Create(_filePath))
-                {
-                    XmlSerializer serializer = new XmlSerializer(typeof(VibranceRestoreRecord));
-                    return (VibranceRestoreRecord)serializer.Deserialize(reader);
-                }
-            }
-            catch (Exception)
-            {
-                // Torn or unparseable - most likely a write this same feature interrupted by the
-                // very abnormal exit it exists to recover from (see Write's own atomic-write
-                // comment for the narrow window that can still leave a torn file: the temp file
-                // itself, mid-write). A bad record must never throw into startup, and it can never
-                // become readable on a later run either, so there is nothing to gain by leaving it
-                // in place - discard it now rather than have every future launch re-attempt and
-                // re-fail the same parse forever.
-                TryDeleteQuietly();
-                return null;
-            }
+            return AtomicXmlFile.TryRead<VibranceRestoreRecord>(_filePath);
         }
 
         public void Write(VibranceRestoreRecord record)
         {
             try
             {
-                string tempPath = _filePath + ".tmp";
-                using (XmlWriter writer = XmlWriter.Create(tempPath))
-                {
-                    XmlSerializer serializer = new XmlSerializer(typeof(VibranceRestoreRecord));
-                    serializer.Serialize(writer, record);
-                    writer.Flush();
-                }
-
-                // Atomic swap: File.Replace is a single filesystem transaction, so a process
-                // killed anywhere from here onward leaves either the OLD file untouched or the NEW
-                // one fully in place - never a half-written vibranceRestore.xml. The only file that
-                // CAN be left torn by a kill is the ".tmp" one above, while the Serialize call
-                // itself is still running - TryRead's own try/catch (plus its delete-on-failure) is
-                // what makes that safe: File.Replace never even runs in that case, so the real file
-                // this method is responsible for is never the one left torn.
-                // File.Replace requires an existing destination; delete-then-move covers the first
-                // write ever made for a given install, when there is nothing yet to replace.
-                if (File.Exists(_filePath))
-                {
-                    File.Replace(tempPath, _filePath, null);
-                }
-                else
-                {
-                    // File.Move alone would throw IOException if a file appeared at _filePath
-                    // between the File.Exists check above and here (another thread's write, in
-                    // principle - this app is single-instance, so not expected in practice); the
-                    // delete first makes this branch safe to fall into either way.
-                    File.Delete(_filePath);
-                    File.Move(tempPath, _filePath);
-                }
+                AtomicXmlFile.Write(_filePath, record);
             }
             catch (Exception ex)
             {
+                // Best-effort: a write that fails (permissions, disk full, a concurrent AV scan
+                // holding the file) is logged once and otherwise swallowed, never thrown into a
+                // caller that is, in every production call site, running synchronously inside a
+                // WinEvent foreground callback.
                 Program.LogSafely("Failed to persist the vibrance restore record: " + ex.Message);
             }
         }
 
         public void Delete()
         {
-            TryDeleteQuietly();
-        }
-
-        private void TryDeleteQuietly()
-        {
-            try
-            {
-                if (File.Exists(_filePath))
-                {
-                    File.Delete(_filePath);
-                }
-            }
-            catch (Exception)
-            {
-                // Best-effort. A leftover file here is inert, not actively harmful: the replay
-                // only ever trusts what it reads on the ONE launch it runs, and a stale record can
-                // only over-name displays, never under-name them - see VibranceRestoreHelper's own
-                // journaling-rules comment for why that is safe.
-            }
+            AtomicXmlFile.TryDeleteQuietly(_filePath);
         }
     }
 

@@ -34,6 +34,7 @@ namespace vibrance.GUI
         private const string ResolutionSelfTestMessageBoxCaption = "vibranceGUI resolution change self test";
         private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
         private const string VibrancePersistenceSelfTestMessageBoxCaption = "vibranceGUI persisted vibrance restore self test";
+        private const string ResolutionPersistenceSelfTestMessageBoxCaption = "vibranceGUI persisted resolution restore self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
@@ -121,6 +122,11 @@ namespace vibrance.GUI
                 // --selftest-* run or a reflection harness calling a fixture's Run() directly
                 // never touches the real %APPDATA%\vibranceGUI\vibranceRestore.xml.
                 VibranceRestoreStore.ResetForTests(new RealVibranceRestoreStore());
+
+                // D4's resolution half - the exact same swap, for the exact same reason, one file
+                // over (%APPDATA%\vibranceGUI\resolutionRestore.xml). See ResolutionRestoreStore's
+                // own header comment.
+                ResolutionRestoreStore.ResetForTests(new RealResolutionRestoreStore());
             }
 
             // Runs before the GPU vendor detection below on purpose: the picker is pure, so the
@@ -226,6 +232,19 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, VibranceRestorePersistenceFixture.Run().ToArray()),
                     VibrancePersistenceSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again, and for the same reason as --selftest-restore-persistence
+            // beside it: D4's resolution half journals through ResolutionRestoreHelper against a
+            // RealResolutionRestoreStore pointed at a fixture-private temp file (never the real
+            // %APPDATA%\vibranceGUI\resolutionRestore.xml) and a fake IDisplayModeDevice - no live
+            // GPU, no writes to a real display. Unlike vibrance's own persisted restore, this one is
+            // vendor-agnostic - see ResolutionRestorePersistenceFixture's own header comment.
+            if (args.Contains("--selftest-resolution-restore-persistence"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, ResolutionRestorePersistenceFixture.Run().ToArray()),
+                    ResolutionPersistenceSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
