@@ -482,6 +482,20 @@ namespace vibrance.GUI.common
                 _v.SetNeverChangeColorSettings(neverChangeColorSettings);
                 _v.SetWindowsColorSettings(brightnessWindowsLevel, contrastWindowsLevel, gammaWindowsLevel);
 
+                // D4's abnormal-exit half: replays whatever vibranceRestore.xml a PREVIOUS session
+                // left behind (a Task Manager kill, crash or logoff that never reached CleanUp()),
+                // restoring a game level stranded on a non-primary display. Must run AFTER
+                // SetVibranceWindowsLevel just above - the replay's own verify gate needs the real,
+                // current Windows level to compare a live read-back against, not the struct default
+                // - and BEFORE ApplyStartupForegroundProfile below: that call can apply a NEW game
+                // level to whatever is already in the foreground, and running the replay after it
+                // would risk undoing a correct apply the instant it landed. See
+                // IVibranceProxy.ReplayPersistedVibranceRestore's own header for the full contract,
+                // including why this is NVIDIA-only. The marshalling this needs is mandatory, not
+                // stylistic - see ReplayPersistedVibranceRestore's own header just below for why a
+                // one-line proxy call needs a wrapper at all.
+                ReplayPersistedVibranceRestore();
+
                 // Upstream #81, the last mechanism #137 left open: a game already running and
                 // already focused when vibranceGUI autostarts never fires a foreground CHANGE for
                 // WinEventHook to observe, so without this it sits at the Windows level until the
@@ -1504,6 +1518,42 @@ namespace vibrance.GUI.common
             }
 
             _v.RecheckForegroundHdrLevel(hWnd, processName, processImagePath);
+        }
+
+        /// <summary>
+        /// D4's abnormal-exit half (see backgroundWorker_DoWork's own call site comment for why
+        /// this has to run exactly where it does - after SetVibranceWindowsLevel, before
+        /// ApplyStartupForegroundProfile below).
+        ///
+        /// The Invoke marshal below is mandatory, not stylistic - and nothing else in this file
+        /// would explain why a call this short needs a wrapper at all, which is why this comment
+        /// has to carry the reasoning: backgroundWorker_DoWork runs on a ThreadPool thread, but
+        /// IVibranceProxy.ReplayPersistedVibranceRestore makes the same NvAPI calls
+        /// (TryResolveDisplayHandle/IsAtLevel/SetLevel) a real WinEvent callback makes - and
+        /// OnWinEventHook is already subscribed by this point (the proxy's constructor did that
+        /// before backgroundWorker_DoWork ever runs), so a real foreground event could fire
+        /// concurrently on the UI thread while this runs unmarshalled. It also reads and then
+        /// deletes or rewrites the SAME vibranceRestore.xml file the UI thread's own journaling
+        /// writes to (VibranceRestoreHelper's RecordGameLevelApplied/ClearGameLevelRecord, reached
+        /// from OnWinEventHook) - without this marshal, VibranceRestoreStore.Current.TryRead() /
+        /// Delete() / Write() here could race a UI-thread Write() on the same file (File.Replace
+        /// against File.Delete/XmlReader.Create). Both sides already catch their own exceptions,
+        /// so an unmarshalled race would not crash anything - it would silently lose the very
+        /// pre-crash record this whole feature exists to recover, the hardest possible way to fail
+        /// unnoticed, and precisely the scenario this feature is for. No fixture can catch a
+        /// missing marshal here either: VibranceRestorePersistenceFixture drives
+        /// NvidiaDynamicVibranceProxy's internal static overload directly, never through this form
+        /// (VibranceGUI's own constructor calls getProxy(...), touching a real vendor proxy, which
+        /// this codebase deliberately never does in a self test - see that fixture's own header).
+        /// </summary>
+        private void ReplayPersistedVibranceRestore()
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke((MethodInvoker)delegate { ReplayPersistedVibranceRestore(); });
+                return;
+            }
+            _v.ReplayPersistedVibranceRestore();
         }
 
         /// <summary>

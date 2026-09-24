@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 652 automated checks across thirteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 692 automated checks across fourteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -414,10 +414,10 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 652 of them across thirteen
-  `*Fixture.cs` files — ten in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
+- **There is no test project**, but there are automated checks: 692 of them across fourteen
+  `*Fixture.cs` files — eleven in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
-  fourteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
+  fifteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
   (`Program.cs:78`, second-instance bail at `:92`, the flags at `:120-284`), so a fixture will not run
   while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
   reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`
@@ -433,6 +433,16 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
   They report through `Checklist` (PASS/FAIL/SKIP), not a third-party assertion library, so
   searching for `Assert.` or
   `*Test*` finds nothing and wrongly suggests the project is untested.
+- **The harness has no staleness guard, and a failed build reports green.** MSBuild leaves the
+  previous `vibrance.GUI.exe` in `bin/` when compilation fails, and the reflection harness loads
+  whatever is there without ever learning that a build failed - so a source tree that does not
+  compile at all still produces a confident full-suite pass, measured against the last binary that
+  did. This is not hypothetical: it happened on 2026-09-24, when a suite result was reported from an
+  exe built two minutes before the edit that broke the source. Two habits defeat it, and both are
+  cheap: check MSBuild's **exit code** rather than grepping its output, and confirm the exe is newer
+  than every `.cs`/`.cpp`/`.h` in the tree before believing a number it produced. The same trap
+  applies to committing - stage and verify the *same* state, since anything editing the tree between
+  a test run and `git add` makes the measurement describe a build that was never committed.
 - **CI is dead.** `.travis.yml` targets travis-ci.org (shut down) with `dist: trusty`, `mono: beta`,
   `dotnet: 1.0.3`. There is no GitHub Actions workflow. Assume nothing is verified on push.
 - **`.gitattributes` sets `*.sln merge=union` and `*.csproj merge=union`.** Union merge on project
@@ -458,7 +468,7 @@ vibranceGUI/
     ├── vibrance.GUI.csproj        pre-SDK project; add new files here by hand
     ├── setting.ico                application icon
     │
-    ├── common/                    the app shell — vendor-agnostic (52 files)
+    ├── common/                    the app shell — vendor-agnostic (56 files)
     │   │
     │   │   forms and their designers
     │   ├── VibranceGUI.cs             main form + de-facto orchestrator (2120 lines) (§6, §10.1)
@@ -494,7 +504,12 @@ vibranceGUI/
     │   ├── ApplicationSettingMatcher.cs  name and directory matching for the foreground process
     │   ├── PathResolver.cs               process image path via QueryFullProcessImageName
     │   ├── ProfileToggleHelper.cs        which profiles the toggle hotkey has suppressed
-    │   ├── VibranceRestoreHelper.cs      the displays currently holding a game level; HoldingCount
+    │   ├── VibranceRestoreHelper.cs      the displays currently holding a game level; HoldingCount;
+    │   │                                 also D4's journaling rules (write iff changed, delete iff
+    │   │                                 drained) — see §9.8
+    │   ├── VibranceRestoreRecord.cs      the persisted record's XmlSerializer-shaped types (§9.8)
+    │   ├── VibranceRestoreStore.cs       the vibranceRestore.xml seam - Real/Null, mirrors ILogSink (§9.8)
+    │   ├── MonitorIdentity.cs            durable monitor id (device interface path), not \\.\DISPLAYn (§9.8, §12.1 D4)
     │   ├── HotkeyBinding.cs              the modifier/key model behind the toggle hotkey
     │   ├── HotkeyRegistration.cs         its live registration state
     │   │
@@ -529,6 +544,8 @@ vibranceGUI/
     │   ├── StabilityFixture.cs          6 checks
     │   ├── StartupForegroundFixture.cs 11 checks
     │   ├── VibranceRestoreFixture.cs   38 checks
+    │   ├── VibranceRestorePersistenceFixture.cs  40 checks — D4's persisted restore (§9.8);
+    │   │                                run via --selftest-restore-persistence
     │   │
     │   └── gamefinder/                installed-game discovery, feeding GameFinder.cs
     │       ├── IGameLibrarySource.cs      the source seam; sources are tried in registration order
@@ -646,8 +663,12 @@ further say; the proxy drives the driver from an event handler the shell never s
 
 ### 5.2 The `IVibranceProxy` seam
 
-`vibrance.GUI/common/IVibranceProxy.cs:31-79` — seventeen members (sixteen methods and one
-property), no `IDisposable`, no events, no async:
+`vibrance.GUI/common/IVibranceProxy.cs` — nineteen members (eighteen methods and one
+property), no `IDisposable`, no events, no async. (Table below predates `ApplyStartupForegroundProfile`
+(upstream #81) and `ReplayPersistedVibranceRestore` (D4) as a complete enumeration; both are real
+interface members today — see [§6.8](#68-known-blind-spots-in-detection) and
+[§9.8](#98-the-persisted-vibrance-restore-record-d4) respectively for their own contracts, not
+duplicated in this table.)
 
 | Member | Called from | Contract |
 |---|---|---|
@@ -668,6 +689,8 @@ property), no `IDisposable`, no events, no async:
 | `SetWindowsColorGamma(int)` | `VibranceGUI.cs:532` (`trackBarGamma_Scroll`) | Live slider write. Gamma is the one that writes the display's LUT, so this is the path that can leave a machine mis-calibrated on exit (**§12.1**, upstream #128). |
 | `ToggleForegroundProfile(IntPtr, string, string)` | `VibranceGUI.cs:966` (`OnToggleHotkeyPressed`) | Suspend or resume the profile owning the foreground window ([§10.5](#105-the-toggle-hotkey)). Direction comes from `ProfileToggleHelper`'s recorded intent, never from reading the driver. Returns a `ProfileToggleResult` so the caller can repaint the list. |
 | `RecheckForegroundHdrLevel(IntPtr, string, string)` | `VibranceGUI.cs:1484` (`OnHdrRecheckTick`) | Re-resolve and re-apply after Windows' own HDR state changes under a running game ([§6.10](#610-the-separate-hdr-level-and-noticing-hdr-change)). A silent no-op when no profile owns the window, when the Windows level is not known yet, or when the resolved level is already applied. |
+| `ApplyStartupForegroundProfile(IntPtr, string, string)` | `VibranceGUI.cs:1544` (`ApplyStartupForegroundProfile`) | Upstream #81's startup path — routes a match through the same automatic handler a real foreground event would, once, right after `SetVibranceWindowsLevel` has run. See [§6.8](#68-known-blind-spots-in-detection). |
+| `ReplayPersistedVibranceRestore()` | `VibranceGUI.cs:495` (`backgroundWorker_DoWork`), right before `ApplyStartupForegroundProfile()` | D4's abnormal-exit half ([§9.8](#98-the-persisted-vibrance-restore-record-d4)). NVIDIA implements the real replay; AMD's implementation is a deliberate no-op — see §9.8/§12.1 for why. |
 
 **The interface is not the real contract.** Three things escape it:
 
@@ -1183,11 +1206,17 @@ What is **not** done on shutdown, by omission:
 
 **The screen resolution is now restored on this clean path** (upstream #98, **D4** — partially fixed;
 see [§12.1](#121-the-defects-that-explain-real-upstream-issues)) — it was not, before this branch. On an abnormal exit (Task
-Manager kill, crash, logoff, power loss) **nothing at all is restored** — no colour, no vibrance, no
-resolution — because `CleanUp()` is never reached at all on that path; this half of **D4** is
-unchanged. This is the mechanism behind reports like issue #144 ("vibrance does not reset
-to Windows level when program closes"): the reset only happens on the clean `FormClosing` path, and
-even then only if `isInitialized` was true.
+Manager kill, crash, logoff, power loss) `CleanUp()` is still never reached at all, so this method
+itself still restores nothing on that path. **A separate, later mechanism now restores vibrance
+(NVIDIA only) on the NEXT startup instead** — `VibranceGUI.backgroundWorker_DoWork` calls
+`_v.ReplayPersistedVibranceRestore()` before this form is even shown again; see
+[§9.8](#98-the-persisted-vibrance-restore-record-d4) and the D4 entry in §12.1 for the full
+mechanism and its limits. Resolution and the gamma ramp are not covered by that either, and remain
+exactly as unrestored after an abnormal exit as this paragraph originally described. This is the
+mechanism behind reports like issue #144 ("vibrance does not reset to Windows level when program
+closes"): the clean-exit reset still only happens on the `FormClosing` path (and only if
+`isInitialized` was true), but a non-primary display's stranded vibrance now also self-heals once,
+at the next NVIDIA launch, if the abnormal exit happened under `affectPrimaryMonitorOnly == true`.
 
 ### 6.6 Why hooks, and not polling — reading the fossils
 
@@ -1998,9 +2027,11 @@ the **static** `_adlCheckLibrary._adlLibrary` rather than `this._adlLibrary` (`:
 | Autostart | `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, value `vibranceGUI` (`common/RegistryController.cs:8`, `VibranceGUI.cs:64`, `AppName`) | `REG_SZ` = `"<exe path>" -minimized` |
 | Extracted native DLL | `%APPDATA%\vibranceGUI\vibranceDLL.dll` (`AMD/vendor/utils/CommonUtils.cs:29`) | rewritten on every NVIDIA launch, never deleted |
 | Diagnostic log | `%APPDATA%\vibranceGUI\vibranceGUI.log` — beside the INI, **inside** the `vibranceGUI` folder (`ILogSink.cs:33,50`, `RealLogSink.Write`) | append-only text; one `Log Entry :` block per write |
+| Persisted vibrance restore (D4, NVIDIA only) | `%APPDATA%\vibranceGUI\vibranceRestore.xml` (`common/VibranceRestoreStore.cs`) | `XmlSerializer` of `VibranceRestoreRecord`; written atomically, deleted once fully replayed or fully drained in-session — see [§9.8](#98-the-persisted-vibrance-restore-record-d4) |
 
-Nothing is stored per monitor, per vendor or per version. There is no schema version, no migration
-code and no legacy-key handling anywhere: old files either parse or they do not.
+Nothing else is stored per monitor, per vendor or per version, and even the one exception just added
+carries no migration code — old files (there are none yet; this file did not exist before
+`work/d4-persisted-restore`) either parse or they do not.
 
 ### 9.2 File formats
 
@@ -2233,6 +2264,94 @@ profile between an AMD and an NVIDIA machine (or switch GPU vendor on the same m
   **`StackOverflowException`, which .NET cannot catch** ([§7.8](#78-nvidia-value-semantics));
 - conversely, NVIDIA levels (`0..63`) read on AMD are all far below neutral `100`, so **every game
   desaturates**.
+
+### 9.8 The persisted vibrance restore record (D4)
+
+`%APPDATA%\vibranceGUI\vibranceRestore.xml` (`common/VibranceRestoreRecord.cs`,
+`common/VibranceRestoreStore.cs`) — the abnormal-exit half of **D4** (see
+[§12.1](#121-the-defects-that-explain-real-upstream-issues) for the full story: what it covers,
+what it does not, and why NVIDIA only). Added on `work/d4-persisted-restore`; not present in any
+version before it, so an install upgrading from an older build simply has no file here until the
+first write.
+
+**Schema**, `XmlSerializer` of `VibranceRestoreRecord`, the same house pattern as
+`applicationData.xml` ([§9.2](#92-file-formats)):
+
+| Field | Meaning |
+|---|---|
+| `SchemaVersion` | `1` today; written but never branched on — nothing yet needs to tell versions apart. |
+| `Vendor` | Diagnostic only — `"NVIDIA"` or `"AMD"`, whichever proxy's constructor set `VibranceRestoreHelper.VendorTag`. Never read back to decide anything; the replay gate itself is NVIDIA-only regardless of what this field says. |
+| `WrittenUtc` | Diagnostic only. |
+| `Displays` | A `List<VibranceRestoreEntry>`, one per display the work-list held **and** could identify at write time. |
+| `VibranceRestoreEntry.MonitorId` | The durable key — a monitor device interface path from `MonitorIdentity.TryGetMonitorId`, never `\\.\DISPLAYn` (see §12.1's D4 entry for why). |
+| `VibranceRestoreEntry.DeviceNameAtWrite` | Diagnostic only — whatever `\\.\DISPLAYn` `MonitorId` resolved to AT WRITE TIME, very often stale by the time anything reads it back. Never used to decide anything on replay. |
+| `VibranceRestoreEntry.AppliedLevel` | The game level actually written to this display — what the replay's verify gate compares a live read-back against. |
+
+**Write path.** `VibranceRestoreHelper.RecordGameLevelApplied(deviceName, level)` (the level-aware
+overload every production apply call site uses — NVIDIA's automatic apply branch, its HDR re-check,
+and the toggle hotkey's "on" direction) and the batch overload
+`RecordGameLevelsApplied(IEnumerable<string>, level)` (AMD's two `foreach (Screen in
+Screen.AllScreens)` fan-out sites, one journaled write for the whole set, not one per display) both
+funnel into one `PersistCurrentWorkList` that writes the **whole current work-list**, atomically
+(serialise to `vibranceRestore.xml.tmp`, then `File.Replace`, or delete-then-`File.Move` the first
+time a given install ever writes one), **only when the tracked set actually changed** — a newly
+added display, or the same display resolving to a different level (an HDR transition can do that).
+A repeat apply of the same level to an already-tracked display — what every alt-tab back into an
+already-correct, already-focused game produces — costs zero writes; this is the same
+per-foreground-event-I/O discipline issue #156 established for the in-session path, one layer
+further down.
+
+All three of NVIDIA's own call sites additionally guard the journal call itself with
+`NvidiaDynamicVibranceProxy.ShouldJournalGameLevel(resolvedIngameLevel)` — `resolvedIngameLevel !=
+_vibranceInfo.userVibranceSettingDefault` — mirroring `AmdDynamicVibranceProxy.
+ApplyResolvedGameLevel`'s own pre-existing guard: an ingame level that exactly equals the current
+Windows default carries no restore obligation and would only ever produce a no-op replay entry.
+This guards the JOURNAL call only, never `ApplyGameVibranceLevel`'s own write or return value —
+the in-session apply path is unchanged either way.
+
+**Delete path.** `ClearGameLevelRecord` deletes only once its removal has just drained the
+work-list to empty — a partial drain (one of several tracked displays restored) does no I/O at all,
+and neither does clearing a display that was never tracked in the first place (`ComposeRestoreTargets`
+unconditionally appends the primary, so the restore path calls this for the primary on **every**
+non-game foreground event, tracked or not). `ClearAllGameLevelRecords()` (the
+`affectPrimaryMonitorOnly == false` exit) guards its own delete on the work-list having been
+**non-empty before** the clear — see the D4 entry in §12.1 for exactly which AMD scenario that
+guards against, and `VibranceRestorePersistenceFixture`'s own P11 check, written specifically to
+fail if that guard is ever removed.
+
+**Replay path (NVIDIA only, once at startup).** See the D4 entry in §12.1 for the full five-outcome
+decision table — `AlreadyCorrect`/`Restored`/`NotOurs` drop an entry, `Unreadable`/`WriteFailed`
+**keep** it for the next launch. Unlike the write/delete paths above, this one can **rewrite** the
+record (with just the survivors) as well as delete it: deletion only happens once nothing survives.
+A record whose `Vendor` does not match `VibranceRestoreHelper.VendorTag` — THIS process's own
+vendor, as its proxy's constructor stamped it — is discarded wholesale before any entry is
+examined; this repo explicitly supports a dual-driver machine switching vendors between sessions
+(`ResolveInstalledDriverConflict`, `GraphicsAdapterChooser`, `--force-amd`/`--force-nvidia`), and
+NVIDIA's 0-63 range overlapping AMD's 0-300 means an unguarded compare could misread a foreign
+record's `AppliedLevel` as a real match rather than merely failing to match. `VibranceGUI.
+backgroundWorker_DoWork` marshals the whole call onto the UI thread (`InvokeRequired`/`Invoke`,
+the same pattern `ApplyStartupForegroundProfile` uses three lines below it) — this is the first
+place NvAPI calls could otherwise run off the UI thread concurrently with `OnWinEventHook`'s own
+(already-subscribed, by this point in startup) driver calls, and the replay also reads/deletes/
+rewrites the same file the UI thread's own journaling writes to.
+
+**The seam.** `VibranceRestoreStore.Current` (`IVibranceRestoreStore`) is the exact same shape as
+`LogSink.Current`/`ILogSink` ([§3.7](#37-tests-and-ci)) — `RealVibranceRestoreStore` is the only
+production implementation, `NullVibranceRestoreStore` is the default (so a headless fixture run or
+a reflection harness never touches the real file), and `Program.Main` swaps in the real one for a
+normal (non-`--selftest-*`) run, right beside the equivalent `LogSink` swap.
+
+**What was never tested, and it is the premise the feature rests on — INFERENCE.** Every check
+behind this record drives `FakeNvidiaVibranceDevice` and a fixture-private file. That covers the
+five-outcome verify gate, the monitor-identity resolution, the three journaling rules and the
+atomic write — but **no end-to-end kill-and-relaunch cycle was ever run on real hardware.** Nobody
+has killed vibranceGUI from Task Manager with a game level on a non-primary display, relaunched,
+and watched that display come back. The underlying premise — that an NvAPI DVC level outlives the
+process that set it — is not measured here either; it is taken from the upstream reports that
+motivated the fix (#95, #144, #131 all describe exactly that persistence), which is evidence but
+not our own. Deliberately not tested, because doing so requires writing a vibrance level to a real
+display. Treat a green suite here as saying the machinery is correct, not that the feature has been
+seen working.
 
 ---
 
@@ -2507,7 +2626,7 @@ established fact in a bug report or a commit message.
 | **#138** | extreme CPU usage when no dedicated GPU is connected | **D1** below — an unbounded loop between `EnumerateDisplayHandles` and the native `enumerateNvidiaDisplayHandle`. **Fixed** on `work/stability-pass` (`466de41`): the C# loop is now bounded and deduped | mechanism **INFERENCE**, well supported (native side VERIFIED binary); the symptom itself was never reproduced, so the fix removes the mechanism rather than confirming the issue closed |
 | **#114 / #132** *(fixed on `work/resolution-change`)* | `Changing the resolution failed: DispChangeBadflags`, repeatedly, in Valorant and elsewhere | **D2**/**D58**/**D59** below — a modal box on the callback thread, a success read from the wrong `ChangeDisplaySettingsEx` call, a `_windowsResolutionSettings` snapshot that never learned about a user-initiated desktop resolution change (**D58** — probably #114's actual complaint), and a `DmDisplayFixedOutput`-inclusive equality guard that could re-fire a real mode set forever (**D59** — fits #132's "it keeps on saying that") | message/repeat path is **certain**; the root cause of the underlying `-4` is still **UNCERTAIN** (originates inside `user32`) |
 | **#150 / #145 / #142** | hybrid and dual-GPU laptops, AMD chipset + NVIDIA GPU, dual-GPU desktops | **D3** below — four independent mechanisms, the strongest being that any machine with both vendors' drivers present is classified `Ambiguous` and refused | **INFERENCE** |
-| **#144** | vibrance does not reset to the Windows level when the program closes | **D4** below — the reset happens only on the clean `FormClosing` path *and* only if `isInitialized`; abnormal exit restores nothing, and a dropped foreground event can strand the level | **INFERENCE** for the dropped-event half; the abnormal-exit half is **certain** |
+| **#144** | vibrance does not reset to the Windows level when the program closes | **D4** below — the reset happens only on the clean `FormClosing` path *and* only if `isInitialized`; abnormal exit restored nothing until `work/d4-persisted-restore`, which now self-heals a non-primary NVIDIA display's stranded level at the NEXT startup (vibrance only; AMD, resolution and gamma are unchanged); a dropped foreground event can still strand the level | **INFERENCE** for the dropped-event half; the pre-fix abnormal-exit behaviour was **certain** |
 
 **D1 — FIXED on `work/stability-pass` (`466de41`, issue #138). NVIDIA display-handle enumeration
 could never terminate.** `EnumerateDisplayHandles()` looped until `enumerateNvidiaDisplayHandle`
@@ -2593,27 +2712,118 @@ makes `getGpuSystemType` fail, which the DLL flattens to `Unknown`, which aborts
 hardware-sounding dialog (`:225-233`, `InitializeProxy`); (d) GPU name and active outputs are read from `gpuHandles[0]`
 only.
 
-**D4 — PARTIALLY FIXED. The clean-exit half is FIXED on `work/98-restore-resolution-on-exit`
-(upstream #98); the abnormal-exit half is not, and is not claimed to be.** `CleanUp()`
+**D4 — PARTIALLY FIXED, on two separate branches now. The clean-exit half is FIXED on
+`work/98-restore-resolution-on-exit` (upstream #98). The abnormal-exit half is FIXED for vibrance
+only, NVIDIA only, on `work/d4-persisted-restore` (upstream #95's shape: a game on a non-primary
+display, killed via Task Manager, never got that display restored) — resolution, gamma and the
+entire AMD path remain exactly as unfixed on this half as before.** `CleanUp()`
 (`VibranceGUI.cs:1281-1331`, `CleanUp`) is reached only from `Form1_FormClosing`, and its body is
-guarded by `_v.GetVibranceInfo().isInitialized`. **What changed:** on that clean path, the resolution
-is now restored too, not just colour and vibrance. Each proxy's `HandleDvcExit` ends with
-`RestoreResolutionOnExit(ResolutionHelper.RealDevice)` (`NvidiaDynamicVibranceProxy.cs`,
-`AmdDynamicVibranceProxy.cs`), which calls `ResolutionHelper.RestoreOnExit` — a single,
-uninterruptible attempt that deliberately bypasses `ChangeResolutionEx`'s own give-up suppression
-(`honourGiveUp: false`) for this one call, since at exit there is no next foreground event left for a
-suppressed key to ever be retried on (see [§6.4](#64-the-optional-resolution-switch) and
-[§6.5](#65-shutdown)). **What did not change:** a Task Manager kill, crash, logoff or power loss still
-never reaches `CleanUp()` at all, so nothing is restored on that path — no resolution, no vibrance, no
-colour settings, exactly as before. Separately, if `PathResolver` could not resolve an image path and
-the process has also exited by the time the `Process.GetProcessById` fallback runs, the exception is
-swallowed and **no event is dispatched** (`common/WinEventHook.cs:274-293`, `GetProcessNameById`) — so
-the event that would have reverted vibrance (and, on the clean path, triggered a resolution revert)
-when a game exits can simply be lost. The third contributor, **D9**, is fixed. There is still no
-persisted "we changed this, restore it next time" record anywhere, which is what an abnormal-exit fix
-would actually need — the clean-exit fix above works entirely from in-memory state
-(`_windowsResolutionSettings`, `isResolutionChangeApplied`) that a kill or crash never gives `CleanUp`
-the chance to read.
+guarded by `_v.GetVibranceInfo().isInitialized`. **What changed (clean-exit half, #98):** on that
+clean path, the resolution is now restored too, not just colour and vibrance. Each proxy's
+`HandleDvcExit` ends with `RestoreResolutionOnExit(ResolutionHelper.RealDevice)`
+(`NvidiaDynamicVibranceProxy.cs`, `AmdDynamicVibranceProxy.cs`), which calls
+`ResolutionHelper.RestoreOnExit` — a single, uninterruptible attempt that deliberately bypasses
+`ChangeResolutionEx`'s own give-up suppression (`honourGiveUp: false`) for this one call, since at
+exit there is no next foreground event left for a suppressed key to ever be retried on (see
+[§6.4](#64-the-optional-resolution-switch) and [§6.5](#65-shutdown)). Separately, if `PathResolver`
+could not resolve an image path and the process has also exited by the time the
+`Process.GetProcessById` fallback runs, the exception is swallowed and **no event is dispatched**
+(`common/WinEventHook.cs:274-293`, `GetProcessNameById`) — so the event that would have reverted
+vibrance (and, on the clean path, triggered a resolution revert) when a game exits can simply be
+lost. The third contributor, **D9**, is fixed.
+
+**What changed (abnormal-exit half, vibrance/NVIDIA only):** the missing piece the clean-exit fix
+above could never reach — "there is no persisted 'we changed this, restore it next time' record
+anywhere" — now exists for exactly one slice of the problem, chosen because most of the rest
+already self-heals without it. `ComposeRestoreTargets(true, primary)`
+(`common/VibranceRestoreHelper.cs`) appends the primary display unconditionally, so after ANY
+restart the first non-game foreground event finds the primary stranded and writes the Windows
+level back on its own — no persistence needed there, and none was added for it. With
+`affectPrimaryMonitorOnly == false`, every display self-heals the same way, through the all-displays
+branch. The one configuration nothing ever revisited is `affectPrimaryMonitorOnly == true` (the
+default — `SettingsController.cs:260,292`) with a game level stranded on a **non-primary** display:
+nothing ever names that display again once the process holding it is gone. That is the slice this
+branch closes, for NVIDIA only:
+
+- **Durable identity, not `\\.\DISPLAYn`.** `MonitorIdentity.cs` resolves a monitor's device
+  interface path via `EnumDisplayDevices(..., EDD_GET_DEVICE_INTERFACE_NAME)`
+  (e.g. `\\?\DISPLAY#BNQ78E5#5&a2a2cd5&1&UID4354#{e6f07b5f-...}`) — confirmed stable across a month
+  of reboots on the development machine, and necessary because `\\.\DISPLAYn` is derived from
+  `\Device\VideoN` in `HKLM\HARDWARE\DEVICEMAP\VIDEO`, and **`HKLM\HARDWARE` is a volatile hive with
+  no backing file** (its own `hivelist` entry is empty, unlike every other machine hive, which does
+  map to a real file on disk) — it is rebuilt every boot, numbered by adapter enumeration order, so
+  the same physical monitor can be `\\.\DISPLAY2` this boot and `\\.\DISPLAY3` the next. EDID alone
+  (manufacturer + product code) is not sufficient either — two identical monitors of the same model
+  report identical EDID and are separable only by the connector UID the interface path carries. Both
+  directions of this identity are **port-bound, not panel-bound**: moving a monitor to a different
+  port or GPU is treated as a newly-attached monitor, an accepted limitation, not a bug.
+- **The record.** `%APPDATA%\vibranceGUI\vibranceRestore.xml`
+  (`common/VibranceRestoreRecord.cs`, `common/VibranceRestoreStore.cs`) — see [§9.8](#98-the-persisted-vibrance-restore-record-d4)
+  for the schema, the atomic write and the journaling rules (write iff the tracked set actually
+  changed; delete only once the work-list has just drained to empty; `ClearAllGameLevelRecords()`
+  guards its delete on the work-list having been non-empty **before** the clear, specifically so
+  that AMD's `affectPrimaryMonitorOnly == false` branch — which still journals to this same file,
+  even though AMD's own replay never reads it back, see below — cannot erase a pre-crash record on
+  the very first desktop foreground event after startup, before the replay has had any chance to
+  read it).
+- **The replay.** `VibranceGUI.backgroundWorker_DoWork` calls
+  `_v.ReplayPersistedVibranceRestore()` once, after `SetVibranceWindowsLevel` but before
+  `ApplyStartupForegroundProfile` (upstream #81's own call site sits right after it, for the same
+  reason: restoring before the Windows level is known cannot work, and restoring after the startup
+  apply would undo a correct one) — **marshalled onto the UI thread** with the same
+  `InvokeRequired`/`Invoke` shape `ApplyStartupForegroundProfile` itself uses three lines below,
+  since `backgroundWorker_DoWork` runs on a ThreadPool thread but the replay makes the same NvAPI
+  calls the UI-thread-only `OnWinEventHook` makes (already subscribed by this point in startup) and
+  reads/deletes/rewrites the same file the UI thread's own journaling writes to - unmarshalled, the
+  two could race on the file with no crash and no error, only a silently lost pre-crash record.
+  `NvidiaDynamicVibranceProxy.ReplayPersistedVibranceRestore` implements the real replay entirely
+  through the existing `INvidiaVibranceDevice` seam (`TryResolveDisplayHandle`/`IsAtLevel`/`SetLevel`
+  — no new device method was needed) plus `MonitorIdentity.TryResolveDeviceName`. A record whose
+  `Vendor` does not match `VibranceRestoreHelper.VendorTag` (this process's own vendor) is discarded
+  wholesale, before any entry is examined at all (see `VibranceRestoreRecord.Vendor`'s own comment
+  — NVIDIA's range is 0-63, AMD's is 0-300, so comparing one vendor's `AppliedLevel` against the
+  other's live display could misread its state, not merely fail to match — a real risk given this
+  repo explicitly supports switching vendors between sessions on a dual-driver machine). Each
+  surviving entry's
+  device name is resolved through `MonitorIdentity` ONLY — **never** through the stale,
+  diagnostic-only `DeviceNameAtWrite`, which can end up naming a different physical panel after an
+  unplug once the remaining displays renumber — and reduces to one of five outcomes
+  (`NvidiaDynamicVibranceProxy.PersistedRestoreOutcome`), tested in this order:
+
+  | Outcome | Condition | Action |
+  |---|---|---|
+  | `AlreadyCorrect` | already at the current Windows level (tested **first**, deliberately — a display at the Windows level is, by construction, not also at `AppliedLevel`) | write nothing, drop entry |
+  | `Restored` | still at the persisted `AppliedLevel`, and the restore write lands | write `windowsLevel`, drop entry |
+  | `WriteFailed` | still at `AppliedLevel`, but the write does **not** land | **keep** entry for the next launch |
+  | `NotOurs` | at neither value — the user (or something else) changed it since the crash | leave the display alone, drop entry, log it |
+  | `Unreadable` | the display handle itself does not resolve | write nothing, **keep** entry |
+
+  **This gate is deliberately stricter than the in-session restore path beside it**
+  (`RestoreWindowsVibranceLevel`/`RestoreOneDisplay`), which has no staleness check at all and will
+  overwrite a manual primary-monitor change on the very next non-game foreground event today,
+  regardless of this fix — that path acts on state it created moments earlier in the same session;
+  the replay acts across an unbounded gap on state it has no other way to vouch for. If anything is
+  kept (`WriteFailed`/`Unreadable`), the record is **rewritten** with just the survivors, never
+  silently left as the stale original and never silently dropped; the file is deleted only once
+  nothing survives.
+- **AMD is unchanged, not worse.** `IAmdAdapter` has no per-display read-back — `SetSaturationOnDisplay`'s
+  `ADL_OK` return only confirms a write landed, never what level a display is *currently* at — so
+  there is no way to distinguish "still ours" from "the user changed it by hand" on that path, and
+  replaying without that distinction risks overwriting a deliberate change, which is worse than
+  doing nothing. `AmdDynamicVibranceProxy.ReplayPersistedVibranceRestore` is a deliberate no-op.
+
+**What is still NOT covered, on any vendor:** resolution and the gamma ramp are untouched by this
+branch — only vibrance is persisted; an abnormal exit still leaves both stranded exactly as before.
+Power loss or a kill mid-write is handled for the record file itself (atomic temp-then-`File.Replace`,
+and a torn/unparseable file is discarded and deleted on the next read, never thrown into startup) but
+not for whatever native write NVIDIA's own driver was mid-flight on — that boundary was never in
+scope. A monitor moved to a different port or GPU between the crash and the next launch is treated as
+a different, newly-attached monitor (see `MonitorIdentity`'s own port-bound-not-panel-bound note
+above) and its stranded level is never found. AMD's abnormal-exit half remains exactly as unfixed as
+it always was. This is the mechanism behind reports like issue #144 ("vibrance does not reset to
+Windows level when program closes"): the reset now also happens, once, at the next NVIDIA startup,
+for a non-primary display under `affectPrimaryMonitorOnly == true` — every other combination this
+paragraph just listed still behaves exactly as it did before this branch.
 
 ### 12.2 Crashes and data loss
 
@@ -3010,7 +3220,7 @@ not that none exists.
 | #150, #145, #142 | laptop + external monitor; dual GPU with integrated graphics; NVIDIA GPU on AMD chipset | **D3** — four candidate mechanisms, INFERENCE. |
 | #149 | does not work with NVIDIA driver 591.44 | No mechanism identified; see **D40**/**D41**. |
 | #147, #143, #120 | feature requests: SDR/HDR sliders, reset keybind, command-line options | Not defects, and all three are now implemented in this fork: #143 by the toggle hotkey ([§10.5](#105-the-toggle-hotkey)), #120 by `--help` and `--set-vibrance` ([§3.6](#36-running-it)), #147 by the separate HDR level ([§6.10](#610-the-separate-hdr-level-and-noticing-hdr-change)) — whose effect on real HDR hardware is still unverified. None of the three has landed upstream. |
-| #144 | vibrance does not reset to Windows level when the program closes | **D4**. **D9**, the second contributor, is fixed (`466de41`). |
+| #144 | vibrance does not reset to Windows level when the program closes | **D4** — the abnormal-exit half is now partly fixed (NVIDIA, non-primary displays, self-heals at next startup); AMD/resolution/gamma remain as before. **D9**, the second contributor, is fixed (`466de41`). |
 | #138 | extreme CPU usage with no dedicated GPU | **D1**, fixed on `work/stability-pass` (`466de41`) — the loop is bounded and deduped. The mechanism was always **INFERENCE** and the symptom was never reproduced here, so read this as "mechanism removed", not "confirmed closed"; the native half is also unchanged. |
 | #137 | does not reliably detect the game in the foreground | Candidates: the dropped-event race (**D4**), still open, and the startup blind spot (**D28**), fixed on `work/81-startup-foreground-apply` (upstream #81). Name-only matching (**D27**) was narrowed by `4f3fd19`, which added the `InstallDirectory` fallback aimed at exactly this report — a launcher or anti-cheat shim running from under the game's install folder now matches — but an entry added by hand still carries no directory and still matches on name alone. INFERENCE. |
 | #134 | CS2 jumps to the second monitor on alt-tab | No mechanism established. The historical candidate was the unconditional global commit call (`ChangeDisplaySettingsEx(null, ...)`) the pre-fix code ran after every staged mode change — **removed** on `work/resolution-change` (see **D2**; the new `CDS_TEST`/`CDS_UPDATEREGISTRY` sequence never touches a device other than the one it was asked about), so this hypothesis no longer applies to current `master`+this branch even though it was never confirmed either way. |
