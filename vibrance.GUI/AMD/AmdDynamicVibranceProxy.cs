@@ -32,6 +32,11 @@ namespace vibrance.GUI.AMD
             try
             {
                 _vibranceInfo = new VibranceInfo();
+                // Diagnostic-only tag for whatever VibranceRestoreHelper persists this session -
+                // see VibranceRestoreHelper.VendorTag's own comment. AMD journals to the same file
+                // NVIDIA does (see the batch/level-aware call sites below), even though AMD's own
+                // ReplayPersistedVibranceRestore below never reads it back.
+                VibranceRestoreHelper.VendorTag = "AMD";
                 if (amdAdapter.IsAvailable())
                 {
                     _vibranceInfo.isInitialized = true;
@@ -319,8 +324,9 @@ namespace vibrance.GUI.AMD
             {
                 _amdAdapter.SetSaturationOnDisplay(resolvedLevel, deviceName);
                 // Only the game's own screen was written - that is the only display owing a
-                // restore.
-                VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+                // restore. Level-aware overload (D4's persisted restore) - see VibranceRestoreHelper.
+                // RecordGameLevelsApplied's own comment for the "write iff changed" rule.
+                VibranceRestoreHelper.RecordGameLevelApplied(deviceName, resolvedLevel);
             }
             else
             {
@@ -328,11 +334,9 @@ namespace vibrance.GUI.AMD
                 // This branch really did write every attached display, not just the game's own -
                 // unlike NVIDIA's equivalent, IAmdAdapter has no per-display read-back to confirm
                 // any of them individually, so every currently attached display is recorded as
-                // owing a restore.
-                foreach (Screen attachedScreen in Screen.AllScreens)
-                {
-                    VibranceRestoreHelper.RecordGameLevelApplied(attachedScreen.DeviceName);
-                }
+                // owing a restore. Batch overload - ONE journaled write for every attached screen,
+                // not one write per display (see RecordGameLevelsApplied's own comment).
+                VibranceRestoreHelper.RecordGameLevelsApplied(Screen.AllScreens.Select(s => s.DeviceName), resolvedLevel);
             }
             return true;
         }
@@ -423,8 +427,8 @@ namespace vibrance.GUI.AMD
                         return ProfileToggleResult.WriteFailed;
                     }
                     // Only the game's own screen was written - that is the only display owing a
-                    // restore.
-                    VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+                    // restore. Level-aware overload (D4's persisted restore).
+                    VibranceRestoreHelper.RecordGameLevelApplied(deviceName, resolvedIngameLevel);
                 }
                 else
                 {
@@ -438,11 +442,8 @@ namespace vibrance.GUI.AMD
                     }
                     // This really did write every attached display, not just the game's own -
                     // every one of them is recorded as owing a restore, mirroring the automatic
-                    // apply branch above.
-                    foreach (Screen attachedScreen in Screen.AllScreens)
-                    {
-                        VibranceRestoreHelper.RecordGameLevelApplied(attachedScreen.DeviceName);
-                    }
+                    // apply branch above. Batch overload - one journaled write, not one per display.
+                    VibranceRestoreHelper.RecordGameLevelsApplied(Screen.AllScreens.Select(s => s.DeviceName), resolvedIngameLevel);
                 }
                 ProfileToggleHelper.SetSuppressed(name, false);
                 return ProfileToggleResult.ToggledOn;
@@ -530,6 +531,24 @@ namespace vibrance.GUI.AMD
                 ProcessImagePath = processImagePath
             });
             return true;
+        }
+
+        /// <summary>
+        /// See IVibranceProxy.ReplayPersistedVibranceRestore for the full contract (D4's abnormal-
+        /// exit half) and the scope boundary in that interface method's own header: a deliberate
+        /// no-op. IAmdAdapter has no per-display read-back - ADL_OK only ever confirms a write
+        /// landed, never what level a display is CURRENTLY at - so there is no way to tell "this
+        /// display is still at the game level this application left it at" apart from "the user
+        /// changed it by hand since", the exact distinction NVIDIA's own IsAtLevel read-back makes
+        /// this replay safe to run at all. Replaying blind here would risk overwriting a deliberate
+        /// user change, which is worse than leaving AMD exactly as unfixed on this half of D4 as it
+        /// was before this feature. Leaves any persisted record entirely untouched - it is neither
+        /// read nor deleted here, only ever written by AmdDynamicVibranceProxy's own journaling
+        /// call sites (see VibranceRestoreHelper) and eventually overwritten or deleted by the
+        /// normal write/drain rules the next time this vendor's own work-list changes.
+        /// </summary>
+        public void ReplayPersistedVibranceRestore()
+        {
         }
 
         private void RestoreWindowsColorSettings()

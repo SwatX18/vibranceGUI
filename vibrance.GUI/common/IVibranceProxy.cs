@@ -105,5 +105,32 @@ namespace vibrance.GUI.common
         /// actually written cannot infer it from this return value alone.
         /// </summary>
         bool ApplyStartupForegroundProfile(IntPtr hWnd, string processName, string processImagePath);
+
+        /// <summary>
+        /// D4's abnormal-exit half: replays whatever VibranceRestoreStore.Current.TryRead() finds
+        /// from a PREVIOUS session that never reached CleanUp() (a Task Manager kill, a crash, a
+        /// logoff) - a one-shot, run-once-at-startup pass, never retried this session. See
+        /// VibranceGUI.backgroundWorker_DoWork's own call site comment for why it must run after
+        /// SetVibranceWindowsLevel but before ApplyStartupForegroundProfile.
+        ///
+        /// Each entry resolves to one of five outcomes - see NvidiaDynamicVibranceProxy.
+        /// TryRestorePersistedDisplay's own header for the full decision table and the reasoning
+        /// behind each one: AlreadyCorrect/Restored/NotOurs all drop the entry (settled, restored,
+        /// or deliberately left alone); Unreadable/WriteFailed both KEEP it for the next launch to
+        /// retry. If anything survives, the record is rewritten with just the survivors; only when
+        /// nothing survives is the file deleted. A record written by the OTHER vendor is discarded
+        /// wholesale before any entry is examined - see VibranceRestoreRecord.Vendor's own comment.
+        ///
+        /// NVIDIA only. NvidiaDynamicVibranceProxy implements the real replay, entirely through the
+        /// existing INvidiaVibranceDevice seam (TryResolveDisplayHandle/IsAtLevel/SetLevel) plus
+        /// MonitorIdentity's device-name resolution - no new device method was needed.
+        /// AmdDynamicVibranceProxy's implementation is a deliberate no-op: IAmdAdapter has no per-
+        /// display read-back (ADL_OK confirms a write landed, not what level a display is
+        /// CURRENTLY at), so there is no way to verify a persisted entry is still "ours" before
+        /// overwriting it - and replaying without that verification risks stomping a display the
+        /// user changed by hand in between, which is worse than doing nothing. AMD is left exactly
+        /// as unfixed on this half of D4 as it was before this feature - not worse.
+        /// </summary>
+        void ReplayPersistedVibranceRestore();
     }
 }

@@ -238,6 +238,11 @@ namespace vibrance.GUI.NVIDIA
                 _applicationSettings = savedApplicationSettings;
                 _windowsResolutionSettings = currentWindowsResolutionSettings;
                 _vibranceInfo = new VibranceInfo();
+                // Diagnostic-only tag for whatever VibranceRestoreHelper persists this session -
+                // see VibranceRestoreHelper.VendorTag's own comment. Set unconditionally, even if
+                // initializeLibrary()/InitializeProxy() below go on to fail: a record this process
+                // never actually gets to write is not affected either way.
+                VibranceRestoreHelper.VendorTag = "NVIDIA";
                 if (initializeLibrary())
                 {
                     InitializeProxy();
@@ -361,7 +366,19 @@ namespace vibrance.GUI.NVIDIA
                 int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(applicationSetting, HdrStateTracker.GetState(screen.DeviceName));
                 if (ApplyGameVibranceLevel(_device, screen.DeviceName, resolvedIngameLevel))
                 {
-                    VibranceRestoreHelper.RecordGameLevelApplied(screen.DeviceName);
+                    // Level-aware overload (D4's persisted restore) - journals this display/level
+                    // to disk iff it actually changed from what was last persisted. See
+                    // VibranceRestoreHelper.RecordGameLevelsApplied's own comment for the "write
+                    // iff changed" rule this relies on to stay a no-op on a repeat alt-tab back
+                    // into an already-correct game. Guarded by ShouldJournalGameLevel - see its own
+                    // comment for why an ingame level equal to the Windows default is never worth
+                    // persisting, exactly like AmdDynamicVibranceProxy.ApplyResolvedGameLevel's own
+                    // guard. ApplyGameVibranceLevel's write/return above is unchanged either way -
+                    // only the journal call is guarded, never the in-session apply itself.
+                    if (ShouldJournalGameLevel(resolvedIngameLevel))
+                    {
+                        VibranceRestoreHelper.RecordGameLevelApplied(screen.DeviceName, resolvedIngameLevel);
+                    }
                 }
 
                 //test if a resolution change is needed
@@ -679,7 +696,11 @@ namespace vibrance.GUI.NVIDIA
                 {
                     return ProfileToggleResult.WriteFailed;
                 }
-                VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+                // Guarded by ShouldJournalGameLevel - see its own comment.
+                if (ShouldJournalGameLevel(resolvedIngameLevel))
+                {
+                    VibranceRestoreHelper.RecordGameLevelApplied(deviceName, resolvedIngameLevel);
+                }
                 ProfileToggleHelper.SetSuppressed(name, false);
                 return ProfileToggleResult.ToggledOn;
             }
@@ -722,11 +743,45 @@ namespace vibrance.GUI.NVIDIA
 
             if (ApplyGameVibranceLevel(_device, deviceName, resolvedIngameLevel))
             {
-                VibranceRestoreHelper.RecordGameLevelApplied(deviceName);
+                // Guarded by ShouldJournalGameLevel - see its own comment. The log line below is
+                // NOT guarded by it - the HDR re-apply itself happened regardless of whether this
+                // level happens to equal the Windows default, and is still worth recording in
+                // vibranceGUI.log either way.
+                if (ShouldJournalGameLevel(resolvedIngameLevel))
+                {
+                    VibranceRestoreHelper.RecordGameLevelApplied(deviceName, resolvedIngameLevel);
+                }
                 Program.LogSafely(string.Format(
                     "HDR state for {0} is now {1} - re-applied {2}'s ingame vibrance level ({3}).",
                     deviceName, state, setting.Name, resolvedIngameLevel));
             }
+        }
+
+        /// <summary>
+        /// Whether a resolved ingame level is worth persisting to the D4 restore journal at all -
+        /// mirrors AmdDynamicVibranceProxy.ApplyResolvedGameLevel's own pre-existing guard
+        /// ("if (_vibranceInfo.userVibranceSettingDefault == resolvedLevel) return false;"), which
+        /// skips AMD's write AND journal together. NVIDIA cannot skip the WRITE the same way -
+        /// ApplyGameVibranceLevel already only writes when the display is not already at
+        /// resolvedIngameLevel (its own IsAtLevel guard), and changing its return value or call
+        /// sites here would touch the in-session apply path this feature must leave alone - so this
+        /// guards the JOURNAL call only, at each of NVIDIA's three call sites, never
+        /// ApplyGameVibranceLevel itself.
+        ///
+        /// The reason to guard it at all: a game whose configured ingame level happens to equal the
+        /// current Windows default carries no restore obligation, by construction - a display
+        /// sitting at that shared value needs nothing written back to it, GAME level or not.
+        /// Persisting it anyway would journal an entry that teaches the replay nothing (it cannot
+        /// tell "this display is at the shared value because a game pinned it there" apart from "it
+        /// was already there and nothing ever touched it"), for no benefit.
+        /// </summary>
+        // internal, not private: VibranceRestorePersistenceFixture drives this directly as a pure
+        // function (see its own P21 check), the same way VibranceRestoreFixture already drives
+        // ApplyGameVibranceLevel/RestoreWindowsVibranceLevel directly rather than only indirectly
+        // through OnWinEventHook.
+        internal static bool ShouldJournalGameLevel(int resolvedIngameLevel)
+        {
+            return resolvedIngameLevel != _vibranceInfo.userVibranceSettingDefault;
         }
 
         /// <summary>
@@ -754,6 +809,219 @@ namespace vibrance.GUI.NVIDIA
                 ProcessImagePath = processImagePath
             });
             return true;
+        }
+
+        /// <summary>
+        /// One persisted entry's outcome - see TryRestorePersistedDisplay's own header for the
+        /// decision table. AlreadyCorrect and Restored both mean the entry is fully settled and is
+        /// dropped from the record; Unreadable and WriteFailed both mean the entry is KEPT for the
+        /// next launch to retry, because both are conditions that can plausibly resolve themselves
+        /// later (a display that has not finished enumerating yet this boot; a transient driver
+        /// write failure) with no other mechanism that will ever retry them otherwise. NotOurs is
+        /// dropped too - see this method's own header for why "kept" would be wrong there
+        /// specifically.
+        /// </summary>
+        internal enum PersistedRestoreOutcome
+        {
+            AlreadyCorrect,
+            Restored,
+            NotOurs,
+            Unreadable,
+            WriteFailed
+        }
+
+        /// <summary>
+        /// See IVibranceProxy.ReplayPersistedVibranceRestore for the full contract (D4's abnormal-
+        /// exit half). windowsLevel/isWindowsLevelKnown are read from _vibranceInfo, which by the
+        /// time VibranceGUI.backgroundWorker_DoWork reaches its call site has already had
+        /// SetVibranceWindowsLevel run against it once - see that call site's own comment for why
+        /// the ordering matters here exactly as it does for ApplyStartupForegroundProfile above.
+        /// </summary>
+        public void ReplayPersistedVibranceRestore()
+        {
+            ReplayPersistedVibranceRestore(_device, _vibranceInfo.userVibranceSettingDefault, _vibranceInfo.isWindowsLevelKnown);
+        }
+
+        /// <summary>
+        /// The testable body behind ReplayPersistedVibranceRestore() above - VibranceRestorePersistenceFixture
+        /// drives this directly, against a fake INvidiaVibranceDevice and a real
+        /// RealVibranceRestoreStore pointed at a fixture-private temp file (VibranceRestoreStore.
+        /// Current), with no live GPU and no writes to a real display.
+        ///
+        /// A no-op, exactly like RestoreWindowsVibranceLevel's own guard, while isWindowsLevelKnown
+        /// is false - windowsLevel is meaningless before SetVibranceWindowsLevel has actually run
+        /// once, and unlike the in-session restore path this call is never retried later in the
+        /// same run, so a record read here and then discarded because the level was not yet known
+        /// would be gone for good. The call site's own placement (after SetVibranceWindowsLevel,
+        /// before ApplyStartupForegroundProfile) already guarantees this branch is never taken in
+        /// production; it exists so a fixture can pin that guard the same way N12 pins it for
+        /// RestoreWindowsVibranceLevel.
+        ///
+        /// A record another vendor's proxy wrote is discarded WHOLESALE, before any entry is even
+        /// looked at: NVIDIA's vibrance range is 0-63, AMD's is 0-300 - comparing an AMD-range
+        /// AppliedLevel against an NVIDIA display's live level could coincidentally collide with a
+        /// valid NVIDIA level and misreport that display's state, and would otherwise just never
+        /// match and silently keep the entry (and the file) around forever. Persistence itself is
+        /// vendor-agnostic (both proxies journal through VibranceRestoreHelper - see its own header),
+        /// so this gate is what keeps a record AMD wrote inert here rather than misinterpreted.
+        ///
+        /// Reads the record once via VibranceRestoreStore.Current.TryRead(), resolves each entry's
+        /// CURRENT device name through MonitorIdentity (never through the stale, diagnostic-only
+        /// DeviceNameAtWrite - see VibranceRestoreEntry's own comment), and reduces every entry to a
+        /// PersistedRestoreOutcome via TryRestorePersistedDisplay below. Entries that settle
+        /// (AlreadyCorrect, Restored) or that this gate deliberately declines to touch (NotOurs) are
+        /// dropped; entries that could not be resolved to a live handle or whose write did not land
+        /// (Unreadable, WriteFailed) are KEPT. If anything survives, the record is REWRITTEN with
+        /// just the survivors (never silently left as the stale original, and never silently
+        /// dropped); only when nothing survives is the file deleted.
+        ///
+        /// Deliberately does NOT touch VibranceRestoreHelper's own in-memory work-list
+        /// (_displaysHoldingGameLevel) - a display this replay actually restores was never on that
+        /// list to begin with (this process never applied anything to it THIS session; the entry
+        /// came from a PREVIOUS session's crash), and a display this replay leaves alone (the user
+        /// changed it by hand) must not be added to a work-list that would make the very next non-
+        /// game foreground event immediately overwrite that manual change - which is exactly the
+        /// staleness this gate exists to avoid. See TryRestorePersistedDisplay's own header for the
+        /// deliberate difference from RestoreOneDisplay beside it.
+        /// </summary>
+        internal static void ReplayPersistedVibranceRestore(INvidiaVibranceDevice device, int windowsLevel, bool isWindowsLevelKnown)
+        {
+            if (!isWindowsLevelKnown)
+            {
+                return;
+            }
+
+            VibranceRestoreRecord record = VibranceRestoreStore.Current.TryRead();
+            if (record == null || record.Displays == null || record.Displays.Count == 0)
+            {
+                return;
+            }
+
+            // Compared against VibranceRestoreHelper.VendorTag - THIS process's own vendor, as its
+            // constructor stamped it - rather than a hardcoded "NVIDIA" literal. Same outcome for
+            // every normal launch (this proxy always sets VendorTag to "NVIDIA" in its own
+            // constructor), but ties the gate to the single source of truth PersistCurrentWorkList
+            // itself writes from, rather than a second, independently-maintained copy of the same
+            // string that could drift from it.
+            if (!string.Equals(record.Vendor, VibranceRestoreHelper.VendorTag, StringComparison.OrdinalIgnoreCase))
+            {
+                VibranceRestoreStore.Current.Delete();
+                return;
+            }
+
+            List<VibranceRestoreEntry> survivors = new List<VibranceRestoreEntry>();
+            foreach (VibranceRestoreEntry entry in record.Displays)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.MonitorId))
+                {
+                    continue;
+                }
+
+                // Resolved through MonitorIdentity ONLY - never entry.DeviceNameAtWrite, which is
+                // volatile-hive-derived (see MonitorIdentity's own header) and, after an unplug,
+                // can end up naming a DIFFERENT physical panel once the remaining displays
+                // renumber; falling back to it would restore the wrong monitor. A monitor that does
+                // not currently resolve is discarded here, before the device is ever touched -
+                // unlike Unreadable/WriteFailed below, there is no live device to retry against, so
+                // there is nothing worth keeping.
+                string deviceName = MonitorIdentity.TryResolveDeviceName(entry.MonitorId);
+                if (string.IsNullOrEmpty(deviceName))
+                {
+                    continue;
+                }
+
+                PersistedRestoreOutcome outcome = TryRestorePersistedDisplay(device, deviceName, entry.AppliedLevel, windowsLevel);
+                switch (outcome)
+                {
+                    case PersistedRestoreOutcome.Restored:
+                        Program.LogSafely(string.Format(
+                            "Restored a stranded game vibrance level on {0} (was {1}, a previous session never reached CleanUp) back to the Windows level ({2}).",
+                            deviceName, entry.AppliedLevel, windowsLevel));
+                        break;
+                    case PersistedRestoreOutcome.NotOurs:
+                        Program.LogSafely(string.Format(
+                            "Left {0} alone on the persisted vibrance restore replay: it is at neither its persisted game level ({1}) nor the current Windows level ({2}), so it was changed by hand (or by something else) since the last session.",
+                            deviceName, entry.AppliedLevel, windowsLevel));
+                        break;
+                    case PersistedRestoreOutcome.Unreadable:
+                        Program.LogSafely(string.Format(
+                            "Could not resolve an NVIDIA display handle for {0} during the persisted vibrance restore replay - its entry is kept for the next launch to retry.",
+                            deviceName));
+                        survivors.Add(entry);
+                        break;
+                    case PersistedRestoreOutcome.WriteFailed:
+                        Program.LogSafely(string.Format(
+                            "Failed to restore the Windows vibrance level for {0} during the persisted vibrance restore replay - its entry is kept for the next launch to retry.",
+                            deviceName));
+                        survivors.Add(entry);
+                        break;
+                    // AlreadyCorrect: nothing to do and nothing worth logging - the common case
+                    // after a NORMAL exit that also happened to leave a stale record around.
+                }
+            }
+
+            if (survivors.Count == 0)
+            {
+                VibranceRestoreStore.Current.Delete();
+            }
+            else
+            {
+                VibranceRestoreRecord rewritten = new VibranceRestoreRecord();
+                rewritten.SchemaVersion = record.SchemaVersion;
+                rewritten.Vendor = record.Vendor;
+                rewritten.WrittenUtc = DateTime.UtcNow;
+                rewritten.Displays = survivors;
+                VibranceRestoreStore.Current.Write(rewritten);
+            }
+        }
+
+        /// <summary>
+        /// One persisted entry's decision, deliberately STRICTER than RestoreOneDisplay beside it
+        /// (which has no staleness gate at all, and will overwrite a manual primary-monitor change
+        /// on the very next non-game foreground event today - see IVibranceProxy.
+        /// ReplayPersistedVibranceRestore's own header). RestoreOneDisplay acts on state THIS
+        /// process created moments earlier in the same session; this acts across an unbounded gap
+        /// (however long the machine was off, or another user was logged in, or this display was
+        /// used by something else entirely) on state it has no other way to vouch for - so it reads
+        /// back before writing, in this order:
+        ///
+        ///   already at windowsLevel (tested FIRST) -> nothing to do                    -> AlreadyCorrect
+        ///   still at AppliedLevel, write lands      -> this application's own doing     -> Restored
+        ///   still at AppliedLevel, write fails      -> verified ours, retry it later    -> WriteFailed
+        ///   at neither                              -> changed by hand - LEAVE IT ALONE -> NotOurs
+        ///   handle does not resolve at all           -> not readable yet - retry later   -> Unreadable
+        ///
+        /// AlreadyCorrect is tested BEFORE the AppliedLevel check, deliberately: a display already
+        /// sitting at windowsLevel is, by construction, not at AppliedLevel either (barring the
+        /// degenerate case where the two happen to be numerically equal, which reaches the same
+        /// right answer either way) - testing the other way round would misreport an already-
+        /// settled display as NotOurs.
+        ///
+        /// windowsLevel is the CALLER's current setting (ReplayPersistedVibranceRestore's own
+        /// caller resolves it from _vibranceInfo, not from anything in the record) - the user's
+        /// present preference, not a possibly-stale value from whenever the record was written.
+        /// </summary>
+        internal static PersistedRestoreOutcome TryRestorePersistedDisplay(INvidiaVibranceDevice device, string deviceName, int appliedLevel, int windowsLevel)
+        {
+            IntPtr displayHandle = device.TryResolveDisplayHandle(deviceName);
+            if (displayHandle == InvalidDisplayHandle || displayHandle == IntPtr.Zero)
+            {
+                return PersistedRestoreOutcome.Unreadable;
+            }
+
+            if (device.IsAtLevel(displayHandle, windowsLevel))
+            {
+                return PersistedRestoreOutcome.AlreadyCorrect;
+            }
+
+            if (device.IsAtLevel(displayHandle, appliedLevel))
+            {
+                return device.SetLevel(displayHandle, windowsLevel)
+                    ? PersistedRestoreOutcome.Restored
+                    : PersistedRestoreOutcome.WriteFailed;
+            }
+
+            return PersistedRestoreOutcome.NotOurs;
         }
 
         private static void LogDisplayFailureOnce(string deviceName, string message)

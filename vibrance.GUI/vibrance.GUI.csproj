@@ -169,6 +169,10 @@
     <Compile Include="common\GammaRestoreFixture.cs" />
     <Compile Include="common\VibranceRestoreHelper.cs" />
     <Compile Include="common\VibranceRestoreFixture.cs" />
+    <Compile Include="common\MonitorIdentity.cs" />
+    <Compile Include="common\VibranceRestoreRecord.cs" />
+    <Compile Include="common\VibranceRestoreStore.cs" />
+    <Compile Include="common\VibranceRestorePersistenceFixture.cs" />
     <Compile Include="common\ResolutionChangeFixture.cs" />
     <Compile Include="common\TrackbarLabelHelper.cs" />
     <Compile Include="common\WinEventHook.cs" />

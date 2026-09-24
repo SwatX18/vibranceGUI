@@ -33,6 +33,7 @@ namespace vibrance.GUI
         private const string GammaDisplaySelfTestMessageBoxCaption = "vibranceGUI gamma restore hardware self test";
         private const string ResolutionSelfTestMessageBoxCaption = "vibranceGUI resolution change self test";
         private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
+        private const string VibrancePersistenceSelfTestMessageBoxCaption = "vibranceGUI persisted vibrance restore self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
@@ -113,6 +114,13 @@ namespace vibrance.GUI
             if (!args.Any(a => a.StartsWith("--selftest")))
             {
                 LogSink.ResetForTests(new RealLogSink());
+
+                // VibranceRestoreStore.Current defaults to NullVibranceRestoreStore for exactly
+                // the same reason LogSink.Current defaults to NullLogSink just above (see that
+                // class's own header comment) - swapped in here, once, right beside it, so a
+                // --selftest-* run or a reflection harness calling a fixture's Run() directly
+                // never touches the real %APPDATA%\vibranceGUI\vibranceRestore.xml.
+                VibranceRestoreStore.ResetForTests(new RealVibranceRestoreStore());
             }
 
             // Runs before the GPU vendor detection below on purpose: the picker is pure, so the
@@ -204,6 +212,20 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, VibranceRestoreFixture.Run().ToArray()),
                     VibranceSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again, and for the same reason as --selftest-vibrance beside it: the
+            // journal (VibranceRestoreHelper's persistence rules) is driven through
+            // NvidiaDynamicVibranceProxy's ReplayPersistedVibranceRestore seam against a fake
+            // INvidiaVibranceDevice and a RealVibranceRestoreStore pointed at a fixture-private
+            // temp file (never the real %APPDATA%\vibranceGUI\vibranceRestore.xml) - no live GPU,
+            // no writes to a real display. See VibranceRestorePersistenceFixture's own header
+            // comment.
+            if (args.Contains("--selftest-restore-persistence"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, VibranceRestorePersistenceFixture.Run().ToArray()),
+                    VibrancePersistenceSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
