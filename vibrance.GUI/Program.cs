@@ -81,6 +81,26 @@ namespace vibrance.GUI
 
             bool result = false;
             Mutex mutex = new Mutex(true, "vibranceGUI~Mutex", out result);
+
+            // A process started by the updater races the one that started it: the outgoing
+            // instance calls Process.Start and only then exits, so for a fraction of a second two
+            // instances exist and this one loses the mutex. Without this wait the user clicks
+            // "update", watches vibranceGUI vanish, and gets "You can run vibranceGUI only once at
+            // a time!" - having been given no way back. AbandonedMutexException is the normal
+            // outcome here rather than an error: it is what WaitOne reports when the previous
+            // owner exited without releasing, which is exactly what the outgoing instance does.
+            if (!result && args.Contains(UpdateInstaller.UpdatedFlag))
+            {
+                try
+                {
+                    result = mutex.WaitOne(TimeSpan.FromSeconds(10));
+                }
+                catch (AbandonedMutexException)
+                {
+                    result = true;
+                }
+            }
+
             if (!result)
             {
                 // A recognised --set-vibrance hands its request to the already-running instance
@@ -98,6 +118,11 @@ namespace vibrance.GUI
                 MessageBox.Show("You can run vibranceGUI only once at a time!", MessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+
+            // The first moment the previous executable is certainly not running, so the first
+            // moment its file can actually be deleted. Best effort by design - a leftover
+            // ".old-<timestamp>" file is untidy and nothing more, and is not worth a failed start.
+            UpdateInstaller.CleanUpBackups(Path.GetDirectoryName(Application.ExecutablePath));
 
             if (Environment.OSVersion.Version.Major >= 6)
             {

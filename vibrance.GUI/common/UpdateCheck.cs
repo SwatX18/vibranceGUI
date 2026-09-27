@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Runtime.Serialization;
@@ -24,18 +25,43 @@ namespace vibrance.GUI.common
     /// The two fields of a GitHub release this app cares about. Everything else in that JSON -
     /// the author, the asset list, the body - is deliberately not modelled.
     /// </summary>
+    /// <summary>
+    /// One downloadable file attached to a release. Sha256 is GitHub's own "digest" field, which
+    /// it returns as "sha256:&lt;hex&gt;" - see UpdateInstaller for what verifying it does and does
+    /// not buy.
+    /// </summary>
+    public class ReleaseAsset
+    {
+        public ReleaseAsset(string name, string downloadUrl, long size, string sha256)
+        {
+            Name = name;
+            DownloadUrl = downloadUrl;
+            Size = size;
+            Sha256 = sha256;
+        }
+
+        public string Name { get; private set; }
+        public string DownloadUrl { get; private set; }
+        public long Size { get; private set; }
+        public string Sha256 { get; private set; }
+    }
+
     public class ReleaseInfo
     {
-        public ReleaseInfo(Version version, string tagName, string htmlUrl)
+        private readonly List<ReleaseAsset> _assets;
+
+        public ReleaseInfo(Version version, string tagName, string htmlUrl, List<ReleaseAsset> assets)
         {
             Version = version;
             TagName = tagName;
             HtmlUrl = htmlUrl;
+            _assets = assets ?? new List<ReleaseAsset>();
         }
 
         public Version Version { get; private set; }
         public string TagName { get; private set; }
         public string HtmlUrl { get; private set; }
+        public List<ReleaseAsset> Assets { get { return _assets; } }
     }
 
     /// <summary>
@@ -50,6 +76,13 @@ namespace vibrance.GUI.common
         /// The newest published release, or null for every failure mode there is. Never throws.
         /// </summary>
         ReleaseInfo TryGetLatestRelease();
+
+        /// <summary>
+        /// The asset's bytes, or null for every failure mode there is. Never throws. Held in
+        /// memory rather than streamed to disk on purpose: the zips are under a megabyte, and it
+        /// means nothing half-written ever exists on the user's disk to be mistaken for an update.
+        /// </summary>
+        byte[] TryDownloadAsset(ReleaseAsset asset);
     }
 
     /// <summary>
@@ -69,6 +102,11 @@ namespace vibrance.GUI.common
         {
             return null;
         }
+
+        public byte[] TryDownloadAsset(ReleaseAsset asset)
+        {
+            return null;
+        }
     }
 
     [DataContract]
@@ -85,6 +123,28 @@ namespace vibrance.GUI.common
 
         [DataMember(Name = "prerelease")]
         public bool Prerelease { get; set; }
+
+        [DataMember(Name = "assets")]
+        public GitHubAsset[] Assets { get; set; }
+    }
+
+    [DataContract]
+    internal class GitHubAsset
+    {
+        [DataMember(Name = "name")]
+        public string Name { get; set; }
+
+        [DataMember(Name = "browser_download_url")]
+        public string BrowserDownloadUrl { get; set; }
+
+        [DataMember(Name = "size")]
+        public long Size { get; set; }
+
+        // Present on releases published since GitHub added it, absent on older ones - so a null
+        // here is "no digest offered", not "verification failed". UpdateInstaller decides what to
+        // do about that; this type only reports what the payload said.
+        [DataMember(Name = "digest")]
+        public string Digest { get; set; }
     }
 
     /// <summary>
@@ -108,6 +168,13 @@ namespace vibrance.GUI.common
         private const string UserAgent = "vibranceGUI-update-check";
 
         private const int TimeoutMilliseconds = 8000;
+
+        // A zip may legitimately be slow where a small JSON probe should not be.
+        private const int DownloadTimeoutMilliseconds = 120000;
+
+        // 32 MB. The releases are around half a megabyte; this only exists so that a redirect
+        // somewhere unexpected cannot be read into memory until the process dies.
+        private const long MaxAssetBytes = 32L * 1024L * 1024L;
 
         private readonly string _url;
 
@@ -166,6 +233,69 @@ namespace vibrance.GUI.common
             }
         }
 
+        /// <summary>
+        /// Downloads one asset into memory. Separate request, separate timeout: a release payload
+        /// is a couple of kilobytes and should answer in a second, while a ~500 KB zip over a bad
+        /// connection legitimately takes longer, so reusing the 8 second probe timeout here would
+        /// fail updates for people on slow links.
+        /// </summary>
+        public byte[] TryDownloadAsset(ReleaseAsset asset)
+        {
+            if (asset == null || string.IsNullOrEmpty(asset.DownloadUrl))
+            {
+                return null;
+            }
+
+            try
+            {
+                ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(asset.DownloadUrl);
+                request.UserAgent = UserAgent;
+                request.Method = "GET";
+                request.Timeout = DownloadTimeoutMilliseconds;
+                request.ReadWriteTimeout = DownloadTimeoutMilliseconds;
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                    if (response.StatusCode != HttpStatusCode.OK)
+                    {
+                        return null;
+                    }
+                    using (Stream stream = response.GetResponseStream())
+                    {
+                        if (stream == null)
+                        {
+                            return null;
+                        }
+                        using (MemoryStream buffer = new MemoryStream())
+                        {
+                            byte[] chunk = new byte[81920];
+                            int read;
+                            long total = 0;
+                            while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+                            {
+                                total += read;
+                                // A bound, not a guess. Nothing this project publishes is close to
+                                // it, and without one a redirect to something enormous would be
+                                // read into memory until the process died.
+                                if (total > MaxAssetBytes)
+                                {
+                                    return null;
+                                }
+                                buffer.Write(chunk, 0, read);
+                            }
+                            return buffer.ToArray();
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
         internal static ReleaseInfo ReadRelease(Stream stream)
         {
             DataContractJsonSerializer serializer = new DataContractJsonSerializer(typeof(GitHubRelease));
@@ -181,7 +311,21 @@ namespace vibrance.GUI.common
                 return null;
             }
 
-            return new ReleaseInfo(version, release.TagName, release.HtmlUrl);
+            List<ReleaseAsset> assets = new List<ReleaseAsset>();
+            if (release.Assets != null)
+            {
+                foreach (GitHubAsset asset in release.Assets)
+                {
+                    if (asset == null || string.IsNullOrEmpty(asset.Name) ||
+                        string.IsNullOrEmpty(asset.BrowserDownloadUrl))
+                    {
+                        continue;
+                    }
+                    assets.Add(new ReleaseAsset(asset.Name, asset.BrowserDownloadUrl, asset.Size, asset.Digest));
+                }
+            }
+
+            return new ReleaseInfo(version, release.TagName, release.HtmlUrl, assets);
         }
     }
 

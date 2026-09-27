@@ -182,6 +182,11 @@ namespace vibrance.GUI.common
         // stops a click on one of those opening a browser tab the user never asked for.
         private string _updateDownloadUrl;
 
+        // The release the last completed check found newer than this build, or null. Held so
+        // the confirmation dialog can download the right asset without asking GitHub twice.
+        private ReleaseInfo _pendingUpdate;
+        private Version _pendingUpdateCurrentVersion;
+
         // One balloon per run, however many times the check completes.
         private bool _hasShownUpdateBalloon;
 
@@ -963,6 +968,9 @@ namespace vibrance.GUI.common
                     return;
                 }
 
+                _pendingUpdate = latest;
+                _pendingUpdateCurrentVersion = current;
+
                 ShowUpdateBalloon(
                     UpdateCheckPolicy.BuildNotificationText(current, latest.Version, Environment.Is64BitProcess),
                     latest.HtmlUrl);
@@ -1004,10 +1012,149 @@ namespace vibrance.GUI.common
             this.notifyIcon.ShowBalloonTip(250);
         }
 
+        private const string UpdateMessageBoxCaption = "vibranceGUI update";
+
         private void notifyIcon_BalloonTipClicked(object sender, EventArgs e)
         {
             string url = _updateDownloadUrl;
             _updateDownloadUrl = null;
+            if (string.IsNullOrEmpty(url))
+            {
+                return;
+            }
+            OfferUpdate(url);
+        }
+
+        /// <summary>
+        /// Asks, then installs. The ask is the whole design: nothing is ever replaced that the
+        /// user has not just been shown a version number for and agreed to.
+        ///
+        /// Reached by clicking the tray balloon rather than by a dialog appearing on its own at
+        /// startup, and that is deliberate. vibranceGUI autostarts at login with -minimized and
+        /// then sits in the tray while people play games; a modal window taking focus in either of
+        /// those moments is worse than not being told at all. Clicking the balloon is the user
+        /// choosing the interruption.
+        /// </summary>
+        private void OfferUpdate(string fallbackUrl)
+        {
+            ReleaseInfo pending = _pendingUpdate;
+            Version current = _pendingUpdateCurrentVersion;
+            string targetDirectory = Path.GetDirectoryName(Application.ExecutablePath);
+
+            ReleaseAsset asset = pending == null
+                ? null
+                : UpdateInstaller.SelectAsset(pending.Assets, Environment.Is64BitProcess);
+
+            // No asset for this architecture, or no release in hand: there is nothing to install,
+            // so fall back to exactly what this did before - open the page and let them choose.
+            if (asset == null || current == null || string.IsNullOrEmpty(targetDirectory))
+            {
+                OpenInBrowser(fallbackUrl);
+                return;
+            }
+
+            if (MessageBox.Show(
+                    UpdateInstaller.BuildConfirmationText(current, pending.Version, targetDirectory),
+                    UpdateMessageBoxCaption, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            {
+                OpenInBrowser(fallbackUrl);
+                return;
+            }
+
+            InstallUpdate(pending, asset, targetDirectory, fallbackUrl);
+        }
+
+        private void InstallUpdate(ReleaseInfo pending, ReleaseAsset asset, string targetDirectory, string fallbackUrl)
+        {
+            Cursor previousCursor = this.Cursor;
+            this.Cursor = Cursors.WaitCursor;
+            try
+            {
+                byte[] zip = ReleaseSource.Current.TryDownloadAsset(asset);
+                if (zip == null)
+                {
+                    FailUpdate("The download did not complete.", fallbackUrl);
+                    return;
+                }
+
+                // Before a single file is touched. See UpdateInstaller's header for what this
+                // check is worth and, just as importantly, what it is not.
+                if (!UpdateInstaller.DigestMatches(zip, asset.Sha256))
+                {
+                    FailUpdate("The downloaded file did not match the checksum GitHub published for it, " +
+                        "so it has not been installed.", fallbackUrl);
+                    return;
+                }
+
+                string error;
+                Dictionary<string, byte[]> payload = UpdateInstaller.ExtractPayload(zip, out error);
+                if (payload == null)
+                {
+                    FailUpdate(error, fallbackUrl);
+                    return;
+                }
+
+                UpdateApplyResult result = UpdateInstaller.ApplyPayload(payload, targetDirectory, DateTime.UtcNow, out error);
+                if (result == UpdateApplyResult.NotWritable)
+                {
+                    FailUpdate("vibranceGUI cannot write to its own folder, so it cannot update itself there. " +
+                        "Move it somewhere like your user folder, or download the new version manually.", fallbackUrl);
+                    return;
+                }
+                if (result != UpdateApplyResult.Applied)
+                {
+                    FailUpdate("The update could not be installed: " + error + Environment.NewLine +
+                        "Your existing version has been left exactly as it was.", fallbackUrl);
+                    return;
+                }
+
+                RestartAfterUpdate(pending);
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
+                FailUpdate("The update could not be installed: " + ex.Message, fallbackUrl);
+            }
+            finally
+            {
+                this.Cursor = previousCursor;
+            }
+        }
+
+        /// <summary>
+        /// Starts the freshly written executable and closes this one. The new process is given
+        /// --updated so that it waits for this instance to release the single-instance mutex,
+        /// instead of greeting the user with "you can run vibranceGUI only once at a time" one
+        /// second after they clicked Update.
+        /// </summary>
+        private void RestartAfterUpdate(ReleaseInfo installed)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(Application.ExecutablePath, UpdateInstaller.UpdatedFlag);
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
+                MessageBox.Show("vibranceGUI " + UpdateCheckPolicy.FormatVersion(installed.Version) +
+                    " has been installed, but could not be started automatically. Start it again yourself.",
+                    UpdateMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            Application.Exit();
+        }
+
+        private void FailUpdate(string message, string fallbackUrl)
+        {
+            if (MessageBox.Show(message + Environment.NewLine + Environment.NewLine +
+                    "Open the download page in your browser instead?",
+                    UpdateMessageBoxCaption, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                OpenInBrowser(fallbackUrl);
+            }
+        }
+
+        private void OpenInBrowser(string url)
+        {
             if (string.IsNullOrEmpty(url))
             {
                 return;

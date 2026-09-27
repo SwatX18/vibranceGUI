@@ -6,40 +6,90 @@ This is a fork of [juv/vibranceGUI](https://github.com/juv/vibranceGUI). Almost 
 
 ## Download
 
-**[Latest release: v2.10.3](https://github.com/SwatX18/vibranceGUI/releases)** - now in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
+**[Latest release: v2.10.3](https://github.com/SwatX18/vibranceGUI/releases)** - in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
 
 The download at vibrancegui.com is the original author's build and contains none of the changes below.
 
 ## Before you download
 
-This fork has now been played with, rather than only tested: **vibrance applies when a game takes focus and goes back to the normal Windows level on exit, across several Counter-Strike 2 sessions on one machine.** That is the app's core behaviour, and the part most people use.
+**What has been watched working on real hardware:** vibrance applies when a game takes focus and
+goes back to the normal Windows level on exit, across several Counter-Strike 2 sessions on one
+machine. That is the core behaviour and the part most people use. It was watched on an **x86**
+build.
 
-It is also the *only* part anyone has watched work on real hardware, and it was watched on an **x86** build. Still unexercised outside automated checks: **resolution switching** (including the restore-on-exit added in v2.8.0), the **colour settings** (gamma, brightness, contrast - off by default), the **separate HDR vibrance level**, where an open question remains over whether NVIDIA's DVC does anything at all while a display is in HDR, and the **apply-on-startup** behaviour.
+**What has not:** everything else. Resolution switching and its restore-on-exit, the colour
+settings (gamma, brightness and contrast, off by default), the separate HDR vibrance level (where
+an open question remains over whether NVIDIA's DVC does anything at all while a display is in
+HDR), and the apply-on-startup behaviour have only ever been exercised by automated checks, which
+drive fakes and stubs rather than a real GPU driver, display or game. There are 813 of those
+checks, and they are not the same thing as somebody using the program.
 
-The **x64 build**, added in v2.9.0, **could not detect an NVIDIA GPU at all until v2.10.1** - it asked Windows for `nvapi.dll`, the 32-bit NVIDIA entry point, which a 64-bit process cannot load, and then reported that no driver was installed. This README previously said the x64 build "resolves the adapter and initialises correctly", and that was written from a machine with *both* an AMD chipset and an NVIDIA card, which takes an entirely different detection path. On an NVIDIA-only machine - most people - it failed at startup, every time, for two releases. It is fixed in v2.10.1, confirmed against the driver on a real machine. Beyond starting, the x64 build still has not been *played* with: nobody has watched it apply and restore vibrance around a real game. If something behaves differently from the x86 build, that is worth reporting; the title bar names which architecture you are on.
+Two gaps worth knowing about before you rely on either:
 
-The **restore-after-a-crash** behaviour new in v2.10.0 needs the same warning, more strongly: **nobody has yet killed vibranceGUI with a game running and watched a display come back.** Every check behind it drives fake devices. What that means in practice is that the machinery is tested - the rules about when to write the record, when to leave a display alone, how to survive a torn file - but the one thing that matters most, the full kill-and-relaunch cycle on a real monitor, has not been seen working by anyone. It writes two small files under `%APPDATA%\vibranceGUI\` (`vibranceRestore.xml` and `resolutionRestore.xml`); deleting those is always safe and simply forgets any pending restore. The 782 automated checks behind these fixes drive fakes and stubs, not a real GPU driver, display or game, and several fixes were reasoned from the code and documented driver behaviour rather than reproduced on the reporter's own hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
+- **The x64 build has not been played with.** It starts and detects the adapter correctly -
+  confirmed against a real NVIDIA driver - but nobody has watched it apply and restore vibrance
+  around an actual game. It also could not detect an NVIDIA GPU at all before v2.10.1, so if you
+  are on v2.9.0 or v2.10.0, update. If anything behaves differently from the x86 build that is
+  worth reporting, and the title bar names which architecture you are on.
+- **Nobody has killed vibranceGUI with a game running and watched a display come back.** The
+  restore-after-a-crash machinery added in v2.10.0 is tested in the sense that its rules are -
+  when to write the record, when to leave a display alone, how to survive a torn file - but the
+  kill-and-relaunch cycle on a real monitor has not been seen working by anyone. It keeps two
+  small files in `%APPDATA%\vibranceGUI\` (`vibranceRestore.xml` and
+  `resolutionRestore.xml`); deleting them is always safe and simply forgets any pending restore.
+
+If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path
+here. Several fixes were reasoned from the code and the documented driver behaviour rather than
+reproduced on the reporting user's hardware. Reports either way are welcome.
 
 ## Does it phone home?
 
-Once, on startup, and only to ask how new the newest release is.
+Once on startup, to ask how new the newest release is. Nothing else, ever.
 
 vibranceGUI asks `api.github.com` for this repository's latest release tag, compares it to the
-version you are running, and shows a tray notification if yours is older. Clicking it opens the
-release page in your browser. **Nothing is downloaded, installed or executed** - the app has no
-auto-updater and will not get one while it is unsigned.
+version you are running, and shows a tray notification if yours is older.
 
-- It sends no information about you. The request carries a user agent string and nothing else - no
-  identifier, no hardware details, no usage data. GitHub sees an anonymous request for a public
-  page, the same as if you opened the releases page yourself.
-- It runs at most **once every 12 hours**, on a background thread, and gives up after 8 seconds.
-- Every failure - offline, proxy, rate limit - is silent. It never shows an error for its own sake.
+- **It sends no information about you.** The request carries a user agent string and nothing else:
+  no identifier, no hardware details, no usage data, no settings. GitHub sees an anonymous request
+  for a public page, exactly as if you opened the releases page in a browser yourself.
+- It runs **at most once every 12 hours**, on a background thread, and gives up after 8 seconds.
+- Every failure - offline, proxy, rate limit - is silent. It will never show you an error about
+  its own update check.
 - **Untick "Check for a new version on startup"** in the settings to turn it off completely, or set
   `updateCheckEnabled=False` in `%APPDATA%\vibranceGUI\vibranceGUI.ini`.
 
-It defaults to on, and that is a deliberate choice rather than an oversight: the x64 builds of
-v2.9.0 and v2.10.0 could not detect an NVIDIA GPU at all, and the people running them had no way
-to find out a fix existed. If you are on one of those, the notification says so specifically.
+It is on by default. The x64 builds of v2.9.0 and v2.10.0 could not detect an NVIDIA GPU at all,
+and the people running them had no way to find out a fix existed.
+
+## Can it install the update for itself?
+
+Yes, if you click yes. It will never do it on its own.
+
+Click the notification and vibranceGUI asks whether to install the new version, naming both
+version numbers and the folder it is about to write to. Say yes and it downloads the right build
+for your architecture, checks it, replaces its own files and restarts. Say no and it opens the
+download page in your browser, which is what it always did.
+
+What that is careful about:
+
+- **It only ever happens because you clicked twice** - once on the notification, once on "yes",
+  having been shown which version you are moving to. There is no silent background updating, and
+  there is not going to be. A bad release should reach the people who chose to take it, not
+  everybody at once: the x64 bug above sat in two releases, and an unattended updater would have
+  pushed it onto every machine that was running a perfectly good v2.8.0.
+- **The download is checked against the SHA-256 GitHub publishes** for that file before anything on
+  your disk is touched. A truncated, corrupted or tampered download is refused rather than
+  installed. Be clear about the limit of that, though: it proves the file is the one GitHub is
+  serving, not that the file is safe. These builds are unsigned, so if this GitHub account were
+  ever compromised, the checksum would be replaced along with the file. Nothing but code signing
+  fixes that, and code signing is not something this fork has.
+- **Your previous version is kept**, renamed alongside the new one, until the next time
+  vibranceGUI starts. If an update fails halfway it is rolled back, so you are left with the
+  version you had rather than half of two.
+- **If vibranceGUI cannot write to its own folder** - because you unzipped it into Program Files,
+  say - it tells you so and offers the browser instead. It will not ask for administrator rights.
+
+If you would rather do it by hand, you always can: every release is a zip with two files in it.
 
 ## What is different in this fork
 
@@ -66,7 +116,13 @@ New:
 - The screen resolution is put back when vibranceGUI closes while a game still holds the foreground (#98). Previously only the gamma ramp and the vibrance level were restored on exit, so a game's resolution or refresh rate could be left behind.
 - **Vibrance and resolution are put back after a crash, a Task Manager kill or a logoff**, not only after a clean exit (#95, #98, #144). vibranceGUI now records which displays it took away from their normal state and restores them the next time it starts. It only restores a display that is still sitting at the level or mode *it* set — one you have changed yourself since is left alone. The resolution half works on AMD as well as NVIDIA; the vibrance half is NVIDIA-only, because the AMD driver gives no way to read a display's current level back and therefore no way to tell your change from ours. Gamma and colour settings are not covered yet.
 - **A 64-bit build.** vibranceGUI ran as a 32-bit process for its whole life, and could not have done otherwise: the NVIDIA calls were bound to a prebuilt 32-bit DLL by 32-bit C++ mangled name, using a calling convention that does not exist on x64. That DLL is now built from its own published source behind a plain C interface, NVIDIA's display and GPU handles are treated as the pointers they actually are rather than as 32-bit integers, and the AMD path picks its driver library by process architecture instead of the machine's. The x86 build is unchanged and still supported.
-- **A notification when a newer release exists.** Checked on startup, at most once every 12 hours, on a background thread. It opens the release page in your browser if you click it and does nothing otherwise - there is no auto-installer, and there will not be one while these builds are unsigned. See "Does it phone home?" above for exactly what is sent, and the checkbox that turns it off.
+- **A notification when a newer release exists, and a one-click update.** Checked on startup, at
+  most once every 12 hours, on a background thread. Click the notification and it offers to
+  download and install the new build for you - after showing you both version numbers and asking.
+  It verifies GitHub's published SHA-256 before replacing anything, keeps your previous version
+  until the next start, and rolls back if it fails. It never updates without being asked, and
+  there is no silent background updater. See "Does it phone home?" and "Can it install the update
+  for itself?" above.
 
 The [v2.10.3 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.10.3) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
 

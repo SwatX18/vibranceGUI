@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 782 automated checks across sixteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 813 automated checks across sixteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -450,7 +450,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 782 of them across sixteen
+- **There is no test project**, but there are automated checks: 813 of them across sixteen
   `*Fixture.cs` files — twelve in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
   sixteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
@@ -531,6 +531,41 @@ default is offline. **Do not "fix" that default.**
 - **The balloon URL lives only as long as its balloon.** The tray icon shows unrelated balloons
   and `BalloonTipClicked` does not say which was clicked, so `BalloonTipClosed` clears it -
   otherwise clicking a hotkey-failure balloon could open a browser tab.
+
+**The update can also install itself, but only when asked.** `UpdateInstaller` downloads the
+asset matching this process's architecture, verifies GitHub's published SHA-256 **before touching
+anything on disk**, extracts it, swaps the files and restarts. It is reached by clicking the
+balloon and then confirming a dialog that names both versions and the target folder - never on its
+own. That boundary is the design, not timidity: v2.9.0 and v2.10.0 shipped a totally broken x64
+build, and an unattended updater would have pushed it onto everyone running a working v2.8.0
+instead of only onto the people who chose to download it.
+
+The parts that bite here, all pinned by `UpdateCheckFixture`:
+
+- **Architecture selection is an exact final-token match, not a `Contains`.** The obvious guard -
+  require `"x86"`, reject `"x64"` - does not work, because `"x86_64"` does not contain `"x64"` at
+  all (it is `x,8,6,_,6,4`). A `Contains` hands a 32-bit process the 64-bit binary, which then
+  does not start. The first implementation had exactly this bug and the fixture caught it.
+- **A missing digest fails.** "Could not verify" and "verified" must not take the same branch when
+  the next step is overwriting the running program.
+- **Zip-slip is structurally impossible, not filtered.** Only two literal file names are ever
+  written, matched on `Path.GetFileName` of the entry, so a `..' + BS + BS + '..' + BS + BS + 'evil.dll` entry names nothing
+  this writes.
+- **Files are moved aside, not deleted.** Windows refuses to delete or overwrite a running `.exe`
+  but will happily rename it. That is also what makes rollback possible, and the leftovers are
+  deleted at the next startup - the first moment the old binary is certainly not running.
+- **`--updated` makes the new process wait on the mutex.** The outgoing instance calls
+  `Process.Start` and only then exits, so for a moment two instances exist and the new one loses
+  the single-instance mutex. Without the wait the user clicks "update", watches vibranceGUI
+  vanish, and gets "You can run vibranceGUI only once at a time!". `AbandonedMutexException` is the
+  normal outcome there, not an error.
+- **Not writable means stop.** An installation under Program Files is told to move or download
+  manually; the app never asks for elevation.
+
+Verified end to end against the live release, not only by fixtures: a scratch installation holding
+the published v2.10.1 was upgraded to v2.10.3 - asset selected, 496,581 bytes downloaded in 251 ms,
+digest verified, a single flipped byte correctly rejected, files swapped, the old version still
+readable in its backup, and `CleanUpBackups` deleting exactly the two leftovers.
 
 **Defaults to on, opt-out via a checkbox** (`updateCheckEnabled` in the INI, defaulting to `true`
 for a settings file that predates the key). A default of off would mean the people most in need of
