@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Bug in the original vibranceGUI
+    url: https://github.com/juv/vibranceGUI/issues
+    about: >
+      If you are running an official build from vibrancegui.com rather than a release from
+      this fork, report it upstream — none of this fork's changes are in that build.
