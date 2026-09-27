@@ -6,7 +6,7 @@ This is a fork of [juv/vibranceGUI](https://github.com/juv/vibranceGUI). Almost 
 
 ## Download
 
-**[Latest release: v2.10.3](https://github.com/SwatX18/vibranceGUI/releases)** - in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
+**[Latest release: v2.10.4](https://github.com/SwatX18/vibranceGUI/releases)** - in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
 
 The download at vibrancegui.com is the original author's build and contains none of the changes below.
 
@@ -124,7 +124,7 @@ New:
   there is no silent background updater. See "Does it phone home?" and "Can it install the update
   for itself?" above.
 
-The [v2.10.3 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.10.3) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
+The [v2.10.4 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.10.4) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
 
 ## Graphics card support
 
