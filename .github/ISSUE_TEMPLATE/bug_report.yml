@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in this fork behaves wrongly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. This is an unofficial fork of
+        [juv/vibranceGUI](https://github.com/juv/vibranceGUI) — if you are running an
+        official build from vibrancegui.com, please report there instead, since none of
+        the changes here are in it.
+
+  - type: input
+    id: titlebar
+    attributes:
+      label: What does the title bar say?
+      description: >
+        Copy it exactly. It names the vendor, the architecture and the version, which is
+        usually enough to tell which change is at fault.
+      placeholder: vibranceGUI (NVIDIA, x64, 2.10.0)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can it be reproduced?
+      description: >
+        If it involves a game, naming it helps — several past bugs turned out to depend on
+        whether a game runs exclusive fullscreen.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+
+  - type: input
+    id: driver
+    attributes:
+      label: Graphics driver version
+      description: >
+        NVIDIA Control Panel → System Information, or AMD Software → System. Worth including
+        even if it seems unrelated; at least one open issue is driver-branch specific.
+      placeholder: "591.44"
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Monitors, and anything unusual about the setup
+      description: >
+        How many, which is primary, and whether any of these apply: HDR, a laptop with
+        switchable graphics, an external GPU, both an NVIDIA and an AMD driver installed,
+        or f.lux / Night Light / an ICC profile in use. These are the least-tested paths.
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log file (optional)
+      description: >
+        `%APPDATA%\vibranceGUI\vibranceGUI.log` — paste the tail, or drag the file in.
+      render: text
