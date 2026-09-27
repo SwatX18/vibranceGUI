@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 732 automated checks across fifteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 735 automated checks across fifteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -220,7 +220,7 @@ Read this before basing work on `master` or trying to reproduce a user's bug rep
 | Project style | pre-SDK MSBuild, `ToolsVersion 4.0`, every source file listed explicitly (`csproj:91-225`, `Compile`) |
 | Solution | `vibrance.GUI.sln`, format 12.00, "# Visual Studio 2012", one project |
 | NuGet packages | none, as of v2.6.0 — `Fody`, `Costura.Fody`, and the unused `CommonServiceLocator` were all removed; the build requires no NuGet restore |
-| Native dependencies | `nvapi.dll` (x86) / `nvapi64.dll` (x64) (NVIDIA, resolved dynamically inside `vibranceDLL.dll` by an `#ifdef _WIN64` in `native/vibranceDLL/vibrance/vibrance.cpp`'s `initializeLibrary()`, itself now built in this repo from `native/vibranceDLL/` — §7.2); `atiadlxy.dll` / `atiadlxx.dll` (AMD, static `DllImport`, selected by **process** bitness, not OS bitness — §8.4); plus `user32`, `kernel32`, `psapi`, `advapi32` |
+| Native dependencies | `nvapi.dll` (x86) / `nvapi64.dll` (x64) (NVIDIA, resolved dynamically inside `vibranceDLL.dll` by an `#ifdef _WIN64` in `native/vibranceDLL/vibrance/vibrance.cpp`'s `initializeLibrary()`, itself now built in this repo from `native/vibranceDLL/` — §7.2; the managed side picks the same pair by `Environment.Is64BitProcess` for its detection probe — §3.5 item 2); `atiadlxy.dll` / `atiadlxx.dll` (AMD, static `DllImport`, selected by **process** bitness, not OS bitness — §8.4); plus `user32`, `kernel32`, `psapi`, `advapi32` |
 | Size | 64 tracked files in the repo; 58 items in the project; 48 `.cs` files, ~4,622 lines of C# |
 
 ### 3.2 Building
@@ -282,15 +282,37 @@ is now either fixed, or was never actually x86-specific to begin with:
    with `Environment.Is64BitProcess` at startup (§3.5). A 64-bit process still cannot load a 32-bit
    image or vice versa - that has not changed - but a 64-bit build now has its own correctly-built
    image to load instead of none at all.
-2. **Vendor detection probes the 32-bit system directory, and this was never actually the problem it
-   looked like.** `GraphicsAdapterHelper.IsVendorDriverInstalled` reads
-   `Environment.SpecialFolder.SystemX86` (`common/GraphicsAdapter.cs`) — `C:\Windows\SysWOW64` on
-   64-bit Windows, **regardless of the calling process's own bitness** — and checks for the 32-bit
-   `nvapi.dll` / AMD driver file there purely as a yes/no "is this vendor's driver installed at all"
-   signal, not as the path anything is loaded from. NVIDIA's installer puts both `nvapi.dll` (32-bit,
-   SysWOW64) and `nvapi64.dll` (64-bit, System32) down together, so the 32-bit file's presence remains
-   a valid proxy for "the driver is installed" from an x64 process too. This check needed no change for
-   the x64 port.
+2. **The NVIDIA probe assumed a 32-bit caller, and this one shipped broken — fixed in v2.10.1.**
+   This entry previously read "this check needed no change for the x64 port". That was wrong, and it
+   was wrong in the expensive direction: it examined
+   `GraphicsAdapterHelper.IsVendorDriverInstalled`'s *presence* probe, decided it was harmless, and
+   never looked at the *load* probe sitting four lines below it. `_nvidiaDllName` was a
+   `const string "nvapi.dll"`. Being a `const` with no per-platform expression, it offered the x64
+   port nothing to revisit, and the AMD selection next to it was fixed while this was not.
+
+   `nvapi.dll` is the 32-bit NvAPI entry point and on 64-bit Windows it exists **only** in SysWOW64;
+   the 64-bit driver ships `nvapi64.dll` in System32. SysWOW64 is not on a 64-bit process's loader
+   search path, so `IsAdapterAvailable("nvapi.dll")` from the x64 build failed with
+   `ERROR_MOD_NOT_FOUND` (126) on every machine with an NVIDIA card in it. `GetAdapter()` then
+   returned `Unknown` and the app died in the "failed to determine your graphics adapter" dialog —
+   which blames the user's driver for a file name this side chose. The native side had always had
+   this right (`initializeLibrary()` picks `nvapi64.dll` under `#ifdef _WIN64`, §7.2); only the
+   managed probe was wrong.
+
+   **It was masked on exactly the machines a developer is likely to test on.** `GetAdapter()` tries
+   `AreBothVendorDriversInstalled()` first, and a machine carrying *both* vendors' driver files — an
+   AMD CPU/APU plus a discrete NVIDIA card — takes the attached-display branch and never reaches the
+   broken line. It reproduces only where NVIDIA is the sole vendor, which is most NVIDIA users but
+   not the dual-driver dev box. v2.9.0 and v2.10.0 both shipped x64 builds that could not detect an
+   NVIDIA GPU at all.
+
+   Both names are now chosen by `Environment.Is64BitProcess` (`_nvidiaDllName`/`NvidiaDllName`,
+   mirroring `_amdDllName`/`AmdDllName`). Because the names became bitness-dependent,
+   `IsVendorDriverInstalled` had to move with them: it now reads `SpecialFolder.System` for a 64-bit
+   process and keeps `SpecialFolder.SystemX86` for a 32-bit one, since asking SysWOW64 for
+   `nvapi64.dll` or for the 64-bit `atiadlxx.dll` finds neither and would report that the user has no
+   driver of that vendor at all. `GraphicsAdapterFixture` pins all three rules (known name, x64 picks
+   `nvapi64.dll`, x86 still picks `nvapi.dll`) so the x86 build cannot be broken while fixing x64.
 3. **The AMD binding assumed a 32-bit caller - now fixed.** Until this port, a 32-bit process on
    64-bit Windows loaded `atiadlxy.dll` via `Environment.Is64BitOperatingSystem`, which answers for the
    *OS*, not the calling process; an x64 process hit the same branch and tried to load
@@ -414,7 +436,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 732 of them across fifteen
+- **There is no test project**, but there are automated checks: 735 of them across fifteen
   `*Fixture.cs` files — twelve in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
   sixteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
