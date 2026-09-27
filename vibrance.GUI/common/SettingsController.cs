@@ -40,6 +40,8 @@ namespace vibrance.GUI.common
         const string SzKeyNameGraphicsAdapter = "graphicsAdapter";
         const string SzKeyNameToggleHotkey = "toggleHotkey";
         const string SzKeyNameToggleHotkeyEnabled = "toggleHotkeyEnabled";
+        const string SzKeyNameUpdateCheckEnabled = "updateCheckEnabled";
+        const string SzKeyNameLastUpdateCheckUtc = "lastUpdateCheckUtc";
 
 
         private string _fileName = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData).ToString() + "\\vibranceGUI\\vibranceGUI.ini";
@@ -221,6 +223,79 @@ namespace vibrance.GUI.common
         public bool SetToggleHotkeyEnabled(bool enabled)
         {
             return SetVibranceSetting(SzKeyNameToggleHotkeyEnabled, enabled.ToString());
+        }
+
+        /// <summary>
+        /// Whether to ask GitHub for the newest release on startup. Defaults to **true** for a
+        /// settings file that has never heard of the key - the opposite of ReadToggleHotkeyEnabled
+        /// beside it, and deliberately so: every existing install predates this feature, and a
+        /// default of false would mean the people most in need of being told about v2.10.1 (anyone
+        /// on the broken x64 builds) are precisely the people who would never be told. It is one
+        /// unticked box away for anyone who does not want it, and the README says so.
+        /// </summary>
+        public bool ReadUpdateCheckEnabled()
+        {
+            if (!IsFileExisting(_fileName))
+            {
+                return true;
+            }
+
+            StringBuilder szValueUpdateCheckEnabled = new StringBuilder(1024);
+            GetPrivateProfileString(SzSectionName,
+                SzKeyNameUpdateCheckEnabled,
+                "True",
+                szValueUpdateCheckEnabled,
+                Convert.ToUInt32(szValueUpdateCheckEnabled.Capacity),
+                _fileName);
+
+            bool enabled;
+            // A key present but unparseable falls back to enabled, matching the missing-key
+            // default above rather than silently opting a user out on a typo.
+            return !bool.TryParse(szValueUpdateCheckEnabled.ToString().Trim(), out enabled) || enabled;
+        }
+
+        public bool SetUpdateCheckEnabled(bool enabled)
+        {
+            return SetVibranceSetting(SzKeyNameUpdateCheckEnabled, enabled.ToString());
+        }
+
+        /// <summary>
+        /// When the last check ran, as round-trip UTC ("o"). Returns default(DateTime) for never
+        /// checked, which UpdateCheckPolicy.ShouldCheckNow reads as "due now". Stored as UTC
+        /// rather than local time so that a machine moving across a DST boundary, or a settings
+        /// file carried to another timezone, cannot produce a stamp that reads as far in the
+        /// future and locks the check out for hours.
+        /// </summary>
+        public DateTime ReadLastUpdateCheckUtc()
+        {
+            if (!IsFileExisting(_fileName))
+            {
+                return default(DateTime);
+            }
+
+            StringBuilder szValueLastCheck = new StringBuilder(1024);
+            GetPrivateProfileString(SzSectionName,
+                SzKeyNameLastUpdateCheckUtc,
+                string.Empty,
+                szValueLastCheck,
+                Convert.ToUInt32(szValueLastCheck.Capacity),
+                _fileName);
+
+            DateTime parsed;
+            if (!DateTime.TryParse(szValueLastCheck.ToString().Trim(),
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind,
+                    out parsed))
+            {
+                return default(DateTime);
+            }
+            return parsed.ToUniversalTime();
+        }
+
+        public bool SetLastUpdateCheckUtc(DateTime whenUtc)
+        {
+            return SetVibranceSetting(SzKeyNameLastUpdateCheckUtc,
+                whenUtc.ToUniversalTime().ToString("o", System.Globalization.CultureInfo.InvariantCulture));
         }
 
         private bool PrepareFile()

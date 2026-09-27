@@ -129,6 +129,13 @@ namespace vibrance.GUI
                 // over (%APPDATA%\vibranceGUI\resolutionRestore.xml). See ResolutionRestoreStore's
                 // own header comment.
                 ResolutionRestoreStore.ResetForTests(new RealResolutionRestoreStore());
+
+                // Same swap, same reason, and this one matters most of the three: the default
+                // OfflineReleaseSource is what keeps the self tests - and the reflection harness
+                // that runs them without ever entering this method - from making outbound HTTPS
+                // requests to api.github.com on every suite run. A normal run is the only thing
+                // that ever gets a source which can reach the network.
+                ReleaseSource.Current = new GitHubReleaseSource();
             }
 
             // Runs before the GPU vendor detection below on purpose: the picker is pure, so the

@@ -172,6 +172,20 @@ namespace vibrance.GUI.common
         // same value back is harmless), only to avoid an INI write on every single startup.
         private bool _isLoadingToggleHotkeyEnabled;
 
+        private bool _updateCheckEnabled;
+        private bool _isLoadingUpdateCheckEnabled;
+
+        // Set only while the update balloon is actually on screen, and cleared again the moment it
+        // closes. The tray icon shows several unrelated balloons - a hotkey that could not be
+        // registered, an autostart result - and BalloonTipClicked does not say which balloon was
+        // clicked. Holding the URL for the balloon's lifetime instead of the process's is what
+        // stops a click on one of those opening a browser tab the user never asked for.
+        private string _updateDownloadUrl;
+
+        // One balloon per run, however many times the check completes.
+        private bool _hasShownUpdateBalloon;
+
+
         // Same one-set-per-key dedup convention as NvidiaDynamicVibranceProxy's own
         // _loggedDisplayFailures/LogDisplayFailureOnce - a no-op toggle press (no configured game
         // in the foreground, or the engine is not ready yet) logs once per distinct process name,
@@ -514,6 +528,12 @@ namespace vibrance.GUI.common
                 // against an empty list or a not-yet-known Windows level instead.
                 ApplyStartupForegroundProfile();
             }
+
+            // Last, and deliberately outside the block above: this is the only thing vibranceGUI
+            // does that leaves the machine, and it must never be able to delay or break a startup
+            // that would otherwise have worked. It runs on a pool thread, reports nothing on
+            // failure, and the whole feature is one unticked box away from never running.
+            StartUpdateCheck();
         }
 
         private void Form1_Shown(object sender, EventArgs e)
@@ -889,6 +909,140 @@ namespace vibrance.GUI.common
         /// instead, which makes the layout jump and conceals the parked key combination from a
         /// user who might just want to glance at what is currently bound.
         /// </summary>
+        /// <summary>
+        /// Hands the check to a pool thread. The cheap flag test here is not the real gate -
+        /// RunUpdateCheck re-asks UpdateCheckPolicy with the stored timestamp - it just avoids
+        /// spawning the work at all for a user who has turned the feature off.
+        /// </summary>
+        private void StartUpdateCheck()
+        {
+            if (!_updateCheckEnabled)
+            {
+                return;
+            }
+            ThreadPool.QueueUserWorkItem(delegate { RunUpdateCheck(); });
+        }
+
+        /// <summary>
+        /// The whole check, off the UI thread. Every decision in here is
+        /// UpdateCheckPolicy's - this method owns the I/O and the ordering, nothing else.
+        /// </summary>
+        private void RunUpdateCheck()
+        {
+            try
+            {
+                SettingsController settings = new SettingsController();
+                DateTime nowUtc = DateTime.UtcNow;
+                if (!UpdateCheckPolicy.ShouldCheckNow(_updateCheckEnabled,
+                        settings.ReadLastUpdateCheckUtc(), nowUtc))
+                {
+                    return;
+                }
+
+                ReleaseInfo latest = ReleaseSource.Current.TryGetLatestRelease();
+
+                // Stamped on the ATTEMPT, not on success. A machine that is offline, behind a
+                // proxy or rate limited would otherwise retry on every single launch, which is
+                // exactly the hammering the interval exists to prevent - and it is the failing
+                // case, not the succeeding one, that repeats.
+                settings.SetLastUpdateCheckUtc(nowUtc);
+
+                if (latest == null)
+                {
+                    return;
+                }
+
+                Version current;
+                if (!UpdateCheckPolicy.TryParseVersion(Application.ProductVersion, out current))
+                {
+                    return;
+                }
+
+                if (UpdateCheckPolicy.Compare(current, latest.Version) != UpdateAvailability.UpdateAvailable)
+                {
+                    return;
+                }
+
+                ShowUpdateBalloon(
+                    UpdateCheckPolicy.BuildNotificationText(current, latest.Version, Environment.Is64BitProcess),
+                    latest.HtmlUrl);
+            }
+            catch (Exception ex)
+            {
+                // A failed update check is never worth a dialog, but it is worth a log line - it
+                // is the only way anyone will ever find out this went wrong for real users.
+                Log(ex);
+            }
+        }
+
+        /// <summary>
+        /// Marshals to the UI thread the same way ReplayPersistedVibranceRestore does. The
+        /// IsDisposed/IsHandleCreated guard is not belt-and-braces: the check runs on a pool
+        /// thread that can easily outlive a user who starts vibranceGUI and immediately quits,
+        /// and Invoke against a dead form throws.
+        /// </summary>
+        private void ShowUpdateBalloon(string text, string url)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated)
+            {
+                return;
+            }
+            if (this.InvokeRequired)
+            {
+                this.Invoke((MethodInvoker)delegate { ShowUpdateBalloon(text, url); });
+                return;
+            }
+            if (_hasShownUpdateBalloon)
+            {
+                return;
+            }
+            _hasShownUpdateBalloon = true;
+            _updateDownloadUrl = url;
+            this.notifyIcon.BalloonTipIcon = ToolTipIcon.Info;
+            this.notifyIcon.BalloonTipTitle = "vibranceGUI update available";
+            this.notifyIcon.BalloonTipText = text;
+            this.notifyIcon.ShowBalloonTip(250);
+        }
+
+        private void notifyIcon_BalloonTipClicked(object sender, EventArgs e)
+        {
+            string url = _updateDownloadUrl;
+            _updateDownloadUrl = null;
+            if (string.IsNullOrEmpty(url))
+            {
+                return;
+            }
+            try
+            {
+                System.Diagnostics.Process.Start(url);
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
+            }
+        }
+
+        private void notifyIcon_BalloonTipClosed(object sender, EventArgs e)
+        {
+            // See _updateDownloadUrl's comment: the URL is only live while its own balloon is.
+            _updateDownloadUrl = null;
+        }
+
+        /// <summary>
+        /// Same shape as checkBoxToggleHotkeyEnabled_CheckedChanged below, including the
+        /// _isLoading guard that keeps the load-time assignment from writing the value it just
+        /// read straight back to the INI.
+        /// </summary>
+        private void checkBoxUpdateCheck_CheckedChanged(object sender, EventArgs e)
+        {
+            _updateCheckEnabled = this.checkBoxUpdateCheck.Checked;
+            if (_isLoadingUpdateCheckEnabled)
+            {
+                return;
+            }
+            new SettingsController().SetUpdateCheckEnabled(_updateCheckEnabled);
+        }
+
         private void checkBoxToggleHotkeyEnabled_CheckedChanged(object sender, EventArgs e)
         {
             _toggleHotkeyEnabled = this.checkBoxToggleHotkeyEnabled.Checked;
@@ -1738,6 +1892,11 @@ namespace vibrance.GUI.common
                     ? parsedToggleBinding
                     : HotkeyBinding.None;
                 textBoxToggleHotkey.Text = HotkeyBindingParser.Format(_toggleBinding);
+
+                _updateCheckEnabled = settingsController.ReadUpdateCheckEnabled();
+                _isLoadingUpdateCheckEnabled = true;
+                checkBoxUpdateCheck.Checked = _updateCheckEnabled;
+                _isLoadingUpdateCheckEnabled = false;
 
                 _toggleHotkeyEnabled = settingsController.ReadToggleHotkeyEnabled();
                 // Setting Checked to a value equal to its current (designer-default, unchecked)

@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 747 automated checks across fifteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 782 automated checks across sixteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -450,7 +450,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 747 of them across fifteen
+- **There is no test project**, but there are automated checks: 782 of them across sixteen
   `*Fixture.cs` files — twelve in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
   sixteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
@@ -487,6 +487,54 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ---
 
+
+### 3.8 The update check, and the one thing this app sends off the machine
+
+Until the update check landed, nothing in vibranceGUI touched the network - no `System.Net` reference anywhere in
+the tree. That is worth stating plainly, because it is the property the update check spends.
+
+**What it does.** On startup, on a thread-pool thread, it GETs
+`api.github.com/repos/SwatX18/vibranceGUI/releases/latest`, compares `tag_name` to
+`Application.ProductVersion`, and on a newer release shows a tray balloon whose click opens the
+release page. Nothing is downloaded, nothing is executed, nothing is installed. For a portable
+two-file app whose install step is "unzip it", the browser **is** the updater; an auto-installer
+would mean an unsigned binary fetching and running another unsigned binary, which is both the
+behavioural signature of a dropper and a way to push a broken release onto everyone at once -
+see what v2.9.0 and v2.10.0 did to the x64 build before anyone noticed (§3.5 item 2).
+
+**Why `OfflineReleaseSource` is the default.** `ReleaseSource.Current` defaults to the offline
+implementation and `Program.Main` installs `GitHubReleaseSource` only for a non-`--selftest` run,
+for exactly the reason `LogSink` defaults to `NullLogSink`: the fixtures are driven by a
+reflection harness that calls `Run()` directly and never enters `Main`, so a real default would
+have every suite run quietly making outbound HTTPS requests. `UpdateCheckFixture` asserts the
+default is offline. **Do not "fix" that default.**
+
+**The parts that bite, all covered by `UpdateCheckFixture`:**
+
+- **Never compare version strings.** `"2.9.0"` sorts *after* `"2.10.2"` ordinally. The fixture
+  pins both the correct answer and the fact that the naive one differs.
+- **`Version` leaves absent components at `-1`**, and `-1 < 0`, so `Version.Parse("2.10") <
+  Version.Parse("2.10.0")` - the same release written two ways would announce itself as an update
+  forever. `TryParseVersion` normalises to four components.
+- **`FormatVersion` keeps three components.** Trimming a zero `Build` printed v2.10.0 as "2.10".
+  The fixture caught that, not review.
+- **The timestamp is stamped on the attempt, not the success.** An offline or rate-limited machine
+  would otherwise retry on every launch - and it is the failing case that repeats.
+- **GitHub 403s a request with no `User-Agent`.** The single most common way a first attempt fails.
+- **`html_url` appears twice in the payload** (the author's, and the release's).
+  `DataContractJsonSerializer` against a declared contract takes the top-level one; a regex or an
+  `IndexOf` takes the author's. The serializer is a framework assembly, so the "nothing from
+  NuGet" property survives.
+- **`TryGetLatestRelease` never throws.** DNS failure, 404 and a black-hole IP were all measured
+  returning null (174 ms, 265 ms and 8027 ms - the last being the configured 8 s timeout, on a
+  pool thread, never the UI thread).
+- **The balloon URL lives only as long as its balloon.** The tray icon shows unrelated balloons
+  and `BalloonTipClicked` does not say which was clicked, so `BalloonTipClosed` clears it -
+  otherwise clicking a hotkey-failure balloon could open a browser tab.
+
+**Defaults to on, opt-out via a checkbox** (`updateCheckEnabled` in the INI, defaulting to `true`
+for a settings file that predates the key). A default of off would mean the people most in need of
+hearing about v2.10.1 - anyone on a broken x64 build - are exactly the people never told.
 ## 4. Repository map
 
 ```
