@@ -104,6 +104,41 @@ namespace vibrance.GUI.common
                 amd64ProcessPicksAtiadlxx ? "PASS" : "FAIL", GraphicsAdapterHelper.AmdDllName, Environment.Is64BitProcess));
 
             lines.Add(string.Empty);
+            lines.Add("NVIDIA NvAPI DLL name is selected by process bitness:");
+            // The regression these pin: _nvidiaDllName was a const "nvapi.dll" until v2.10.1. That
+            // name exists only in SysWOW64 on a 64-bit Windows, which is not on a 64-bit process's
+            // loader search path, so IsAdapterAvailable failed with ERROR_MOD_NOT_FOUND (126) and
+            // every x64 build reported "no NVIDIA driver" on every NVIDIA machine ever tested -
+            // reported against 2.10.0 on a 3080 FE and a 5080, driver 617.14, where the x86 build
+            // of the same release worked on the same machine. Like the AMD checks above, this
+            // reads only the name resolved at class load time and touches no driver file.
+            bool nvidiaDllNameIsKnown = GraphicsAdapterHelper.NvidiaDllName == "nvapi.dll" ||
+                GraphicsAdapterHelper.NvidiaDllName == "nvapi64.dll";
+            total++;
+            if (nvidiaDllNameIsKnown)
+                passed++;
+            lines.Add(string.Format("[{0}] NvidiaDllName=\"{1}\" is one of the two known NvAPI file names",
+                nvidiaDllNameIsKnown ? "PASS" : "FAIL", GraphicsAdapterHelper.NvidiaDllName));
+
+            bool nvidia64ProcessPicksNvapi64 = !Environment.Is64BitProcess ||
+                GraphicsAdapterHelper.NvidiaDllName == "nvapi64.dll";
+            total++;
+            if (nvidia64ProcessPicksNvapi64)
+                passed++;
+            lines.Add(string.Format(
+                "[{0}] a 64-bit process selects \"nvapi64.dll\" (nvapi.dll is 32-bit only and lives in SysWOW64): NvidiaDllName=\"{1}\", Is64BitProcess={2}",
+                nvidia64ProcessPicksNvapi64 ? "PASS" : "FAIL", GraphicsAdapterHelper.NvidiaDllName, Environment.Is64BitProcess));
+
+            bool nvidia32ProcessPicksNvapi = Environment.Is64BitProcess ||
+                GraphicsAdapterHelper.NvidiaDllName == "nvapi.dll";
+            total++;
+            if (nvidia32ProcessPicksNvapi)
+                passed++;
+            lines.Add(string.Format(
+                "[{0}] a 32-bit process still selects \"nvapi.dll\" (the x86 build was never broken and must not change): NvidiaDllName=\"{1}\", Is64BitProcess={2}",
+                nvidia32ProcessPicksNvapi ? "PASS" : "FAIL", GraphicsAdapterHelper.NvidiaDllName, Environment.Is64BitProcess));
+
+            lines.Add(string.Empty);
             lines.Add(string.Format("PASSED {0}/{1}", passed, total));
             lines.Add(string.Empty);
             lines.Add("Neither function reads the display devices or the driver files, so this self test");

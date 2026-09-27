@@ -75,7 +75,21 @@ namespace vibrance.GUI.common
         private static readonly string[] NvidiaAdapterNameTokens = { "NVIDIA" };
         private static readonly string[] AmdAdapterNameTokens = { "AMD", "Radeon", "ATI" };
 
-        private const string _nvidiaDllName = "nvapi.dll";
+        // nvapi.dll is the 32-bit NvAPI entry point and on a 64-bit Windows it exists only in
+        // SysWOW64; the 64-bit driver ships nvapi64.dll in System32. A 64-bit process that asks
+        // the loader for "nvapi.dll" therefore gets ERROR_MOD_NOT_FOUND (126) - SysWOW64 is not on
+        // its search path - and IsAdapterAvailable below reported "no NVIDIA driver present" on
+        // every x64 machine, whatever card was in it. The whole app then died in the "failed to
+        // determine your graphics adapter" dialog, which blamed the driver for a name this side
+        // chose.
+        //
+        // This is the same process-bitness rule the native side has always applied - see
+        // initializeLibrary in native/vibranceDLL/vibrance/vibrance.cpp, which picks nvapi64.dll
+        // under _WIN64 - and the one _amdDllName below applies. It was missed here because this
+        // was a const, so the x64 port had no per-platform expression to revisit.
+        private static readonly string _nvidiaDllName = Environment.Is64BitProcess
+            ? "nvapi64.dll"
+            : "nvapi.dll";
         // NOTE: the adl32/adl64 namespace names are inverted relative to the file each one loads -
         // adl64.AdlImport binds "atiadlxy.dll", a 32-bit-only bridge binary that exists nowhere but
         // SysWOW64 (no 64-bit build exists at all), while adl32.AdlImport binds "atiadlxx.dll",
@@ -100,6 +114,15 @@ namespace vibrance.GUI.common
         public static string AmdDllName
         {
             get { return _amdDllName; }
+        }
+
+        /// <summary>
+        /// The NvAPI file name resolved above, exposed read-only so GraphicsAdapterFixture can
+        /// assert the process-bitness selection without touching any driver file.
+        /// </summary>
+        public static string NvidiaDllName
+        {
+            get { return _nvidiaDllName; }
         }
 
 
@@ -190,7 +213,15 @@ namespace vibrance.GUI.common
 
             try
             {
-                string windowsFolder = Environment.GetFolderPath(Environment.SpecialFolder.SystemX86);
+                // SystemX86 is always SysWOW64 on a 64-bit OS, and SysWOW64 holds the 32-bit
+                // driver files only. Now that both names above are chosen per process bitness, a
+                // 64-bit process has to look in System32 for them - asking SysWOW64 for
+                // nvapi64.dll or for the 64-bit atiadlxx.dll finds neither, and this method would
+                // report that the user has no driver of that vendor installed at all. A 32-bit
+                // process keeps naming SysWOW64 explicitly, exactly as it did before.
+                string windowsFolder = Environment.GetFolderPath(Environment.Is64BitProcess
+                    ? Environment.SpecialFolder.System
+                    : Environment.SpecialFolder.SystemX86);
                 return File.Exists(Path.Combine(windowsFolder, dllName));
             }
             catch (Exception)
