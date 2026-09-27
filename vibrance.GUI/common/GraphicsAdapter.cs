@@ -403,6 +403,113 @@ namespace vibrance.GUI.common
         }
 
         /// <summary>
+        /// The URL the "could not determine your adapter" dialog offers to open. It used to be a
+        /// Twitter profile, which asked a user hitting a startup crash to go compose a public
+        /// message to a stranger. This fork has an issue tracker with a form that asks for the
+        /// title bar string, so the report arrives with the build and architecture already in it.
+        /// </summary>
+        public const string BugReportUrl =
+            "https://github.com/SwatX18/vibranceGUI/issues/new?template=bug_report.yml";
+
+        /// <summary>
+        /// Windows' ERROR_MOD_NOT_FOUND. Worth naming: it is the loader saying "a file I needed is
+        /// not there", which is a very different thing from "your GPU driver is broken", and until
+        /// v2.10.1 the dialog reported it as the latter.
+        /// </summary>
+        public const int ErrorModNotFound = 126;
+
+        /// <summary>
+        /// The "we could not work out which GPU you have" message.
+        ///
+        /// This is built rather than a const string because the two facts that actually diagnose
+        /// it - the driver file name *this* process looked for, and the Win32 error the loader
+        /// handed back - both depend on the running process's bitness. v2.10.0 is the argument for
+        /// that: its x64 build searched for "nvapi.dll", a name no 64-bit process can ever load,
+        /// and the fixed message told every NVIDIA user on the planet to go and reinstall a driver
+        /// that was working perfectly. Naming the file it looked for turns that dialog from an
+        /// accusation into a bug report.
+        ///
+        /// Every input is a parameter rather than read from the environment, so GraphicsAdapterFixture
+        /// can render the x64 wording from an x86 process and vice versa.
+        /// </summary>
+        public static string BuildAdapterUnknownMessage(int win32Error, string win32ErrorText,
+            bool is64BitProcess, string nvidiaDllName, string amdDllName)
+        {
+            StringBuilder message = new StringBuilder();
+            message.Append("vibranceGUI could not determine whether this machine has an NVIDIA or an AMD GPU, ");
+            message.AppendLine("so there is nothing for it to drive.");
+            message.AppendLine();
+            message.AppendFormat("This is the {0} build. It looked for \"{1}\" (NVIDIA) and \"{2}\" (AMD) and could load neither.",
+                is64BitProcess ? "x64" : "x86", nvidiaDllName, amdDllName);
+            message.AppendLine();
+            message.AppendFormat("Windows reported: {0} (error {1})", win32ErrorText, win32Error);
+            message.AppendLine();
+
+            if (win32Error == ErrorModNotFound)
+            {
+                // The branch this whole method exists for. 126 is the loader failing to find a
+                // file, and the file name is one vibranceGUI chose - so this is at least as likely
+                // to be our bug as the user's driver, and the x86/x64 comparison is the one test
+                // that tells the two apart without any tooling.
+                message.AppendLine();
+                message.Append("Error 126 means a file vibranceGUI asked for was not found. That is often ");
+                message.Append("vibranceGUI's fault rather than your driver's - it can mean this build asked ");
+                message.AppendLine("for the wrong file name for its own architecture.");
+                if (is64BitProcess)
+                {
+                    message.Append("Please try the x86 download on this same machine. If x86 works and x64 does not, ");
+                    message.AppendLine("that is a bug in vibranceGUI, not a problem with your driver - please report it.");
+                }
+            }
+
+            message.AppendLine();
+            message.Append("If you do have an NVIDIA or AMD card with its driver installed, please report this ");
+            message.AppendLine("and include the build and error lines above exactly as they appear.");
+            message.AppendLine("Intel graphics are not supported.");
+            message.AppendLine();
+            message.AppendLine("Press Yes to open the bug report form in your browser now.");
+            message.Append("Press No to quit vibranceGUI.");
+            return message.ToString();
+        }
+
+        /// <summary>
+        /// The "both vendors' drivers are installed" message.
+        ///
+        /// Built rather than a const for one reason: the old text named "nvapi.dll" as the NVIDIA
+        /// file to rename or delete, which on 64-bit Windows is the 32-bit one in SysWOW64 and not
+        /// the file a 64-bit application loads at all. Advice to delete a system file should at
+        /// least name the right file, so the NVIDIA pair and the folder each lives in are spelled
+        /// out per OS bitness. OS bitness, not process bitness: which files exist on disk is a
+        /// property of the Windows install, not of the build the user happens to be running.
+        /// </summary>
+        public static string BuildAdapterAmbiguousMessage(bool is64BitOperatingSystem)
+        {
+            StringBuilder message = new StringBuilder();
+            message.Append("Both NVIDIA and AMD graphic drivers have been found on your system. This can happen ");
+            message.Append("when you recently switched your graphic card and did not uninstall the old drivers. ");
+            message.Append("Make sure to uninstall unused graphic drivers to keep your system safe and stable. ");
+            message.AppendLine("Use the program \"Display Driver Uninstaller\" to uninstall your old drivers!");
+            message.AppendLine();
+            message.AppendLine("In case you want to do it manually, the files are:");
+            if (is64BitOperatingSystem)
+            {
+                message.AppendLine("  NVIDIA - \"nvapi64.dll\" in System32, and \"nvapi.dll\" in SysWOW64");
+                message.AppendLine("  AMD    - \"atiadlxx.dll\" in System32, and \"atiadlxx.dll\" / \"atiadlxy.dll\" in SysWOW64");
+            }
+            else
+            {
+                message.AppendLine("  NVIDIA - \"nvapi.dll\" in System32");
+                message.AppendLine("  AMD    - \"atiadlxx.dll\" / \"atiadlxy.dll\" in System32");
+            }
+            message.Append("You are free to rename or delete the files you no longer need, but proceed with ");
+            message.AppendLine("caution - these belong to the driver, not to vibranceGUI.");
+            message.AppendLine();
+            message.AppendLine("Press Yes to open the \"Display Driver Uninstaller\" download website in your browser now.");
+            message.Append("Press No to quit vibranceGUI.");
+            return message.ToString();
+        }
+
+        /// <summary>
         /// True when one of the tokens appears in the adapter name as a whole word.
         /// The boundary check is not cosmetic. "ATI" occurs inside ordinary English words -
         /// workstation, application, cinematic, innovation - and a bare substring match turns

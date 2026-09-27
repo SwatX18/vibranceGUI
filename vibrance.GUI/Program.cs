@@ -21,8 +21,10 @@ namespace vibrance.GUI
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
 
-        private const string ErrorGraphicsAdapterUnknown = "Failed to determine your Graphic GraphicsAdapter type (NVIDIA/AMD). Make sure you have installed a proper GPU driver. Intel laptops are not supported as stated on the website. When installing your GPU driver did not work, please contact @SwatX18 at twitter. Press Yes to open twitter in your browser now. Error: ";
-        private const string ErrorGraphicsAdapterAmbiguous = "Both NVIDIA and AMD graphic drivers have been found on your system. This can happen when you recently switched your graphic card and did not uninstall the old drivers. Make sure to uninstall unused graphic drivers to keep your system safe and stable. Use the program \"Display Driver Uninstaller\" to uninstall your old drivers!\n\nIn case you want to do it manually: The related files are located in your Windows folder and are called \"nvapi.dll\" (NVIDIA) and \"atiadlxx.dll\" (AMD) and \"atiadlxy.dll\" (AMD). You are free to rename/delete the files that you no longer need but proceed with caution!\n\nPress Yes to open \"Display Driver Uninstaller\" download website in your Browser now.\nPress No to quit vibranceGUI.";
+        // ErrorGraphicsAdapterUnknown / ErrorGraphicsAdapterAmbiguous used to be const strings here.
+        // Both are now built by GraphicsAdapterHelper (BuildAdapterUnknownMessage /
+        // BuildAdapterAmbiguousMessage) because both have to name driver file names that
+        // depend on bitness - a fixed string got that wrong for the whole x64 port.
         private const string MessageBoxCaption = "vibranceGUI Error";
         private const string SelfTestMessageBoxCaption = "vibranceGUI game finder self test";
         private const string ShortcutSelfTestMessageBoxCaption = "vibranceGUI shortcut game finder self test";
@@ -426,10 +428,18 @@ namespace vibrance.GUI
             else if (effectiveAdapter == GraphicsAdapter.Unknown)
             {
                 string errorMessage = new Win32Exception(adapterDetectionWin32Error).Message;
-                if (MessageBox.Show(ErrorGraphicsAdapterUnknown + errorMessage,
+                string unknownAdapterMessage = GraphicsAdapterHelper.BuildAdapterUnknownMessage(
+                    adapterDetectionWin32Error,
+                    errorMessage,
+                    Environment.Is64BitProcess,
+                    GraphicsAdapterHelper.NvidiaDllName,
+                    GraphicsAdapterHelper.AmdDllName);
+                if (MessageBox.Show(unknownAdapterMessage,
                     MessageBoxCaption, MessageBoxButtons.YesNo, MessageBoxIcon.Error) == DialogResult.Yes)
                 {
-                    System.Diagnostics.Process.Start("https://x.com/swatx18");
+                    // The bug report form, not a Twitter profile: a user who just hit a startup
+                    // failure should land somewhere that asks them for the title bar string.
+                    System.Diagnostics.Process.Start(GraphicsAdapterHelper.BugReportUrl);
                 }
                 return;
             }
@@ -558,7 +568,9 @@ namespace vibrance.GUI
         /// </summary>
         static GraphicsAdapter ShowLegacyAmbiguousDriverDialog()
         {
-            if (MessageBox.Show(ErrorGraphicsAdapterAmbiguous, MessageBoxCaption, MessageBoxButtons.YesNo,
+            string ambiguousMessage = GraphicsAdapterHelper.BuildAdapterAmbiguousMessage(
+                Environment.Is64BitOperatingSystem);
+            if (MessageBox.Show(ambiguousMessage, MessageBoxCaption, MessageBoxButtons.YesNo,
                 MessageBoxIcon.Error) == DialogResult.Yes)
             {
                 System.Diagnostics.Process.Start(DisplayDriverUninstallerUrl);

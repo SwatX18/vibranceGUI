@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 735 automated checks across fifteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 747 automated checks across fifteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -313,6 +313,20 @@ is now either fixed, or was never actually x86-specific to begin with:
    `nvapi64.dll` or for the 64-bit `atiadlxx.dll` finds neither and would report that the user has no
    driver of that vendor at all. `GraphicsAdapterFixture` pins all three rules (known name, x64 picks
    `nvapi64.dll`, x86 still picks `nvapi.dll`) so the x86 build cannot be broken while fixing x64.
+
+   **The two dialogs that report this are now built, not `const`.** They were fixed strings, which
+   is precisely why the x64 failure reached users as a driver accusation: a constant cannot name
+   the file name that was wrong. `GraphicsAdapterHelper.BuildAdapterUnknownMessage` now states which
+   build is running, which two files it looked for, and the Win32 error with its number; on
+   `ERROR_MOD_NOT_FOUND` (126) it adds that a missing file is often vibranceGUI's own fault and asks
+   an x64 user to try the x86 download, since "x86 works on the same machine" is the one test that
+   separates our bug from their driver without any tooling — it is the detail that made the v2.10.0
+   report a ten-minute diagnosis. "Yes" opens the fork's bug report form rather than a Twitter
+   profile. `BuildAdapterAmbiguousMessage` likewise stops advising users to delete `nvapi.dll` on a
+   64-bit Windows, where that is the 32-bit file in SysWOW64 and not the one a 64-bit application
+   loads; it names the pair and the folder each lives in, keyed off **OS** bitness, since which
+   files exist on disk is a property of the Windows install rather than of the running build. Every
+   input is a parameter, so the fixture renders both architectures from either one.
 3. **The AMD binding assumed a 32-bit caller - now fixed.** Until this port, a 32-bit process on
    64-bit Windows loaded `atiadlxy.dll` via `Environment.Is64BitOperatingSystem`, which answers for the
    *OS*, not the calling process; an x64 process hit the same branch and tried to load
@@ -436,7 +450,7 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 735 of them across fifteen
+- **There is no test project**, but there are automated checks: 747 of them across fifteen
   `*Fixture.cs` files — twelve in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
   sixteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
