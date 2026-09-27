@@ -139,6 +139,67 @@ namespace vibrance.GUI.common
                 nvidia32ProcessPicksNvapi ? "PASS" : "FAIL", GraphicsAdapterHelper.NvidiaDllName, Environment.Is64BitProcess));
 
             lines.Add(string.Empty);
+            lines.Add("Startup failure dialogs name the file this build looked for, not a fixed one:");
+            // v2.10.0's x64 build told every NVIDIA user to reinstall a working driver, because the
+            // message was a const string that could not mention the file name that was actually
+            // wrong. These render both architectures from whichever process is running.
+            const int modNotFound = 126;
+            const string modNotFoundText = "The specified module could not be found";
+            string unknown64 = GraphicsAdapterHelper.BuildAdapterUnknownMessage(
+                modNotFound, modNotFoundText, true, "nvapi64.dll", "atiadlxx.dll");
+            string unknown32 = GraphicsAdapterHelper.BuildAdapterUnknownMessage(
+                modNotFound, modNotFoundText, false, "nvapi.dll", "atiadlxy.dll");
+            string unknownOther = GraphicsAdapterHelper.BuildAdapterUnknownMessage(
+                5, "Access is denied", true, "nvapi64.dll", "atiadlxx.dll");
+
+            Action<string, bool> check = (label, ok) =>
+            {
+                total++;
+                if (ok)
+                    passed++;
+                lines.Add(string.Format("[{0}] {1}", ok ? "PASS" : "FAIL", label));
+            };
+
+            check("the x64 message names the file it looked for (\"nvapi64.dll\")",
+                unknown64.Contains("nvapi64.dll") && unknown64.Contains("atiadlxx.dll"));
+            check("the x86 message names its own file (\"nvapi.dll\"), not the x64 one",
+                unknown32.Contains("nvapi.dll") && !unknown32.Contains("nvapi64.dll"));
+            check("each message says which build it is",
+                unknown64.Contains("x64 build") && unknown32.Contains("x86 build"));
+            check("the Windows error text and number both appear",
+                unknown64.Contains(modNotFoundText) && unknown64.Contains("126"));
+
+            // The point of the whole change: error 126 is the loader failing to find a file whose
+            // name vibranceGUI chose, so it must not be reported as a broken driver.
+            check("error 126 on x64 tells the user to try the x86 build - the one test that separates our bug from their driver",
+                unknown64.Contains("x86 download"));
+            check("error 126 on x86 does NOT suggest trying x86 (it is already running it)",
+                !unknown32.Contains("x86 download"));
+            check("a non-126 error gets no \"wrong file name for its architecture\" paragraph",
+                !unknownOther.Contains("error 126") && !unknownOther.Contains("x86 download"));
+            check("no message sends a crashing user to Twitter",
+                !unknown64.ToLowerInvariant().Contains("twitter") &&
+                !unknown64.ToLowerInvariant().Contains("x.com"));
+            check("the bug report URL is this fork's issue form",
+                GraphicsAdapterHelper.BugReportUrl.Contains("github.com/SwatX18/vibranceGUI/issues/new") &&
+                GraphicsAdapterHelper.BugReportUrl.Contains("bug_report.yml"));
+
+            // The dual-driver dialog advises renaming or deleting a system file. It named the
+            // 32-bit nvapi.dll unconditionally, which on 64-bit Windows is not the file a 64-bit
+            // application loads at all.
+            string ambiguous64 = GraphicsAdapterHelper.BuildAdapterAmbiguousMessage(true);
+            string ambiguous32 = GraphicsAdapterHelper.BuildAdapterAmbiguousMessage(false);
+            check("the dual-driver advice names nvapi64.dll on a 64-bit OS, and says which folder",
+                ambiguous64.Contains("nvapi64.dll") && ambiguous64.Contains("System32") &&
+                ambiguous64.Contains("SysWOW64"));
+            check("the dual-driver advice on a 32-bit OS names only nvapi.dll",
+                ambiguous32.Contains("nvapi.dll") && !ambiguous32.Contains("nvapi64.dll") &&
+                !ambiguous32.Contains("SysWOW64"));
+            check("both dual-driver messages still point at Display Driver Uninstaller",
+                ambiguous64.Contains("Display Driver Uninstaller") &&
+                ambiguous32.Contains("Display Driver Uninstaller"));
+
+            lines.Add(string.Empty);
             lines.Add(string.Format("PASSED {0}/{1}", passed, total));
             lines.Add(string.Empty);
             lines.Add("Neither function reads the display devices or the driver files, so this self test");
