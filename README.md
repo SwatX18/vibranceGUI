@@ -6,19 +6,41 @@ This is a fork of [juv/vibranceGUI](https://github.com/juv/vibranceGUI). Almost 
 
 ## Download
 
-**[Latest release: v2.10.3](https://github.com/SwatX18/vibranceGUI/releases)** - now in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
+**[Latest release: v2.10.3](https://github.com/SwatX18/vibranceGUI/releases)** - in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
 
 The download at vibrancegui.com is the original author's build and contains none of the changes below.
 
 ## Before you download
 
-This fork has now been played with, rather than only tested: **vibrance applies when a game takes focus and goes back to the normal Windows level on exit, across several Counter-Strike 2 sessions on one machine.** That is the app's core behaviour, and the part most people use.
+**What has been watched working on real hardware:** vibrance applies when a game takes focus and
+goes back to the normal Windows level on exit, across several Counter-Strike 2 sessions on one
+machine. That is the core behaviour and the part most people use. It was watched on an **x86**
+build.
 
-It is also the *only* part anyone has watched work on real hardware, and it was watched on an **x86** build. Still unexercised outside automated checks: **resolution switching** (including the restore-on-exit added in v2.8.0), the **colour settings** (gamma, brightness, contrast - off by default), the **separate HDR vibrance level**, where an open question remains over whether NVIDIA's DVC does anything at all while a display is in HDR, and the **apply-on-startup** behaviour.
+**What has not:** everything else. Resolution switching and its restore-on-exit, the colour
+settings (gamma, brightness and contrast, off by default), the separate HDR vibrance level (where
+an open question remains over whether NVIDIA's DVC does anything at all while a display is in
+HDR), and the apply-on-startup behaviour have only ever been exercised by automated checks, which
+drive fakes and stubs rather than a real GPU driver, display or game. There are 782 of those
+checks, and they are not the same thing as somebody using the program.
 
-The **x64 build**, added in v2.9.0, **could not detect an NVIDIA GPU at all until v2.10.1** - it asked Windows for `nvapi.dll`, the 32-bit NVIDIA entry point, which a 64-bit process cannot load, and then reported that no driver was installed. This README previously said the x64 build "resolves the adapter and initialises correctly", and that was written from a machine with *both* an AMD chipset and an NVIDIA card, which takes an entirely different detection path. On an NVIDIA-only machine - most people - it failed at startup, every time, for two releases. It is fixed in v2.10.1, confirmed against the driver on a real machine. Beyond starting, the x64 build still has not been *played* with: nobody has watched it apply and restore vibrance around a real game. If something behaves differently from the x86 build, that is worth reporting; the title bar names which architecture you are on.
+Two gaps worth knowing about before you rely on either:
 
-The **restore-after-a-crash** behaviour new in v2.10.0 needs the same warning, more strongly: **nobody has yet killed vibranceGUI with a game running and watched a display come back.** Every check behind it drives fake devices. What that means in practice is that the machinery is tested - the rules about when to write the record, when to leave a display alone, how to survive a torn file - but the one thing that matters most, the full kill-and-relaunch cycle on a real monitor, has not been seen working by anyone. It writes two small files under `%APPDATA%\vibranceGUI\` (`vibranceRestore.xml` and `resolutionRestore.xml`); deleting those is always safe and simply forgets any pending restore. The 782 automated checks behind these fixes drive fakes and stubs, not a real GPU driver, display or game, and several fixes were reasoned from the code and documented driver behaviour rather than reproduced on the reporter's own hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
+- **The x64 build has not been played with.** It starts and detects the adapter correctly -
+  confirmed against a real NVIDIA driver - but nobody has watched it apply and restore vibrance
+  around an actual game. It also could not detect an NVIDIA GPU at all before v2.10.1, so if you
+  are on v2.9.0 or v2.10.0, update. If anything behaves differently from the x86 build that is
+  worth reporting, and the title bar names which architecture you are on.
+- **Nobody has killed vibranceGUI with a game running and watched a display come back.** The
+  restore-after-a-crash machinery added in v2.10.0 is tested in the sense that its rules are -
+  when to write the record, when to leave a display alone, how to survive a torn file - but the
+  kill-and-relaunch cycle on a real monitor has not been seen working by anyone. It keeps two
+  small files in `%APPDATA%\vibranceGUI\` (`vibranceRestore.xml` and
+  `resolutionRestore.xml`); deleting them is always safe and simply forgets any pending restore.
+
+If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path
+here. Several fixes were reasoned from the code and the documented driver behaviour rather than
+reproduced on the reporting user's hardware. Reports either way are welcome.
 
 ## Does it phone home?
 
