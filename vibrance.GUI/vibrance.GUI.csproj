@@ -103,6 +103,7 @@
     <Reference Include="System.Deployment" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
@@ -134,6 +135,8 @@
     <Compile Include="common\ProcessExplorer.Designer.cs">
       <DependentUpon>ProcessExplorer.cs</DependentUpon>
     </Compile>
+    <Compile Include="common\UpdateCheck.cs" />
+    <Compile Include="common\UpdateCheckFixture.cs" />
     <Compile Include="common\gamefinder\GameCandidate.cs" />
     <Compile Include="common\gamefinder\IGameLibrarySource.cs" />
     <Compile Include="common\gamefinder\GameScanContext.cs" />

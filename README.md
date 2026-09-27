@@ -18,7 +18,28 @@ It is also the *only* part anyone has watched work on real hardware, and it was 
 
 The **x64 build**, added in v2.9.0, **could not detect an NVIDIA GPU at all until v2.10.1** - it asked Windows for `nvapi.dll`, the 32-bit NVIDIA entry point, which a 64-bit process cannot load, and then reported that no driver was installed. This README previously said the x64 build "resolves the adapter and initialises correctly", and that was written from a machine with *both* an AMD chipset and an NVIDIA card, which takes an entirely different detection path. On an NVIDIA-only machine - most people - it failed at startup, every time, for two releases. It is fixed in v2.10.1, confirmed against the driver on a real machine. Beyond starting, the x64 build still has not been *played* with: nobody has watched it apply and restore vibrance around a real game. If something behaves differently from the x86 build, that is worth reporting; the title bar names which architecture you are on.
 
-The **restore-after-a-crash** behaviour new in v2.10.0 needs the same warning, more strongly: **nobody has yet killed vibranceGUI with a game running and watched a display come back.** Every check behind it drives fake devices. What that means in practice is that the machinery is tested - the rules about when to write the record, when to leave a display alone, how to survive a torn file - but the one thing that matters most, the full kill-and-relaunch cycle on a real monitor, has not been seen working by anyone. It writes two small files under `%APPDATA%\vibranceGUI\` (`vibranceRestore.xml` and `resolutionRestore.xml`); deleting those is always safe and simply forgets any pending restore. The 747 automated checks behind these fixes drive fakes and stubs, not a real GPU driver, display or game, and several fixes were reasoned from the code and documented driver behaviour rather than reproduced on the reporter's own hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
+The **restore-after-a-crash** behaviour new in v2.10.0 needs the same warning, more strongly: **nobody has yet killed vibranceGUI with a game running and watched a display come back.** Every check behind it drives fake devices. What that means in practice is that the machinery is tested - the rules about when to write the record, when to leave a display alone, how to survive a torn file - but the one thing that matters most, the full kill-and-relaunch cycle on a real monitor, has not been seen working by anyone. It writes two small files under `%APPDATA%\vibranceGUI\` (`vibranceRestore.xml` and `resolutionRestore.xml`); deleting those is always safe and simply forgets any pending restore. The 782 automated checks behind these fixes drive fakes and stubs, not a real GPU driver, display or game, and several fixes were reasoned from the code and documented driver behaviour rather than reproduced on the reporter's own hardware. If you are on a hybrid NVIDIA + AMD laptop or a Thunderbolt eGPU, you are on the least-tested path here. Reports either way are welcome.
+
+## Does it phone home?
+
+Once, on startup, and only to ask how new the newest release is.
+
+vibranceGUI asks `api.github.com` for this repository's latest release tag, compares it to the
+version you are running, and shows a tray notification if yours is older. Clicking it opens the
+release page in your browser. **Nothing is downloaded, installed or executed** - the app has no
+auto-updater and will not get one while it is unsigned.
+
+- It sends no information about you. The request carries a user agent string and nothing else - no
+  identifier, no hardware details, no usage data. GitHub sees an anonymous request for a public
+  page, the same as if you opened the releases page yourself.
+- It runs at most **once every 12 hours**, on a background thread, and gives up after 8 seconds.
+- Every failure - offline, proxy, rate limit - is silent. It never shows an error for its own sake.
+- **Untick "Check for a new version on startup"** in the settings to turn it off completely, or set
+  `updateCheckEnabled=False` in `%APPDATA%\vibranceGUI\vibranceGUI.ini`.
+
+It defaults to on, and that is a deliberate choice rather than an oversight: the x64 builds of
+v2.9.0 and v2.10.0 could not detect an NVIDIA GPU at all, and the people running them had no way
+to find out a fix existed. If you are on one of those, the notification says so specifically.
 
 ## What is different in this fork
 

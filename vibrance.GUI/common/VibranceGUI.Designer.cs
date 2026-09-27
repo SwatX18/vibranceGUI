@@ -67,6 +67,7 @@
             this.labelBrightness = new System.Windows.Forms.Label();
             this.trackBarBrightness = new System.Windows.Forms.TrackBar();
             this.checkBoxToggleHotkeyEnabled = new System.Windows.Forms.CheckBox();
+            this.checkBoxUpdateCheck = new System.Windows.Forms.CheckBox();
             this.labelToggleHotkey = new System.Windows.Forms.Label();
             this.textBoxToggleHotkey = new System.Windows.Forms.TextBox();
             this.buttonClearToggleHotkey = new System.Windows.Forms.Button();
@@ -95,6 +96,8 @@
             this.notifyIcon.Text = "vibranceGUI";
             this.notifyIcon.Visible = true;
             this.notifyIcon.MouseClick += new System.Windows.Forms.MouseEventHandler(this.notifyIcon_MouseClick);
+            this.notifyIcon.BalloonTipClicked += new System.EventHandler(this.notifyIcon_BalloonTipClicked);
+            this.notifyIcon.BalloonTipClosed += new System.EventHandler(this.notifyIcon_BalloonTipClosed);
             // 
             // contextMenuStrip
             // 
@@ -153,6 +156,7 @@
             this.groupBoxSettings.Controls.Add(this.textBoxToggleHotkey);
             this.groupBoxSettings.Controls.Add(this.buttonClearToggleHotkey);
             this.groupBoxSettings.Controls.Add(this.labelToggleHotkeyStatus);
+            this.groupBoxSettings.Controls.Add(this.checkBoxUpdateCheck);
             this.groupBoxSettings.Location = new System.Drawing.Point(15, 47);
             this.groupBoxSettings.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxSettings.Name = "groupBoxSettings";
@@ -237,6 +241,21 @@
         "etween its game level and your Windows level.");
             this.checkBoxToggleHotkeyEnabled.UseVisualStyleBackColor = true;
             this.checkBoxToggleHotkeyEnabled.CheckedChanged += new System.EventHandler(this.checkBoxToggleHotkeyEnabled_CheckedChanged);
+            //
+            // checkBoxUpdateCheck
+            //
+            this.checkBoxUpdateCheck.AutoSize = true;
+            this.checkBoxUpdateCheck.Location = new System.Drawing.Point(300, 150);
+            this.checkBoxUpdateCheck.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxUpdateCheck.Name = "checkBoxUpdateCheck";
+            this.checkBoxUpdateCheck.Size = new System.Drawing.Size(280, 24);
+            this.checkBoxUpdateCheck.TabIndex = 24;
+            this.checkBoxUpdateCheck.Text = "Check for a new version on startup";
+            this.toolTip.SetToolTip(this.checkBoxUpdateCheck, "When checked, vibranceGUI asks GitHub for the newest release when it starts, at m" +
+        "ost once every 12 hours, and shows a tray notification if there is one. Nothing i" +
+        "s downloaded or installed automatically, and no information about you is sent.");
+            this.checkBoxUpdateCheck.UseVisualStyleBackColor = true;
+            this.checkBoxUpdateCheck.CheckedChanged += new System.EventHandler(this.checkBoxUpdateCheck_CheckedChanged);
             //
             // labelToggleHotkey
             //
@@ -653,6 +672,7 @@
         private System.Windows.Forms.Label labelBrightness;
         private System.Windows.Forms.TrackBar trackBarBrightness;
         private System.Windows.Forms.CheckBox checkBoxToggleHotkeyEnabled;
+        private System.Windows.Forms.CheckBox checkBoxUpdateCheck;
         private System.Windows.Forms.Label labelToggleHotkey;
         private System.Windows.Forms.TextBox textBoxToggleHotkey;
         private System.Windows.Forms.Button buttonClearToggleHotkey;
