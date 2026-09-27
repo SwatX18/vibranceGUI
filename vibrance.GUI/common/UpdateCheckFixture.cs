@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 
 namespace vibrance.GUI.common
@@ -34,6 +35,11 @@ namespace vibrance.GUI.common
             {
                 Calls++;
                 return _release;
+            }
+
+            public byte[] TryDownloadAsset(ReleaseAsset asset)
+            {
+                return null;
             }
         }
 
@@ -193,7 +199,7 @@ namespace vibrance.GUI.common
             {
                 Version stubVersion;
                 UpdateCheckPolicy.TryParseVersion("v9.9.9", out stubVersion);
-                StubReleaseSource stub = new StubReleaseSource(new ReleaseInfo(stubVersion, "v9.9.9", "https://example.invalid"));
+                StubReleaseSource stub = new StubReleaseSource(new ReleaseInfo(stubVersion, "v9.9.9", "https://example.invalid", null));
                 ReleaseSource.Current = stub;
                 ReleaseInfo got = ReleaseSource.Current.TryGetLatestRelease();
                 check("Current is swappable, so a check can drive a fake end to end",
@@ -216,12 +222,211 @@ namespace vibrance.GUI.common
                 GitHubReleaseSource.LatestReleaseUrl.EndsWith("/releases/latest"));
 
             lines.Add(string.Empty);
+            lines.Add("Picking the right asset - handing a 32-bit process the 64-bit build bricks it:");
+
+            List<ReleaseAsset> assets = new List<ReleaseAsset>
+            {
+                new ReleaseAsset("vibranceGUI-2.10.3-win-x64.zip", "https://example.invalid/x64", 1, null),
+                new ReleaseAsset("vibranceGUI-2.10.3-win-x86.zip", "https://example.invalid/x86", 1, null)
+            };
+            ReleaseAsset pick64 = UpdateInstaller.SelectAsset(assets, true);
+            ReleaseAsset pick32 = UpdateInstaller.SelectAsset(assets, false);
+            check("a 64-bit process picks the x64 zip",
+                pick64 != null && pick64.Name.Contains("x64"));
+            check("a 32-bit process picks the x86 zip",
+                pick32 != null && pick32.Name.Contains("x86"));
+            check("no matching asset yields null rather than the wrong architecture",
+                UpdateInstaller.SelectAsset(new List<ReleaseAsset>
+                {
+                    new ReleaseAsset("vibranceGUI-src.zip", "https://example.invalid/s", 1, null)
+                }, true) == null);
+            // "x86_64" contains "x86" while being the 64-bit build. A bare Contains would hand a
+            // 32-bit process a 64-bit binary, which then does not start at all.
+            check("an \"x86_64\" name is not mistaken for the 32-bit build",
+                UpdateInstaller.SelectAsset(new List<ReleaseAsset>
+                {
+                    new ReleaseAsset("vibranceGUI-win-x86_64.zip", "https://example.invalid/a", 1, null)
+                }, false) == null);
+            check("a non-zip asset is never selected",
+                UpdateInstaller.SelectAsset(new List<ReleaseAsset>
+                {
+                    new ReleaseAsset("notes-x64.txt", "https://example.invalid/t", 1, null)
+                }, true) == null);
+
+            lines.Add(string.Empty);
+            lines.Add("The checksum gate - what runs before anything on disk is touched:");
+
+            byte[] content = Encoding.UTF8.GetBytes("pretend this is a release zip");
+            string realHash = UpdateInstaller.ComputeSha256(content);
+            check("a correct sha256 digest matches",
+                UpdateInstaller.DigestMatches(content, "sha256:" + realHash));
+            check("upper-case SHA256: is accepted too",
+                UpdateInstaller.DigestMatches(content, "SHA256:" + realHash.ToUpperInvariant()));
+            check("a wrong digest does not match",
+                !UpdateInstaller.DigestMatches(content, "sha256:" + new string('a', 64)));
+            check("different content does not match",
+                !UpdateInstaller.DigestMatches(Encoding.UTF8.GetBytes("tampered"), "sha256:" + realHash));
+            // "no digest offered" and "digest verified" must not take the same branch when the
+            // next step is overwriting the running program with these bytes.
+            check("a missing digest FAILS rather than passing unverified",
+                !UpdateInstaller.DigestMatches(content, null) &&
+                !UpdateInstaller.DigestMatches(content, "") &&
+                !UpdateInstaller.DigestMatches(content, "md5:" + realHash));
+            check("a malformed digest fails",
+                !UpdateInstaller.DigestMatches(content, "sha256:notlongenough") &&
+                !UpdateInstaller.DigestMatches(content, "sha256:" + new string('z', 64)));
+            check("ParseSha256 returns the bare lower-case hex",
+                UpdateInstaller.ParseSha256("sha256:" + realHash.ToUpperInvariant()) == realHash);
+
+            lines.Add(string.Empty);
+            lines.Add("Reading the zip - only two names are ever written, whatever it contains:");
+
+            string extractError;
+            Dictionary<string, byte[]> zipFiles = UpdateInstaller.ExtractPayload(
+                BuildZip(new Dictionary<string, string>
+                {
+                    { "vibrance.GUI.exe", "new-exe" },
+                    { "vibrance.GUI.exe.config", "new-config" }
+                }), out extractError);
+            check("both expected files are read",
+                zipFiles != null && zipFiles.Count == 2 &&
+                Encoding.UTF8.GetString(zipFiles["vibrance.GUI.exe"]) == "new-exe");
+
+            // The zip-slip guard. Only the base name is ever considered and only against a fixed
+            // list, so a traversing entry cannot name a path this writes.
+            Dictionary<string, byte[]> slip = UpdateInstaller.ExtractPayload(
+                BuildZip(new Dictionary<string, string>
+                {
+                    { "vibrance.GUI.exe", "new-exe" },
+                    { "../../evil.dll", "payload" },
+                    { "sub/dir/other.txt", "ignored" }
+                }), out extractError);
+            check("a traversing entry and an unexpected file are both ignored",
+                slip != null && slip.Count == 1 && slip.ContainsKey("vibrance.GUI.exe"));
+
+            check("a zip with no executable is rejected",
+                UpdateInstaller.ExtractPayload(
+                    BuildZip(new Dictionary<string, string> { { "readme.txt", "hi" } }), out extractError) == null);
+            check("junk that is not a zip is rejected rather than thrown",
+                UpdateInstaller.ExtractPayload(Encoding.UTF8.GetBytes("not a zip at all"), out extractError) == null);
+            check("an empty download is rejected",
+                UpdateInstaller.ExtractPayload(new byte[0], out extractError) == null);
+
+            lines.Add(string.Empty);
+            lines.Add("The swap itself, against a real scratch directory:");
+
+            string scratch = Path.Combine(Path.GetTempPath(), "vibranceGUI-selftest-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(scratch);
+                string exePath = Path.Combine(scratch, "vibrance.GUI.exe");
+                string configPath = Path.Combine(scratch, "vibrance.GUI.exe.config");
+                File.WriteAllText(exePath, "OLD-EXE");
+                File.WriteAllText(configPath, "OLD-CONFIG");
+
+                check("a writable directory is reported writable",
+                    UpdateInstaller.IsDirectoryWritable(scratch));
+                check("a directory that does not exist is not writable",
+                    !UpdateInstaller.IsDirectoryWritable(Path.Combine(scratch, "nope")));
+
+                string applyError;
+                Dictionary<string, byte[]> newFiles = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "vibrance.GUI.exe", Encoding.UTF8.GetBytes("NEW-EXE") },
+                    { "vibrance.GUI.exe.config", Encoding.UTF8.GetBytes("NEW-CONFIG") }
+                };
+                UpdateApplyResult applied = UpdateInstaller.ApplyPayload(newFiles, scratch, DateTime.UtcNow, out applyError);
+
+                check("ApplyPayload reports Applied",
+                    applied == UpdateApplyResult.Applied);
+                check("both files now hold the new contents",
+                    File.ReadAllText(exePath) == "NEW-EXE" && File.ReadAllText(configPath) == "NEW-CONFIG");
+                // The old executable is renamed rather than deleted, because Windows will not let
+                // a running .exe be deleted but will let it be renamed - and keeping it means a
+                // failed update can be undone.
+                string[] backups = Directory.GetFiles(scratch, "*" + UpdateInstaller.BackupPrefix + "*");
+                check("the previous versions are kept alongside, not deleted",
+                    backups.Length == 2);
+                check("a backup still holds the old contents",
+                    Array.Exists(backups, b => File.ReadAllText(b) == "OLD-EXE"));
+
+                check("CleanUpBackups removes exactly the leftovers",
+                    UpdateInstaller.CleanUpBackups(scratch) == 2 &&
+                    Directory.GetFiles(scratch, "*" + UpdateInstaller.BackupPrefix + "*").Length == 0 &&
+                    File.Exists(exePath) && File.ReadAllText(exePath) == "NEW-EXE");
+                check("CleanUpBackups on a missing directory is a no-op, not a throw",
+                    UpdateInstaller.CleanUpBackups(Path.Combine(scratch, "gone")) == 0);
+
+                check("an unwritable target reports NotWritable rather than half-installing",
+                    UpdateInstaller.ApplyPayload(newFiles, Path.Combine(scratch, "gone"), DateTime.UtcNow, out applyError)
+                        == UpdateApplyResult.NotWritable);
+                check("an empty payload is refused",
+                    UpdateInstaller.ApplyPayload(new Dictionary<string, byte[]>(), scratch, DateTime.UtcNow, out applyError)
+                        == UpdateApplyResult.Failed);
+
+                check("a backup path is derived from the file it backs up",
+                    UpdateInstaller.BackupPathFor(exePath, DateTime.UtcNow)
+                        .StartsWith(exePath + UpdateInstaller.BackupPrefix));
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(scratch))
+                    {
+                        Directory.Delete(scratch, true);
+                    }
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            lines.Add(string.Empty);
+            lines.Add("The confirmation the user actually sees:");
+
+            Version from, to;
+            UpdateCheckPolicy.TryParseVersion("2.10.3", out from);
+            UpdateCheckPolicy.TryParseVersion("2.10.4", out to);
+            string confirm = UpdateInstaller.BuildConfirmationText(from, to, @"C:\Tools\vibranceGUI");
+            check("it names both versions, the folder, and that the app restarts",
+                confirm.Contains("2.10.4") && confirm.Contains("2.10.3") &&
+                confirm.Contains(@"C:\Tools\vibranceGUI") && confirm.Contains("restart"));
+            check("it offers the browser as the other option rather than only yes",
+                confirm.Contains("browser"));
+            check("the restart flag is the one Program.Main waits on",
+                UpdateInstaller.UpdatedFlag == "--updated");
+
+            lines.Add(string.Empty);
             lines.Add(string.Format("PASSED {0}/{1}", passed, total));
             lines.Add(string.Empty);
             lines.Add("No check here opens a socket, reads the settings file or touches the clock:");
             lines.Add("every input is passed in, so this answers the same on a build agent as on a");
             lines.Add("machine with no network at all.");
             return lines;
+        }
+
+        /// <summary>
+        /// Builds a zip in memory so the extraction checks never need a file on disk or a network.
+        /// </summary>
+        private static byte[] BuildZip(Dictionary<string, string> entries)
+        {
+            using (MemoryStream stream = new MemoryStream())
+            {
+                using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Create, true))
+                {
+                    foreach (KeyValuePair<string, string> entry in entries)
+                    {
+                        ZipArchiveEntry zipEntry = archive.CreateEntry(entry.Key);
+                        using (Stream entryStream = zipEntry.Open())
+                        {
+                            byte[] bytes = Encoding.UTF8.GetBytes(entry.Value);
+                            entryStream.Write(bytes, 0, bytes.Length);
+                        }
+                    }
+                }
+                return stream.ToArray();
+            }
         }
 
         private static ReleaseInfo ReadFrom(string json)
