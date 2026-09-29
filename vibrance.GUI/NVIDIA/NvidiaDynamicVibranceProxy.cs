@@ -1125,6 +1125,13 @@ namespace vibrance.GUI.NVIDIA
         {
             _vibranceInfo.shouldRun = shouldRun;
         }
+        private IGameExitWatcher _gameExitWatcher;
+
+        public void SetGameExitWatcher(IGameExitWatcher watcher)
+        {
+            _gameExitWatcher = watcher;
+        }
+
         public void SetNeverSwitchResolution(bool neverChangeResolution)
         {
             _vibranceInfo.neverChangeResolution = neverChangeResolution;

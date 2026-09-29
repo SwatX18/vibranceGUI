@@ -37,6 +37,8 @@ namespace vibrance.GUI
         private const string VibranceSelfTestMessageBoxCaption = "vibranceGUI vibrance restore self test";
         private const string VibrancePersistenceSelfTestMessageBoxCaption = "vibranceGUI persisted vibrance restore self test";
         private const string ResolutionPersistenceSelfTestMessageBoxCaption = "vibranceGUI persisted resolution restore self test";
+        private const string GameExitSelfTestMessageBoxCaption = "vibranceGUI game exit watcher self test";
+        private const string ScalingSelfTestMessageBoxCaption = "vibranceGUI display scaling self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
@@ -279,6 +281,25 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, ResolutionRestorePersistenceFixture.Run().ToArray()),
                     ResolutionPersistenceSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: GameExitFixture drives the game-exit watcher through fakes only -
+            // no hardware variant, and there must never be one.
+            if (args.Contains("--selftest-gameexit"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, GameExitFixture.Run().ToArray()),
+                    GameExitSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: DisplayScalingFixture drives NvScalingMap and
+            // DisplayScalingController through a fake IDisplayScalingDevice - never a real NvAPI
+            // scaling write.
+            if (args.Contains("--selftest-scaling"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, DisplayScalingFixture.Run().ToArray()),
+                    ScalingSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

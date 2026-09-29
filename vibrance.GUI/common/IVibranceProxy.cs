@@ -40,6 +40,7 @@ namespace vibrance.GUI.common
         VibranceInfo GetVibranceInfo();
         GraphicsAdapter GraphicsAdapter { get; }
         void SetNeverSwitchResolution(bool neverSwitchResolution);
+        void SetGameExitWatcher(IGameExitWatcher watcher);
         void SetNeverChangeColorSettings(bool neverChangeColorSettings);
         void SetWindowsColorSettings(int brightness, int contrast, int gamma);
 

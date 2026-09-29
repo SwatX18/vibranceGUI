@@ -41,6 +41,7 @@ namespace vibrance.GUI.common
         const string SzKeyNameToggleHotkey = "toggleHotkey";
         const string SzKeyNameToggleHotkeyEnabled = "toggleHotkeyEnabled";
         const string SzKeyNameUpdateCheckEnabled = "updateCheckEnabled";
+        const string SzKeyNameResolutionChangeNotification = "resolutionChangeNotification";
         const string SzKeyNameLastUpdateCheckUtc = "lastUpdateCheckUtc";
 
 
@@ -257,6 +258,34 @@ namespace vibrance.GUI.common
         public bool SetUpdateCheckEnabled(bool enabled)
         {
             return SetVibranceSetting(SzKeyNameUpdateCheckEnabled, enabled.ToString());
+        }
+
+        /// <summary>
+        /// Whether to show the "resolution changed" notice. Defaults to true for a missing file,
+        /// a missing key, or an unparseable value, the same as ReadUpdateCheckEnabled.
+        /// </summary>
+        public bool ReadResolutionChangeNotificationEnabled()
+        {
+            if (!IsFileExisting(_fileName))
+            {
+                return true;
+            }
+
+            StringBuilder szValue = new StringBuilder(1024);
+            GetPrivateProfileString(SzSectionName,
+                SzKeyNameResolutionChangeNotification,
+                "True",
+                szValue,
+                Convert.ToUInt32(szValue.Capacity),
+                _fileName);
+
+            bool enabled;
+            return !bool.TryParse(szValue.ToString().Trim(), out enabled) || enabled;
+        }
+
+        public bool SetResolutionChangeNotificationEnabled(bool enabled)
+        {
+            return SetVibranceSetting(SzKeyNameResolutionChangeNotification, enabled.ToString());
         }
 
         /// <summary>
