@@ -17,10 +17,11 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 813 automated checks across sixteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 996 automated checks across eighteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
-> and gamma paths have never run outside a fixture.
+> and gamma paths have never run outside a fixture, and neither has the NVIDIA display-scaling write
+> ([§7.10](#710-display-scaling-the-gpu--display-toggle)).
 
 ---
 
@@ -441,7 +442,7 @@ specifically so that a locked `%APPDATA%\vibranceGUI\x86\vibranceDLL.dll` or `\x
 | `--help`, `-h`, `/?` | show every flag in a message box and exit (`CliOptions.cs`, `IsHelpRequested`). Dispatched **before** the mutex, so it answers while another instance is running. |
 | `--set-vibrance <n>` | set the Windows-level vibrance and continue. With an instance already running, the value is relayed to it rather than opening a second one (`VibranceCliRelay.cs`); otherwise applied in-process after `ReadVibranceSettings` populates the trackbar. Range-checked per vendor (NVIDIA 0–63, AMD 0–300). |
 | `--force-nvidia`, `--force-amd` | skip vendor detection (§6.1). |
-| `--selftest-*` | run one fixture and exit (§3.7). |
+| `--selftest-*` | run one fixture and exit (§3.7) — for example `--selftest-gameexit` (`GameExitFixture`, §6.11) or `--selftest-scaling` (`DisplayScalingFixture`, §7.10). |
 
 Anything else is ignored. Upstream feature request #120 asked for the options above and is
 addressed by them. Only one instance may run
@@ -450,11 +451,13 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 813 of them across sixteen
-  `*Fixture.cs` files — twelve in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
-  (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
-  sixteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
-  (`Program.cs:78`, second-instance bail at `:92`, the flags at `:120-284`), so a fixture will not run
+- **There is no test project**, but there are automated checks: 996 of them across eighteen
+  `*Fixture.cs` files — fourteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
+  (`NvidiaInteropFixture.cs`, §7.3, and `DisplayScalingFixture.cs`, §7.10) in `vibrance.GUI/NVIDIA/` —
+  compiled into the app and run through eighteen `--selftest-*` flags (one per fixture except
+  `UpdateCheckFixture`, which has none and runs only through the reflection harness, plus the opt-in
+  hardware variant `--selftest-gamma-display`) dispatched early in `Program.cs`, but *after* the
+  single-instance mutex (`Program.cs:85`, second-instance bail at `:120-121`, the flags at `:171-381`), so a fixture will not run
   while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
   reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`
   at all, since every `--selftest-*` flag does) instead has its `Run()` called directly by reflection —
@@ -469,6 +472,17 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
   They report through `Checklist` (PASS/FAIL/SKIP), not a third-party assertion library, so
   searching for `Assert.` or
   `*Test*` finds nothing and wrongly suggests the project is untested.
+- **Per-fixture totals as last run for this revision** (self-reported `PASSED n/n`, identical on x86 and
+  x64): CliOptions 52, DisplayScaling 98, ExecutablePicker 7, GameExit 70, GraphicsAdapter 55,
+  HdrVibrance 58, Matching 55, NvidiaInterop 53, ProfileToggle 91, ResolutionChange 221,
+  ResolutionRestorePersistence 40, Stability 6, StartMenuShortcutSource 14, StartupForeground 11,
+  VibranceRestore 38, VibranceRestorePersistence 40, UpdateCheck 66 — **975 across seventeen
+  fixtures**. `GammaRestoreFixture` was **not** run in that pass (hardware); the 996 above adds its last
+  documented count, 21, so it is composed from two runs, not observed as one. The two fixtures new in
+  this revision both run on fakes only and have no hardware variant: `GameExitFixture`
+  (`--selftest-gameexit`, [§6.11](#611-restoring-when-the-game-exits-the-game-exit-watcher)) and
+  `DisplayScalingFixture` (`--selftest-scaling`,
+  [§7.10](#710-display-scaling-the-gpu--display-toggle)).
 - **The harness has no staleness guard, and a failed build reports green.** MSBuild leaves the
   previous `vibrance.GUI.exe` in `bin/` when compilation fails, and the reflection harness loads
   whatever is there without ever learning that a build failed - so a source tree that does not
@@ -579,18 +593,21 @@ vibranceGUI/
 ├── .gitattributes                 *.sln / *.csproj merge=union — see §3.7
 ├── vibrance.GUI.sln               one project; Debug|Any CPU is NOT remapped to x86 (§3.4)
 ├── native/vibranceDLL/             vendored C++ source for vibranceDLL.dll (§7.2) — its own
-│                                    vibranceDLL.sln, built separately; see its own README.md
-│                                    for the upstream commit vendored and every change made to it
+│   │                                vibranceDLL.sln, built separately; see its own README.md
+│   │                                for the upstream commit vendored and every change made to it
+│   ├── NVAPI_LICENSE.txt            NVIDIA's MIT notice; also covers vibrance/nvapi_display.h (§7.3)
+│   └── vibrance/nvapi_display.h     NvAPI display-config types copied verbatim from NVIDIA's SDK,
+│                                    for the display-scaling exports (§7.3, §7.10)
 └── vibrance.GUI/
     ├── Program.cs                 ENTRY POINT and the only composition root (§5.3)
     ├── App.config                 supportedRuntime v4.0
     ├── vibrance.GUI.csproj        pre-SDK project; add new files here by hand
     ├── setting.ico                application icon
     │
-    ├── common/                    the app shell — vendor-agnostic (56 files)
+    ├── common/                    the app shell — vendor-agnostic (72 files)
     │   │
     │   │   forms and their designers
-    │   ├── VibranceGUI.cs             main form + de-facto orchestrator (2120 lines) (§6, §10.1)
+    │   ├── VibranceGUI.cs             main form + de-facto orchestrator (2781 lines) (§6, §10.1)
     │   ├── VibranceGUI.Designer.cs    control layout (German designer comments)
     │   ├── VibranceSettings.cs        per-game modal dialog, incl. the HDR level (§10.2)
     │   ├── VibranceSettings.Designer.cs
@@ -653,6 +670,10 @@ vibranceGUI/
     │   ├── HdrStateTracker.cs              per-display HDR state with a 1000 ms cache
     │   ├── HdrVibranceHelper.cs            resolves the SDR or HDR level for a profile
     │   ├── HdrRecheckTimer.cs              the recurring poll that notices HDR flipping under a game
+    │   ├── GameExitWatcher.cs              IGameExitWatcher + RealGameExitWatcher: revert when the
+    │   │                                    game's process exits, not only on a foreground change (§6.11)
+    │   ├── ResolutionChangeNotifier.cs     the once-per-game-session "resolution changed" event and
+    │   │                                    its balloon text (§6.4, §6.9)
     │   │
     │   │   command line (§3.6)
     │   ├── CliOptions.cs              parsing and validation for --help and --set-vibrance
@@ -665,14 +686,16 @@ vibranceGUI/
     │   │
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
     │   ├── CliOptionsFixture.cs        52 checks
-    │   ├── GammaRestoreFixture.cs      21 checks
-    │   ├── GraphicsAdapterFixture.cs   40 checks
+    │   ├── GameExitFixture.cs          70 checks — run via --selftest-gameexit (§6.11)
+    │   ├── GammaRestoreFixture.cs      21 checks (last documented count; not re-run this revision)
+    │   ├── GraphicsAdapterFixture.cs   55 checks
     │   ├── HdrVibranceFixture.cs       58 checks
     │   ├── MatchingFixture.cs          55 checks
     │   ├── ProfileToggleFixture.cs     91 checks
-    │   ├── ResolutionChangeFixture.cs 214 checks
+    │   ├── ResolutionChangeFixture.cs 221 checks
     │   ├── StabilityFixture.cs          6 checks
     │   ├── StartupForegroundFixture.cs 11 checks
+    │   ├── UpdateCheckFixture.cs       66 checks — no --selftest flag; reflection harness only (§3.8)
     │   ├── VibranceRestoreFixture.cs   38 checks
     │   ├── VibranceRestorePersistenceFixture.cs  40 checks — D4's persisted restore (§9.8);
     │   │                                run via --selftest-restore-persistence
@@ -699,8 +722,11 @@ vibranceGUI/
     │       └── StartMenuShortcutSourceFixture.cs  14 checks
     │
     ├── NVIDIA/                    NVIDIA vendor path (§7)
+    │   ├── DisplayScalingFixture.cs        98 checks — run via --selftest-scaling (§7.10)
+    │   ├── NvidiaDisplayScaling.cs         NvScalingMap, NvapiDisplayScalingDevice (the 2 scaling
+    │   │                                    P/Invokes) and DisplayScalingController (§7.10)
     │   ├── NvidiaDynamicVibranceProxy.cs   IVibranceProxy impl + 12 Cdecl P/Invokes into vibranceDLL
-    │   ├── NvidiaInteropFixture.cs         45 checks — self-test fixture, run via --selftest-nvapi
+    │   ├── NvidiaInteropFixture.cs         53 checks — self-test fixture, run via --selftest-nvapi
     │   │                                    (§3.7); lives here rather than common/ since it is
     │   │                                    NVIDIA-binding-specific, not app-shell logic
     │   ├── NvidiaTypes.cs                  NV_DISPLAY_DVC_INFO, NvApiStatus (dead), NvSystemType
@@ -1098,6 +1124,37 @@ helpers: `ResolutionHelper.IsResolutionChangeNeeded(deviceName, target)` (`:190-
 `isRevert` flag selects which of two different give-up bounds applies (below) and which wording a
 failure notification uses.
 
+**One revert, two triggers.** The revert half of each proxy's `OnWinEventHook` else-branch is now a
+method of its own, `RevertGameResolution(device, deviceName)` (static on `NvidiaDynamicVibranceProxy`,
+instance on `AmdDynamicVibranceProxy`), and it is the **single** revert both vendors use. It holds every
+guard the old inline block had — `neverChangeResolution` off, `isResolutionChangeApplied` set, a
+non-empty device name with a captured Windows mode, `IsResolutionChangeNeeded` — then calls
+`ChangeResolutionEx(..., isRevert: true)`, clears the flag unless the result was `Failed` or
+`AppliedUnverified`, and applies journaling rule 4 (§9.9). It returns `null` when its guards found
+nothing to revert, otherwise `ChangeResolutionEx`'s own result. Two callers share it:
+
+- **the foreground path**, still gated on the new foreground window sitting on `_gameScreen`; and
+- **the game-exit path**, `OnGameExited(token)`, raised when the watched game process exits
+  ([§6.11](#611-restoring-when-the-game-exits-the-game-exit-watcher)). It acts only for the token the
+  proxy's own last apply received (`_trackedToken`), and deliberately skips the screen gate — the game
+  is gone, so there is no foreground window to wait for — reverting `_gameScreen`'s device after
+  restoring the Windows vibrance level and before restoring the gamma ramp.
+
+If the watch could not be armed (for example an elevated game while vibranceGUI itself is not
+elevated), the watcher logs that once and the foreground path is the only revert, exactly as before
+(§6.11).
+
+**Announcing the apply.** Straight after an apply's `ChangeResolutionEx`, each proxy calls
+`ResolutionChangeNotifier.OnApplied(name, device, mode, result)` (`common/ResolutionChangeNotifier.cs`).
+It raises `ResolutionApplied` only for `Applied` or `AppliedUnverified` — `Failed`, `Suppressed` and
+`AlreadyMatching` changed nothing the user needs telling about — and **at most once per game session**:
+an alt-tab back into the same game re-runs the apply branch and must not announce the same change
+again. The session ends in `OnGameSessionEnded`, called from `OnGameExited`, or from the foreground
+revert when no exit watch is armed (`_trackedToken == 0`); a different game also starts a fresh one.
+`VibranceGUI.OnResolutionApplied` turns the event into the balloon listed in
+[§6.9](#69-every-message-the-user-can-see-and-where-it-comes-from). A throwing subscriber is logged and
+swallowed, so it cannot break the apply branch that raised it.
+
 **The sequence** (internal overload, `common/ResolutionHelper.cs:250-383`, `ChangeResolutionEx`):
 
 ```
@@ -1136,6 +1193,18 @@ where the registry holds a mode nothing ever confirmed was applied, and `CDS_TES
 driver would reject before anything is written — which matters because `CDS_UPDATEREGISTRY` gets no
 15-second revert-if-unconfirmed safety net the way an interactive Windows Settings change does.
 `CDS_NORESET` is never passed at all (asserted by `ResolutionChangeFixture` check 1).
+
+**`Default` leaves the scaler alone.** Step 3's "overwrite fixedOutput" applies only to `Center` and
+`Stretch`. For a target whose `DmDisplayFixedOutput` is `Dmdfo.Default`, `ApplyTargetFields`
+(`ResolutionHelper.cs:647-666`) instead **clears** `DM_DISPLAYFIXEDOUTPUT` from `dmFields` — even when
+`EnumDisplaySettings` reported it set — and leaves `dmDisplayFixedOutput` exactly as read, so the
+driver keeps whatever scaling it already had. Because the bit is then absent, step 4's fallback retry,
+which requires the bit to have been declared, **never fires for `Default`**: a rejected `CDS_TEST` fails
+after one call. The per-game dialog's resolution combo box now says this in a tooltip: "Default = let
+the driver decide (it may keep a previous Center/Stretch choice for this resolution). Center/Stretch
+force that scaling." `ResolutionChangeFixture` pins the cleared bit, the untouched value, the surviving
+`DM_POSITION`, the single `CDS_TEST` on rejection, a `Center` control case, and a revert from a `Center`
+game mode to a desktop mode captured as `Default`.
 
 **No `using System.Windows.Forms` and no `MessageBox` call site in `ResolutionHelper.cs`.** A give-up
 is reported through `ResolutionHelper.ResolutionChangeFailed` (`:123`), which `VibranceGUI`'s
@@ -1305,6 +1374,9 @@ Triggered from the tray menu's `Exit` or the window's X, via `Form1_FormClosing`
 CleanUp():
   SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged      // :1292-1293, BEFORE the try -
   ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed  // see that method's own comment
+  ResolutionChangeNotifier.ResolutionApplied -= OnResolutionApplied
+  _scalingController.StateChanged -= OnScalingStateChanged             // NVIDIA only (§7.10)
+  _gameExitWatcher.Cancel()          // before HandleDvcExit: an exit callback must not race the restore (§6.11)
   try:
       statusLabel.Text = "Closing..."; ForeColor = Red; this.Update()  // :1297-1299
       if (_v != null && _v.GetVibranceInfo().isInitialized):
@@ -1381,6 +1453,7 @@ exists.
 | `backgroundWorker` (`VibranceGUI.cs:422-485`, `backgroundWorker_DoWork`) | one-shot startup load: busy-wait for the handle, `Invoke` the settings read, then push configuration into the proxy |
 | `settingsBackgroundWorker` (`VibranceGUI.cs:540-544`, `settingsBackgroundWorker_DoWork`) | `Thread.Sleep(5000)` then save ([§9.6](#96-the-debounced-save)) |
 | `ProcessExplorer.backgroundWorker` (`ProcessExplorer.cs:107-110`) | enumerate running processes, report each entry back to the UI thread |
+| thread pool (`Process.Exited`) | `RealGameExitWatcher.OnProcessExited` only: consumes the watch token under a lock, then posts `GameExited` to the UI thread through the form's `BeginInvoke`. No proxy state is touched here — see [§6.11](#611-restoring-when-the-game-exits-the-game-exit-watcher) |
 | `Microsoft.Win32.SystemEvents`' own dedicated thread | raises `DisplaySettingsChanged` (`VibranceGUI.cs:1335-1352`, `RebuildWindowsResolutionSettings`); the handler `BeginInvoke`s onto the UI thread before touching `_windowsResolutionSettings`, which `OnWinEventHook` reads with no locking of its own — see [§6.4](#64-the-optional-resolution-switch) |
 
 Consequences you must design around:
@@ -1441,6 +1514,17 @@ Consequences you must design around:
    fullscreen game, the same class of hazard as [§2.2](#22-five-facts-that-will-bite-you-first)
    item 2's historical note. Kept deliberately: a narrower catch is the better design, but the
    trade-off belongs on the record.
+7. **Game exit is now watched, but not always.** Since the game-exit watcher
+   ([§6.11](#611-restoring-when-the-game-exits-the-game-exit-watcher)), a game that closes without
+   raising a usable foreground event no longer leaves its resolution, vibrance and gamma in place
+   until the next click. The watch is best-effort: when `RealGameExitWatcher.Watch` cannot arm it — for
+   example an elevated game while vibranceGUI itself is not elevated (§1.3: it never asks for
+   elevation) — it returns token `0`, writes one log line per run, and the revert falls back to the
+   foreground path exactly as before, item 2's race included.
+8. **The "resolution changed" balloon can go unseen.** It is shown at most once per game session
+   (§6.4, §6.9), at the moment the game takes the foreground — which is when Windows is most likely
+   to hold a notification back (Focus Assist / gaming do-not-disturb while a fullscreen game runs).
+   Nothing in the app can tell whether it was displayed.
 
 ### 6.9 Every message the user can see, and where it comes from
 
@@ -1461,6 +1545,7 @@ source; the ellipses mark text abbreviated for this table only.
 | "VibranceProxy detected that you are running a Laptop with integrated NVIDIA card. …" | `NvapiErrorSystypeUnsupported`, `NvidiaDynamicVibranceProxy.cs:185-187` | **never — dead constant** (**D20**) |
 | "Current resolution mode could not be determined. Switching back to your Windows resolution will not work." | `ShowResolutionReadFailureDialog` (`VibranceGUI.cs:1359`), passed as the `onUnreadableDevice` callback to `WindowsResolutionRefresher.Refresh` only when `RebuildWindowsResolutionSettings`'s `showFailureDialog` is true | `EnumDisplaySettings` failed for a monitor. Shown only from the constructor's own build — the `SystemEvents.DisplaySettingsChanged` refresh path (`showFailureDialog: false`) never shows it, deliberately: see [§6.4](#64-the-optional-resolution-switch). The callback's `deviceName` parameter is unused in the message on purpose — it exists so `ResolutionChangeFixture` can assert *which* device reported, not to make this dialog start naming devices |
 | *(historical)* "Changing the resolution failed: DispChangeBadflags" (or any other `DispChange` member name) | **removed** — `ResolutionHelper.cs` has no `using System.Windows.Forms` and no `MessageBox` call site after `work/resolution-change` | was a staging `ChangeDisplaySettingsEx` failure, raised **inside the foreground-change callback**, repeating on every subsequent switch (**D2**, issues #114/#132 — see [§6.4](#64-the-optional-resolution-switch) for the replacement: a `notifyIcon` balloon tip via `ResolutionHelper.ResolutionChangeFailed`) |
+| Balloon tip "vibranceGUI – resolution changed", text such as "cs2: 1280 x 960 @ 144 Hz, Center" — the scaling reads "Default (driver)" for `Default`, and " (unconfirmed)" is appended when the read-back did not confirm the mode | `VibranceGUI.OnResolutionApplied`, text from `ResolutionChangeNotifier.FormatText` | a game profile's resolution apply returned `Applied` or `AppliedUnverified` and "Notify when a game's resolution is changed" is ticked (the default, `resolutionChangeNotification`, §9.2). **At most once per game session** — an alt-tab back into the same game does not repeat it (§6.4). Shown for 5 s; Windows may hold it back while a fullscreen game runs (Focus Assist / gaming do-not-disturb) — see §6.8 item 8 |
 | Balloon tips: "Registered to Autostart!" / "Registering to Autostart failed!" / "Updated Autostart Path!" / "Updating Autostart Path failed!" / "Unregistered from Autostart!" / "Unregistering from Autostart failed!" | `VibranceGUI.cs:638-660` (`checkBoxAutostart_CheckedChanged`) | the autostart checkbox — **including when it is set programmatically at startup** ([§9.5](#95-autostart)) |
 | Status label: "Initializing…" → "Running!" (green) → "Closing…" (red) | `VibranceGUI.Designer.cs:301` (`InitializeComponent`); `VibranceGUI.cs:572-573` (`backgroundWorker_ProgressChanged`); `:971-972` (`CleanUp`) | "Running!" appears only if `isInitialized` was true (`:329-331`, `backgroundWorker_DoWork`) — if it never turns green, the vendor layer failed silently (**D23**) |
 | "NVAPI Unloaded: …" | `VibranceGUI.cs:577` (`backgroundWorker_ProgressChanged`) | **never** — `ReportProgress(2)` is never called (**§12.7**) |
@@ -1524,6 +1609,63 @@ follows.
 > real display's HDR has been toggled against this code. Treat "it works" as unproven, not as
 > pending.
 
+### 6.11 Restoring when the game exits: the game-exit watcher
+
+Reverting used to be driven only by foreground events, and a fullscreen game closing often raises
+none (or lands focus on another monitor), so the desktop stayed at the game's resolution — and at the
+game's vibrance and gamma — until the user clicked something. Each proxy's apply branch now also arms
+a watch on the game's process.
+
+**The seam.** `IGameExitWatcher` (`common/GameExitWatcher.cs`): `int Watch(IntPtr hWnd)`,
+`void Cancel()`, `event Action<int> GameExited`. It is public only because
+`IVibranceProxy.SetGameExitWatcher` exposes it. `VibranceGUI`'s constructor builds the one production
+`RealGameExitWatcher` and hands it to the proxy; `GameExitFixture` substitutes a fake through each
+proxy's `SetGameExitWatcherForTests`, which also swaps the `IDisplayModeDevice` the revert drives.
+
+**Tokens and generations.** `Watch` resolves the window's owning process
+(`GetWindowThreadProcessId`, `Process.GetProcessById`), enables `Process.Exited`, and returns a token
+greater than `0`; the same process again returns the existing token without re-arming, and a
+different process tears the old watch down first. `0` means no watch was armed. Stale exits are
+stopped at three layers:
+
+- **the token** — `OnProcessExited` (thread pool) ignores any token but the currently armed one and
+  consumes that one under a lock, so an `Exited` for a replaced or cancelled watch, or a second
+  `Exited` for the same watch, posts nothing;
+- **the generation** — every teardown (`Cancel`, re-arming another process) bumps a counter; an exit
+  already posted to the UI thread carries the generation it was posted under and is dropped there if
+  the counter has moved;
+- **the proxy's own token** — `OnGameExited(token)` returns unless `token` equals `_trackedToken`, the
+  token the proxy's last apply received, so game A closing after game B was applied does nothing.
+
+Nothing in the watcher may throw — an exception escaping a thread-pool callback would end the
+process — so every path catches and logs.
+
+**Marshalling.** The exit reaches the UI thread through a `BeginInvoke` the form supplies, not
+`Process.SynchronizingObject`, and is dropped if the form is disposed or has no handle. `CleanUp()`
+calls `Cancel()` before `HandleDvcExit` ([§6.5](#65-shutdown)), so an exit callback cannot race the
+shutdown restore.
+
+**What the exit does.** `OnGameExited` restores the Windows vibrance level, reverts the resolution
+through the shared `RevertGameResolution` on `_gameScreen`'s device with no foreground/screen gate
+([§6.4](#64-the-optional-resolution-switch)), restores the gamma ramp if one was applied, and in a
+`finally` ends the notifier's game session and clears `_trackedToken`. A failure is logged ("Restoring
+after the game exited failed: …"). The two vendors match, except that NVIDIA's handler and tracking
+state are static like the rest of that proxy ([§2.2](#22-five-facts-that-will-bite-you-first) item 5).
+
+**Fallback.** When `Watch` returns `0` — for example an elevated game while vibranceGUI is not
+elevated — the proxy tracks no token and the revert happens on the next foreground change, as before
+this existed. The watcher logs "Could not watch the game process for exit, the resolution will only
+revert on a foreground change: …" **once per run**, not once per game. An unreadable `HasExited`
+(access denied) counts as still running, so the watch relies on `Exited` instead of reverting on the
+spot.
+
+**Coverage.** `GameExitFixture` (70 checks, `--selftest-gameexit`) drives the notifier,
+`RealGameExitWatcher` against fakes and against real child processes it starts and kills itself, and
+both proxies' real `OnWinEventHook`/`OnGameExited` by reflection over a fake display, a fake vibrance
+device or adapter, and a fake watcher. Apply events run with resolution switching **off**, so no real
+mode set ever happens; the applied state is seeded afterwards. There is no hardware variant, by
+design.
+
 ---
 
 ## 7. The NVIDIA path
@@ -1540,7 +1682,7 @@ NvidiaDynamicVibranceProxy.cs        C#, 12 P/Invokes, ALL state static
 vibranceDLL.dll / vibranceDLL64.dll  native C++, built in this repo from native/vibranceDLL/ (§7.2);
    │                                 Program.cs picks the resource by Environment.Is64BitProcess (§3.5)
    │                                 but both extract to a file literally named "vibranceDLL.dll" (§3.5)
-   │  LoadLibraryA("nvapi.dll" x86 / "nvapi64.dll" x64) + nvapi_QueryInterface(<13 ids>)
+   │  LoadLibraryA("nvapi.dll" x86 / "nvapi64.dll" x64) + nvapi_QueryInterface(<13 ids> + 3 optional, §7.3)
    ▼
 nvapi.dll / nvapi64.dll → NVIDIA display driver → Digital Vibrance on the panel
 ```
@@ -1614,6 +1756,13 @@ a separate repository: add a method to `vibranceDLL::vibrance` (`native/vibrance
 output over the checked-in DLL. See [§13.2](#132-adding-a-driver-capability-contrast-hue-gamma-colour-settings)
 for the full recipe.
 
+**That recipe has since been followed once.** `getDisplayScaling`/`setDisplayScaling` were added to
+`vibranceDLL::vibrance` (`vibrance.h` now declares 18 methods, `:91-110`), implemented in
+`vibrance.cpp`, and wrapped as `vibrance_getDisplayScaling`/`vibrance_setDisplayScaling` (§7.3,
+§7.10). So `vibrance.cpp` is no longer untouched since vendoring: `initializeLibrary()` gained three
+optional `nvapi_QueryInterface` lookups and the file gained the two new methods; the bodies of the
+methods that already existed are unchanged.
+
 ### 7.3 The P/Invoke surface
 
 **As of `work/native-dll-from-source`, all entry points are undecorated `__cdecl` free functions**
@@ -1674,6 +1823,42 @@ The rebuilt DLL's export table (VERIFIED, this build) carries the same 19 mangle
 and `getInterfaceVersionString`) but neither `printError` overload nor `?test@` - those traced to the
 `juvlarN/vibranceDLL` fork, not to `juv/vibranceDLL` upstream (`native/vibranceDLL/README.md`) - plus
 the 12 new undecorated `vibrance_*` exports from this work, 31 in total.
+
+**Two more exports, outside the table: display scaling.** `vibrance_getDisplayScaling(const char
+*gdiDisplayName, int *outScaling)` and `vibrance_setDisplayScaling(const char *gdiDisplayName, int
+scaling)` (`vibrance_c.h`/`.cpp`, wrapping the new `vibrance::getDisplayScaling`/`setDisplayScaling`)
+read and change one display's `NV_SCALING` through `NvAPI_DISP_GetDisplayIdByDisplayName`,
+`NvAPI_DISP_GetDisplayConfig` and `NvAPI_DISP_SetDisplayConfig`. They break this section's conventions
+on purpose, in three ways:
+
+- **They return an NvAPI status, not 0/1.** `0` is `NVAPI_OK`; anything else is a negative `NVAPI_*`
+  code — `NVAPI_INVALID_ARGUMENT` (-5) for a null name or an `NV_SCALING` outside `1,2,3,5,6,7,8`,
+  `NVAPI_NO_IMPLEMENTATION` (-3) when the driver lacks the entry points, `NVAPI_INVALID_DISPLAY_ID`
+  (-187) when no target matches the display, or whatever NvAPI itself returned. Reading a non-zero
+  return as "true", as the older exports allow, turns every failure into a success.
+- **They are bound on `NvapiDisplayScalingDevice` (`NVIDIA/NvidiaDisplayScaling.cs`), not on
+  `NvidiaDynamicVibranceProxy`** — `Cdecl`, `CharSet.Ansi`, as `int getDisplayScaling(string, out int)`
+  and `int setDisplayScaling(string, int)`. `NvidiaInteropFixture`'s **N19** ("exactly 12 methods are
+  DllImport-bound on NvidiaDynamicVibranceProxy") therefore still holds and deliberately excludes
+  them. **N24** covers them instead: exactly two bound methods on `NvapiDisplayScalingDevice`, both
+  `Cdecl`, both prelink, managed types as above, and all 15 undecorated `vibrance_*` names — the 12
+  proxy bindings, the test-only `vibrance_abi_echoHandle`, and these two — resolving one by one through
+  `GetProcAddress`. Startup's `Marshal.PrelinkAll(typeof(NvidiaDynamicVibranceProxy))` does not reach
+  them, so a stale DLL without them still starts; the scaling control just stays unavailable (§7.10).
+- **Their NvAPI pointers are optional.** `initializeLibrary()` resolves the three new query ids (from
+  `nvapi_interface.h`) but leaves them out of its mandatory null check, so a driver without them still
+  initialises and only these two exports fail, with `NVAPI_NO_IMPLEMENTATION`.
+
+The struct layouts, `NV_SCALING` values, flag values and query ids live in the new
+`native/vibranceDLL/vibrance/nvapi_display.h`, copied verbatim from NVIDIA's official NvAPI SDK
+(`https://github.com/NVIDIA/nvapi`, MIT) with per-declaration `nvapi.h` line citations. The driver
+validates each struct's embedded `sizeof` through its version field, so do not "tidy" any field. The
+licence text ships as `native/vibranceDLL/NVAPI_LICENSE.txt`, which also records that the MIT notice
+covers the declarations copied into `nvapi_display.h`; `native/vibranceDLL/README.md` item 9 is the
+build-side record.
+
+The export totals in the previous paragraph predate both this and `vibrance_abi_echoHandle`. The
+undecorated count is now 15, pinned by N24; the mangled count was not re-measured for this revision.
 
 ### 7.4 The initialisation handshake
 
@@ -1921,6 +2106,66 @@ branches. Whether `NvAPI_SetDVCLevel` still works on current drivers is **not es
 this repository**, and nothing in the code tracks driver versions. Open issues #149 and #156 concern
 recent driver branches; the `feature/add-color-settings` branch, now on `master`, suggests the
 maintainer was exploring the newer API.
+
+### 7.10 Display scaling: the "GPU / Display" toggle
+
+NVIDIA only. The main window's Settings group carries "Scale (primary display):" with two
+checkboxes, "GPU" and "Display" (`labelScaling`, `checkBoxScalingGpu`, `checkBoxScalingDisplay`) —
+the same choice as NVIDIA Control Panel › Adjust desktop size and position › Perform scaling on, for
+the **primary display only**. On any other adapter the three controls are hidden
+(`VibranceGUI.InitializeScaleControls`).
+
+**The mapping** (`NvScalingMap`, `NVIDIA/NvidiaDisplayScaling.cs`). The driver stores no "GPU" or
+"Display" setting; it stores one `NV_SCALING` value that encodes both *who* scales and *how*:
+
+| `NV_SCALING` | nvapi.h name (Control Panel wording) | Side | Retargets to |
+|---|---|---|---|
+| 2 | `GPU_SCALING_TO_NATIVE` (Full screen) | GPU | 1 |
+| 5 | `GPU_SCALING_TO_ASPECT_SCANOUT_TO_NATIVE` (Aspect ratio) | GPU | 6 |
+| 3 | `GPU_SCANOUT_TO_NATIVE` (No scaling) | GPU | 7 |
+| 8 | `GPU_INTEGER_ASPECT_SCALING` (Integer scaling) | GPU | — (GPU only) |
+| 1 | `GPU_SCALING_TO_CLOSEST` (Full screen) | Display | 2 |
+| 6 | `GPU_SCALING_TO_ASPECT_SCANOUT_TO_CLOSEST` (Aspect ratio) | Display | 5 |
+| 7 | `GPU_SCANOUT_TO_CLOSEST` (No scaling) | Display | 3 |
+
+So GPU is `{2,3,5,8}` and Display is `{1,6,7}`, and `Retarget` keeps the mode while moving the side:
+2↔1, 5↔6, 3↔7. Integer scaling (8) has no display-side counterpart, so while it is active "Display"
+does nothing. `0` (`DEFAULT`), `255` (`CUSTOMIZED`) and any value a future driver adds classify as
+neither and leave the control unavailable rather than guessing.
+
+**The controller** (`DisplayScalingController`) is a four-state machine — `Unavailable`, `Reading`,
+`Ready`, `Writing` — driven from the UI thread only and built never to throw. `Refresh()` reads the
+primary display (`Screen.PrimaryScreen.DeviceName`) and ends `Ready` with a `Current` side, or
+`Unavailable` when the read failed or the value does not classify. `Request(target)` writes **only**
+when the state is `Ready`, the target differs from `Current`, no game resolution is applied, and
+`Retarget` has an answer; it then writes exactly once and always re-reads, so `Current` is what the
+driver reports afterwards, not what was asked for. The form refreshes the controller when the status
+turns "Running!" and on every `DisplaySettingsChanged` (skipped while a write of its own is in
+flight), and disables both checkboxes for the duration of a request.
+
+**Disabled while a game resolution is applied.** The controller's `Request` and the form both check
+`isResolutionChangeApplied` (`VibranceGUI.IsResolutionChangeCurrentlyApplied`), and the checkboxes stay
+disabled for as long as it is set; the tooltip says so.
+
+**How the write is made.** `setDisplayScaling` (§7.3) reads the whole display configuration in
+NvAPI's documented three passes, changes only the matching target's `scaling`, and replays every path
+exactly as read (including `sourceModeInfo`) through `NvAPI_DISP_SetDisplayConfig` with
+`NV_DISPLAYCONFIG_SAVE_TO_PERSISTENCE` — so the choice persists like the Control Panel's — and
+**without** `NV_DISPLAYCONFIG_DRIVER_RELOAD_ALLOWED`, which may blank every display to reload the
+driver. A value already in place returns `0` with no modeset. A topology change between the read
+passes fails with `NVAPI_INVALID_ARGUMENT` rather than reading into buffers sized for the old
+topology.
+
+**Failure is quiet.** `NvapiDisplayScalingDevice` logs a non-zero status, or a thrown
+`DllNotFoundException`/`EntryPointNotFoundException` (a stale extracted DLL without the two exports —
+startup's `PrelinkAll` does not catch that, §7.3), and reports failure; the controller goes
+`Unavailable` and the checkboxes grey out. There is no dialog.
+
+> **UNCERTAIN — the write has never run on real hardware.** `DisplayScalingFixture` (98 checks,
+> `--selftest-scaling`) drives `NvScalingMap` and the controller through a fake
+> `IDisplayScalingDevice`, and `NvidiaInteropFixture`'s N24 proves the two exports resolve and marshal.
+> Nothing has yet called `NvAPI_DISP_SetDisplayConfig` against a real driver through this code. Treat
+> the set path as unproven.
 
 ---
 
@@ -2193,8 +2438,13 @@ keys are read in one pass by `ReadVibranceSettings` and written in one pass by `
 | `graphicsAdapter` | `SzKeyNameGraphicsAdapter` (`:40`) | `:153` (`SetGraphicsAdapterPreference`) | `:122-128` (`ReadGraphicsAdapterPreference`) | `""` (`:125`) → `Unknown` | `"Nvidia"` or `"Amd"`, the vendor picked in the both-drivers dialog; the writer rejects every other value (`:148-151`) |
 | `toggleHotkey` | `SzKeyNameToggleHotkey` (`:41`) | `:189` (`SetToggleHotkey`) | `:171-177` (`ReadToggleHotkey`) | `""` (`:174`) → no binding | the toggle hotkey's canonical text, e.g. `Ctrl+Alt+F9` |
 | `toggleHotkeyEnabled` | `SzKeyNameToggleHotkeyEnabled` (`:42`) | `:223` (`SetToggleHotkeyEnabled`) | `:205-211` (`ReadToggleHotkeyEnabled`) | **`"False"`** (`:208`) → disabled | `bool.TryParse`d, so an unparseable value is `false` too (`:214`) |
+| `resolutionChangeNotification` | `SzKeyNameResolutionChangeNotification` (`:44`) | `:288` (`SetResolutionChangeNotificationEnabled`) | `:267-284` (`ReadResolutionChangeNotificationEnabled`) | **`"True"`** → the notice is **on** | `bool.TryParse`d; a missing file, a missing key or an unparseable value all read as `true`, like `updateCheckEnabled` (§3.8). Written immediately from `checkBoxNotifyResolution` ("Notify when a game's resolution is changed"), not through the debounced save. Gates the balloon in §6.9 |
 
-**Every boolean here defaults to the feature being off**, and the two `never…` keys are double
+`resolutionChangeNotification` is newer than the "eleven keys" count above, as are `updateCheckEnabled`
+and `lastUpdateCheckUtc` (described in §3.8, not in this table). It is also the one boolean here that
+defaults to **on**.
+
+**Every boolean in the original eleven defaults to the feature being off**, and the two `never…` keys are double
 negatives, so the literal in the code reads backwards from the behaviour. On a machine with no INI at
 all, this is what the user actually gets:
 
@@ -2652,7 +2902,7 @@ case, and the one most existing installs are on — would wrongly claim `x64`. T
 | Region | Controls |
 |---|---|
 | Header | `labelTwitter`, `linkLabelTwitter`, `labelPaypal`, `buttonPaypal` (`VibranceGUI.Designer.cs:313-334`, `InitializeComponent`) |
-| `groupBox1` "Settings" | `checkBoxAutostart` "Autostart vibranceGUI", `checkBoxPrimaryMonitorOnly` "Affect Primary Monitor only", `checkBoxNeverChangeResolutions` "Never change resolutions", and a nested "Windows Vibrance Level" group with `trackBarWindowsLevel` + `labelWindowsLevel` (`:145-225`, `InitializeComponent`) |
+| `groupBox1` "Settings" | `checkBoxAutostart` "Autostart vibranceGUI", `checkBoxPrimaryMonitorOnly` "Affect Primary Monitor only", `checkBoxNeverChangeResolutions` "Never change resolutions", and a nested "Windows Vibrance Level" group with `trackBarWindowsLevel` + `labelWindowsLevel` (`:145-225`, `InitializeComponent`); since the scaling/notice work also `checkBoxNotifyResolution` "Notify when a game's resolution is changed" (§6.9, §9.2) and, NVIDIA only, `labelScaling` "Scale (primary display):" with `checkBoxScalingGpu` "GPU" / `checkBoxScalingDisplay` "Display" (§7.10) — added to `groupBoxSettings` at `VibranceGUI.Designer.cs:164-167` |
 | `groupBox5` "Program Settings" | `buttonProcessExplorer` (labelled **"Add"**), `buttonAddProgram` (labelled **"Add manually"**), `buttonRemoveProgram`, and `listApplications` — a large-icon `ListView`, 48×48 with custom spacing (`:365-437`, `InitializeComponent`) |
 | Status area | `observerStatusLabel` (the static string "Observer status: " — **never updated**), `statusLabel` ("Initializing…" → "Running!" green → "Closing…" red) (`:293-311`, `InitializeComponent`) |
 | Non-visual | `notifyIcon` + context menu (Twitter, Exit), `toolTip`, `backgroundWorker`, `settingsBackgroundWorker` (`:33-50`, `InitializeComponent`) |
