@@ -162,6 +162,7 @@ namespace vibrance.GUI.NVIDIA
             CheckBoundMethodCount(checklist);
             CheckDllImportTypesMatchExpectedSignatures(checklist);
             CheckAbiEchoHandleRoundTrips(checklist);
+            CheckDisplayScalingExports(checklist, hModule);
 
             checklist.Lines.Add(string.Empty);
             checklist.Lines.Add(string.Format("PASSED {0}/{1}", checklist.Passed, checklist.Total));
@@ -509,6 +510,73 @@ namespace vibrance.GUI.NVIDIA
             catch (Exception ex)
             {
                 checklist.Check(false, "vibrance_abi_echoHandle threw " + ex.GetType().Name + ": " + ex.Message);
+            }
+        }
+
+        // N24 - the display-scaling exports (vibrance_getDisplayScaling / vibrance_setDisplayScaling)
+        // are bound on NvapiDisplayScalingDevice, not NvidiaDynamicVibranceProxy, so N19's "exactly 12"
+        // stays true. Pins that both resolve by GetProcAddress and prelink, are Cdecl, and carry the
+        // expected managed types, and that the whole DLL exports the 15 undecorated vibrance_* names
+        // (12 proxy bindings + vibrance_abi_echoHandle + these two), each resolved individually.
+        private static void CheckDisplayScalingExports(Checklist checklist, IntPtr hModule)
+        {
+            checklist.Lines.Add(string.Empty);
+            checklist.Lines.Add("N24: display scaling exports are present, Cdecl and correctly typed:");
+
+            List<string> names = new List<string>();
+            foreach (MethodInfo method in GetBoundMethods())
+            {
+                names.Add(((DllImportAttribute)Attribute.GetCustomAttribute(method, typeof(DllImportAttribute))).EntryPoint);
+            }
+            names.Add("vibrance_abi_echoHandle");
+            List<MethodInfo> scaling = new List<MethodInfo>();
+            foreach (MethodInfo method in typeof(NvapiDisplayScalingDevice).GetMethods(BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static))
+            {
+                DllImportAttribute attr = Attribute.GetCustomAttribute(method, typeof(DllImportAttribute)) as DllImportAttribute;
+                if (attr != null)
+                {
+                    scaling.Add(method);
+                    names.Add(attr.EntryPoint);
+                }
+            }
+            checklist.Check(scaling.Count == 2, string.Format("NvapiDisplayScalingDevice has {0} DllImport-bound methods, expected 2", scaling.Count));
+
+            List<string> missing = new List<string>();
+            foreach (string name in names)
+            {
+                if (hModule == IntPtr.Zero || GetProcAddress(hModule, name) == IntPtr.Zero)
+                {
+                    missing.Add(name);
+                }
+            }
+            checklist.Check(names.Count == 15 && missing.Count == 0,
+                string.Format("{0} undecorated vibrance_* exports expected 15, {1} unresolved{2}",
+                    names.Count, missing.Count, missing.Count == 0 ? string.Empty : ": " + string.Join(", ", missing.ToArray())));
+
+            foreach (MethodInfo method in scaling)
+            {
+                DllImportAttribute attr = (DllImportAttribute)Attribute.GetCustomAttribute(method, typeof(DllImportAttribute));
+                checklist.Check(attr.CallingConvention == CallingConvention.Cdecl, method.Name + ": CallingConvention." + attr.CallingConvention);
+                try
+                {
+                    Marshal.Prelink(method);
+                    checklist.Check(true, method.Name + ": entry point resolved, marshalling stub built");
+                }
+                catch (Exception ex)
+                {
+                    checklist.Check(false, method.Name + ": Prelink threw " + ex.GetType().Name + ": " + ex.Message);
+                }
+
+                Type[] expectedParams = method.Name == "getDisplayScaling"
+                    ? new Type[] { typeof(string), typeof(int).MakeByRefType() }
+                    : new Type[] { typeof(string), typeof(int) };
+                ParameterInfo[] parameters = method.GetParameters();
+                bool typesMatch = method.ReturnType == typeof(int) && parameters.Length == expectedParams.Length;
+                for (int i = 0; typesMatch && i < parameters.Length; i++)
+                {
+                    typesMatch = parameters[i].ParameterType == expectedParams[i];
+                }
+                checklist.Check(typesMatch, method.Name + ": returns int (an NvAPI status), parameters match (string, int" + (method.Name == "getDisplayScaling" ? " out" : "") + ")");
             }
         }
 

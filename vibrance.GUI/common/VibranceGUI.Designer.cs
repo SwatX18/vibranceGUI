@@ -72,6 +72,10 @@
             this.textBoxToggleHotkey = new System.Windows.Forms.TextBox();
             this.buttonClearToggleHotkey = new System.Windows.Forms.Button();
             this.labelToggleHotkeyStatus = new System.Windows.Forms.Label();
+            this.labelScaling = new System.Windows.Forms.Label();
+            this.checkBoxScalingGpu = new System.Windows.Forms.CheckBox();
+            this.checkBoxScalingDisplay = new System.Windows.Forms.CheckBox();
+            this.checkBoxNotifyResolution = new System.Windows.Forms.CheckBox();
             this.contextMenuStrip.SuspendLayout();
             this.groupBoxSettings.SuspendLayout();
             this.groupBox3.SuspendLayout();
@@ -157,11 +161,15 @@
             this.groupBoxSettings.Controls.Add(this.buttonClearToggleHotkey);
             this.groupBoxSettings.Controls.Add(this.labelToggleHotkeyStatus);
             this.groupBoxSettings.Controls.Add(this.checkBoxUpdateCheck);
+            this.groupBoxSettings.Controls.Add(this.labelScaling);
+            this.groupBoxSettings.Controls.Add(this.checkBoxScalingGpu);
+            this.groupBoxSettings.Controls.Add(this.checkBoxScalingDisplay);
+            this.groupBoxSettings.Controls.Add(this.checkBoxNotifyResolution);
             this.groupBoxSettings.Location = new System.Drawing.Point(15, 47);
             this.groupBoxSettings.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxSettings.Name = "groupBoxSettings";
             this.groupBoxSettings.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.groupBoxSettings.Size = new System.Drawing.Size(600, 250);
+            this.groupBoxSettings.Size = new System.Drawing.Size(600, 266);
             this.groupBoxSettings.TabIndex = 15;
             this.groupBoxSettings.TabStop = false;
             this.groupBoxSettings.Text = "Settings";
@@ -309,10 +317,64 @@
             this.labelToggleHotkeyStatus.TabIndex = 24;
             this.labelToggleHotkeyStatus.Text = "";
             //
+            // labelScaling
+            //
+            this.labelScaling.AutoSize = true;
+            this.labelScaling.Location = new System.Drawing.Point(300, 182);
+            this.labelScaling.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.labelScaling.Name = "labelScaling";
+            this.labelScaling.Size = new System.Drawing.Size(178, 20);
+            this.labelScaling.TabIndex = 25;
+            this.labelScaling.Text = "Scale (primary display):";
+            this.toolTip.SetToolTip(this.labelScaling, "Where NVIDIA performs scaling for the primary display (same as NVIDIA Control Panel > Adjust desktop size and position > Perform scaling on). Read from the driver; disabled while a game resolution is applied.");
+            //
+            // checkBoxScalingGpu
+            //
+            this.checkBoxScalingGpu.AutoCheck = false;
+            this.checkBoxScalingGpu.AutoSize = true;
+            this.checkBoxScalingGpu.Enabled = false;
+            this.checkBoxScalingGpu.Location = new System.Drawing.Point(300, 204);
+            this.checkBoxScalingGpu.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxScalingGpu.Name = "checkBoxScalingGpu";
+            this.checkBoxScalingGpu.Size = new System.Drawing.Size(66, 24);
+            this.checkBoxScalingGpu.TabIndex = 26;
+            this.checkBoxScalingGpu.Text = "GPU";
+            this.toolTip.SetToolTip(this.checkBoxScalingGpu, "Where NVIDIA performs scaling for the primary display (same as NVIDIA Control Panel > Adjust desktop size and position > Perform scaling on). Read from the driver; disabled while a game resolution is applied.");
+            this.checkBoxScalingGpu.UseVisualStyleBackColor = true;
+            this.checkBoxScalingGpu.Click += new System.EventHandler(this.checkBoxScalingGpu_Click);
+            //
+            // checkBoxScalingDisplay
+            //
+            this.checkBoxScalingDisplay.AutoCheck = false;
+            this.checkBoxScalingDisplay.AutoSize = true;
+            this.checkBoxScalingDisplay.Enabled = false;
+            this.checkBoxScalingDisplay.Location = new System.Drawing.Point(390, 204);
+            this.checkBoxScalingDisplay.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxScalingDisplay.Name = "checkBoxScalingDisplay";
+            this.checkBoxScalingDisplay.Size = new System.Drawing.Size(88, 24);
+            this.checkBoxScalingDisplay.TabIndex = 27;
+            this.checkBoxScalingDisplay.Text = "Display";
+            this.toolTip.SetToolTip(this.checkBoxScalingDisplay, "Where NVIDIA performs scaling for the primary display (same as NVIDIA Control Panel > Adjust desktop size and position > Perform scaling on). Read from the driver; disabled while a game resolution is applied.");
+            this.checkBoxScalingDisplay.UseVisualStyleBackColor = true;
+            this.checkBoxScalingDisplay.Click += new System.EventHandler(this.checkBoxScalingDisplay_Click);
+            //
+            // checkBoxNotifyResolution
+            //
+            this.checkBoxNotifyResolution.AutoSize = true;
+            this.checkBoxNotifyResolution.Location = new System.Drawing.Point(300, 234);
+            this.checkBoxNotifyResolution.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxNotifyResolution.Name = "checkBoxNotifyResolution";
+            this.checkBoxNotifyResolution.Size = new System.Drawing.Size(290, 24);
+            this.checkBoxNotifyResolution.TabIndex = 28;
+            this.checkBoxNotifyResolution.Text = "Notify when a game\'s resolution is changed";
+            this.toolTip.SetToolTip(this.checkBoxNotifyResolution, "Shows a short Windows notification naming the game, resolution and scaling. Windows may hold it back while a fullscreen game is running (Do not disturb / Focus Assist).");
+            this.checkBoxNotifyResolution.UseVisualStyleBackColor = true;
+            this.checkBoxNotifyResolution.CheckedChanged += new System.EventHandler(this.checkBoxNotifyResolution_CheckedChanged);
+            //
             // statusLabel
             // 
             this.statusLabel.AutoSize = true;
-            this.statusLabel.Location = new System.Drawing.Point(152, 1046);
+            this.statusLabel.Location = new System.Drawing.Point(152, 1062);
             this.statusLabel.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.statusLabel.Name = "statusLabel";
             this.statusLabel.Size = new System.Drawing.Size(90, 20);
@@ -322,7 +384,7 @@
             // observerStatusLabel
             // 
             this.observerStatusLabel.AutoSize = true;
-            this.observerStatusLabel.Location = new System.Drawing.Point(11, 1046);
+            this.observerStatusLabel.Location = new System.Drawing.Point(11, 1062);
             this.observerStatusLabel.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.observerStatusLabel.Name = "observerStatusLabel";
             this.observerStatusLabel.Size = new System.Drawing.Size(129, 20);
@@ -388,7 +450,7 @@
             this.groupBox5.Controls.Add(this.buttonRemoveProgram);
             this.groupBox5.Controls.Add(this.listApplications);
             this.groupBox5.Controls.Add(this.buttonAddProgram);
-            this.groupBox5.Location = new System.Drawing.Point(15, 667);
+            this.groupBox5.Location = new System.Drawing.Point(15, 683);
             this.groupBox5.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBox5.Name = "groupBox5";
             this.groupBox5.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -459,7 +521,7 @@
             // 
             this.labelFindGamesStatus.AutoSize = true;
             this.labelFindGamesStatus.ForeColor = System.Drawing.Color.Green;
-            this.labelFindGamesStatus.Location = new System.Drawing.Point(15, 1020);
+            this.labelFindGamesStatus.Location = new System.Drawing.Point(15, 1036);
             this.labelFindGamesStatus.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelFindGamesStatus.Name = "labelFindGamesStatus";
             this.labelFindGamesStatus.Size = new System.Drawing.Size(0, 20);
@@ -472,7 +534,7 @@
             this.groupBoxColorSettings.Controls.Add(this.groupBox9);
             this.groupBoxColorSettings.Controls.Add(this.groupBox10);
             this.groupBoxColorSettings.Controls.Add(this.checkBoxNeverChangeColorSettings);
-            this.groupBoxColorSettings.Location = new System.Drawing.Point(15, 307);
+            this.groupBoxColorSettings.Location = new System.Drawing.Point(15, 323);
             this.groupBoxColorSettings.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBoxColorSettings.Name = "groupBoxColorSettings";
             this.groupBoxColorSettings.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
@@ -591,7 +653,7 @@
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(144F, 144F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
-            this.ClientSize = new System.Drawing.Size(628, 1071);
+            this.ClientSize = new System.Drawing.Size(628, 1087);
             this.Controls.Add(this.groupBoxColorSettings);
             this.Controls.Add(this.groupBox5);
             this.Controls.Add(this.labelFindGamesStatus);
@@ -677,6 +739,10 @@
         private System.Windows.Forms.TextBox textBoxToggleHotkey;
         private System.Windows.Forms.Button buttonClearToggleHotkey;
         private System.Windows.Forms.Label labelToggleHotkeyStatus;
+        private System.Windows.Forms.Label labelScaling;
+        private System.Windows.Forms.CheckBox checkBoxScalingGpu;
+        private System.Windows.Forms.CheckBox checkBoxScalingDisplay;
+        private System.Windows.Forms.CheckBox checkBoxNotifyResolution;
     }
 }
 

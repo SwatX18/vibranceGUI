@@ -3,6 +3,8 @@
 #include <iostream>
 #include <thread>
 #include "vibrance.h"
+#include "nvapi_display.h"
+#include <vector>
 using namespace std;
 
 namespace vibranceDLL
@@ -22,6 +24,10 @@ namespace vibranceDLL
 	vibrance::NvAPI_GetErrorMessage_t					NvAPI_GetErrorMessage = NULL;
 	vibrance::NvAPI_GetAssociatedNvidiaDisplayHandle_t	NvAPI_GetAssociatedNvidiaDisplayHandle = NULL;
 	vibrance::NvAPI_GPU_GetSystemType_t					NvAPI_GPU_GetSystemType = NULL;
+
+	nvapi_display::NvAPI_DISP_GetDisplayIdByDisplayName_t	NvAPI_DISP_GetDisplayIdByDisplayName = NULL;
+	nvapi_display::NvAPI_DISP_GetDisplayConfig_t			NvAPI_DISP_GetDisplayConfig = NULL;
+	nvapi_display::NvAPI_DISP_SetDisplayConfig_t			NvAPI_DISP_SetDisplayConfig = NULL;
 
 	bool shouldRun;
 	void *defaultHandle;
@@ -228,6 +234,166 @@ namespace vibranceDLL
 		return NULL;
 	}
 
+	namespace
+	{
+		using namespace nvapi_display;
+
+		// NvAPI status codes used here (nvapi_lite_common.h _NvAPI_Status; also vibrance::_NvAPI_Status).
+		const int ST_INVALID_ARGUMENT   = -5;
+		const int ST_NO_IMPLEMENTATION  = -3;
+		const int ST_DATA_NOT_FOUND     = -121;
+		const int ST_OUT_OF_MEMORY      = -130;
+		const int ST_INVALID_DISPLAY_ID = -187;
+
+		// A whole display configuration as NvAPI_DISP_GetDisplayConfig hands it out. Every allocation
+		// is owned here and released by release() (also from the destructor), whichever path the
+		// caller leaves by.
+		struct DisplayConfig
+		{
+			NvU32 count;
+			NV_DISPLAYCONFIG_PATH_INFO *paths;
+			std::vector<void *> blocks;   // every calloc'd block except paths itself
+
+			DisplayConfig() : count(0), paths(NULL) {}
+			~DisplayConfig() { release(); }
+
+			void release()
+			{
+				for (size_t i = 0; i < blocks.size(); i++)
+					free(blocks[i]);
+				blocks.clear();
+				free(paths);
+				paths = NULL;
+				count = 0;
+			}
+
+			void *alloc(size_t bytes)
+			{
+				void *p = calloc(1, bytes);
+				if (p == NULL)
+					return NULL;
+				try { blocks.push_back(p); }
+				catch (...) { free(p); return NULL; }
+				return p;
+			}
+
+			// The documented three passes (nvapi.h:9033-9040): count, then paths (with sourceModeInfo),
+			// then each path's targetInfo array and every target's advanced details.
+			int load()
+			{
+				release();
+				NvU32 n = 0;
+				int st = (*NvAPI_DISP_GetDisplayConfig)(&n, NULL);
+				if (st != 0) return st;
+				if (n == 0) return ST_DATA_NOT_FOUND;
+
+				paths = (NV_DISPLAYCONFIG_PATH_INFO *)calloc(n, sizeof(NV_DISPLAYCONFIG_PATH_INFO));
+				if (paths == NULL) return ST_OUT_OF_MEMORY;
+				count = n;
+				for (NvU32 i = 0; i < n; i++)
+				{
+					paths[i].version = NVD_NV_DISPLAYCONFIG_PATH_INFO_VER;
+					paths[i].sourceModeInfo = (NV_DISPLAYCONFIG_SOURCE_MODE_INFO_V1 *)alloc(sizeof(NV_DISPLAYCONFIG_SOURCE_MODE_INFO_V1));
+					if (paths[i].sourceModeInfo == NULL) return ST_OUT_OF_MEMORY;
+				}
+				st = (*NvAPI_DISP_GetDisplayConfig)(&n, paths);
+				if (st != 0) return st;
+				if (n != count) return ST_INVALID_ARGUMENT;   // topology changed under us; caller may retry
+
+				std::vector<NvU32> targetCounts(n);
+				for (NvU32 i = 0; i < n; i++)
+				{
+					NvU32 t = paths[i].targetInfoCount;
+					targetCounts[i] = t;
+					if (t == 0) continue;
+					paths[i].targetInfo = (NV_DISPLAYCONFIG_PATH_TARGET_INFO *)alloc(t * sizeof(NV_DISPLAYCONFIG_PATH_TARGET_INFO));
+					NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO *details =
+						(NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO *)alloc(t * sizeof(NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO));
+					if (paths[i].targetInfo == NULL || details == NULL) return ST_OUT_OF_MEMORY;
+					for (NvU32 j = 0; j < t; j++)
+					{
+						details[j].version = NVD_NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO_VER;
+						paths[i].targetInfo[j].details = &details[j];
+					}
+				}
+				st = (*NvAPI_DISP_GetDisplayConfig)(&n, paths);
+				if (st != 0) return st;
+				// Same re-check as after pass 2: the buffers above are sized from pass 2's counts, so
+				// a topology change since then must fail the load, never be read as if it still fit.
+				if (n != count) return ST_INVALID_ARGUMENT;
+				for (NvU32 i = 0; i < n; i++)
+				{
+					if (paths[i].targetInfoCount != targetCounts[i]) return ST_INVALID_ARGUMENT;
+				}
+				return 0;
+			}
+
+			// The advanced details of the target driving displayId, or NULL.
+			NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO *find(NvU32 displayId)
+			{
+				for (NvU32 i = 0; i < count; i++)
+					for (NvU32 j = 0; paths[i].targetInfo != NULL && j < paths[i].targetInfoCount; j++)
+						if (paths[i].targetInfo[j].displayId == displayId)
+							return paths[i].targetInfo[j].details;
+				return NULL;
+			}
+		};
+
+		bool displayScalingAvailable()
+		{
+			return NvAPI_DISP_GetDisplayIdByDisplayName != NULL && NvAPI_DISP_GetDisplayConfig != NULL && NvAPI_DISP_SetDisplayConfig != NULL;
+		}
+
+		bool isKnownScaling(int s)
+		{
+			return s == NV_SCALING_GPU_SCALING_TO_CLOSEST || s == NV_SCALING_GPU_SCALING_TO_NATIVE ||
+				s == NV_SCALING_GPU_SCANOUT_TO_NATIVE || s == NV_SCALING_GPU_SCALING_TO_ASPECT_SCANOUT_TO_NATIVE ||
+				s == NV_SCALING_GPU_SCALING_TO_ASPECT_SCANOUT_TO_CLOSEST || s == NV_SCALING_GPU_SCANOUT_TO_CLOSEST ||
+				s == NV_SCALING_GPU_INTEGER_ASPECT_SCALING;
+		}
+	}
+
+	int vibrance::getDisplayScaling(const char *gdiDisplayName, int *outScaling)
+	{
+		if (gdiDisplayName == NULL || outScaling == NULL) return ST_INVALID_ARGUMENT;
+		if (!displayScalingAvailable()) return ST_NO_IMPLEMENTATION;
+
+		NvU32 displayId = 0;
+		int st = (*NvAPI_DISP_GetDisplayIdByDisplayName)(gdiDisplayName, &displayId);
+		if (st != 0) return st;
+
+		DisplayConfig cfg;
+		st = cfg.load();
+		if (st != 0) return st;
+		NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO *d = cfg.find(displayId);
+		if (d == NULL) return ST_INVALID_DISPLAY_ID;
+		*outScaling = (int)d->scaling;
+		return 0;
+	}
+
+	int vibrance::setDisplayScaling(const char *gdiDisplayName, int scaling)
+	{
+		if (gdiDisplayName == NULL || !isKnownScaling(scaling)) return ST_INVALID_ARGUMENT;
+		if (!displayScalingAvailable()) return ST_NO_IMPLEMENTATION;
+
+		NvU32 displayId = 0;
+		int st = (*NvAPI_DISP_GetDisplayIdByDisplayName)(gdiDisplayName, &displayId);
+		if (st != 0) return st;
+
+		DisplayConfig cfg;
+		st = cfg.load();
+		if (st != 0) return st;
+		NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO *d = cfg.find(displayId);
+		if (d == NULL) return ST_INVALID_DISPLAY_ID;
+		if ((int)d->scaling == scaling) return 0;   // already there: no modeset for a no-op
+
+		d->scaling = (NV_SCALING)scaling;   // the only field changed; every path is replayed as read
+		// SAVE_TO_PERSISTENCE (nvapi.h:1057) so the choice behaves like the NVIDIA Control Panel's, which
+		// persists across reboot / driver reload; without it the driver treats the change as transient.
+		// DRIVER_RELOAD_ALLOWED is deliberately NOT passed: it may blank every display to reload the driver.
+		return (*NvAPI_DISP_SetDisplayConfig)(cfg.count, cfg.paths, NV_DISPLAYCONFIG_SAVE_TO_PERSISTENCE);
+	}
+
 	bool vibrance::unloadLibrary()
 	{	
 		int ret = (*NvAPI_Unload)();
@@ -264,6 +430,13 @@ namespace vibranceDLL
 		NvAPI_GetDVCInfoEx = (NvAPI_GetDVCInfoEx_t) (*NvAPI_QueryInterface)(0x0E45002D);
 		NvAPI_GetAssociatedNvidiaDisplayHandle = (NvAPI_GetAssociatedNvidiaDisplayHandle_t) (*NvAPI_QueryInterface)(0x35C29134);
 		NvAPI_GPU_GetSystemType = (NvAPI_GPU_GetSystemType_t) (*NvAPI_QueryInterface)(0xBAAABFCC);
+
+		// Display scaling. Ids are from nvapi_interface.h. Deliberately not part of the mandatory-pointer
+		// check below: a driver without them must still initialise, and the display-scaling entry points
+		// report NVAPI_NO_IMPLEMENTATION themselves.
+		NvAPI_DISP_GetDisplayIdByDisplayName = (nvapi_display::NvAPI_DISP_GetDisplayIdByDisplayName_t) (*NvAPI_QueryInterface)(nvapi_display::ID_NvAPI_DISP_GetDisplayIdByDisplayName);
+		NvAPI_DISP_GetDisplayConfig = (nvapi_display::NvAPI_DISP_GetDisplayConfig_t) (*NvAPI_QueryInterface)(nvapi_display::ID_NvAPI_DISP_GetDisplayConfig);
+		NvAPI_DISP_SetDisplayConfig = (nvapi_display::NvAPI_DISP_SetDisplayConfig_t) (*NvAPI_QueryInterface)(nvapi_display::ID_NvAPI_DISP_SetDisplayConfig);
 
 		if (NvAPI_Initialize == NULL || NvAPI_Unload == NULL ||
 			NvAPI_EnumPhysicalGPUs == NULL ||NvAPI_GPU_GetFullName == NULL ||

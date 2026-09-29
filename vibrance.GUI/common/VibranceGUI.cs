@@ -11,6 +11,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using vibrance.GUI.common.gamefinder;
+using vibrance.GUI.NVIDIA;
 using Application = System.Windows.Forms.Application;
 using MessageBox = System.Windows.Forms.MessageBox;
 
@@ -175,6 +176,13 @@ namespace vibrance.GUI.common
         private bool _updateCheckEnabled;
         private bool _isLoadingUpdateCheckEnabled;
 
+        private bool _notifyResolutionChangeEnabled;
+        private bool _isLoadingNotifyResolutionChangeEnabled;
+
+        // Null on a non-NVIDIA adapter - the scale controls stay disabled whenever it is null.
+        private DisplayScalingController _scalingController;
+        private IGameExitWatcher _gameExitWatcher;
+
         // Set only while the update balloon is actually on screen, and cleared again the moment it
         // closes. The tray icon shows several unrelated balloons - a hotkey that could not be
         // registered, an autostart result - and BalloonTipClicked does not say which balloon was
@@ -257,10 +265,175 @@ namespace vibrance.GUI.common
             _applicationSettings = new List<ApplicationSetting>();
             _v = getProxy(_applicationSettings, _windowsResolutionSettings);
 
+            // Marshals the watcher's exit callbacks onto the UI thread with BeginInvoke rather than
+            // Process.SynchronizingObject. The handle may not exist yet, or may already be gone at
+            // shutdown - either way the callback is dropped, and CleanUp() cancels the watcher first.
+            _gameExitWatcher = new RealGameExitWatcher(a =>
+            {
+                if (IsDisposed || !IsHandleCreated)
+                {
+                    return;
+                }
+                try
+                {
+                    BeginInvoke(a);
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            });
+            if (_v != null)
+            {
+                _v.SetGameExitWatcher(_gameExitWatcher);
+            }
+
+            ResolutionChangeNotifier.ResolutionApplied += OnResolutionApplied;
+            InitializeScaleControls();
+
             backgroundWorker.WorkerReportsProgress = true;
             settingsBackgroundWorker.WorkerReportsProgress = true;
 
             backgroundWorker.RunWorkerAsync();
+        }
+
+        /// <summary>
+        /// Creates the NVIDIA "Perform scaling on" controller and hides the scale controls on any
+        /// other adapter. With no controller (no device yet) the controls stay visible but disabled.
+        /// </summary>
+        private void InitializeScaleControls()
+        {
+            bool isNvidia = _v != null && _v.GraphicsAdapter == GraphicsAdapter.Nvidia;
+            labelScaling.Visible = isNvidia;
+            checkBoxScalingGpu.Visible = isNvidia;
+            checkBoxScalingDisplay.Visible = isNvidia;
+            if (isNvidia)
+            {
+                _scalingController = new DisplayScalingController(
+                    new NvapiDisplayScalingDevice(),
+                    () => Screen.PrimaryScreen.DeviceName,
+                    () => IsResolutionChangeCurrentlyApplied);
+                _scalingController.StateChanged += OnScalingStateChanged;
+            }
+            UpdateScaleControls();
+        }
+
+        private void OnScalingStateChanged(object sender, EventArgs e)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated)
+            {
+                return;
+            }
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke((MethodInvoker)UpdateScaleControls);
+                return;
+            }
+            UpdateScaleControls();
+        }
+
+        private void RefreshScaling()
+        {
+            DisplayScalingController controller = _scalingController;
+            if (controller == null || controller.State == ScalingControlState.Writing)
+            {
+                return;
+            }
+            controller.Refresh();
+            UpdateScaleControls();
+        }
+
+        private void UpdateScaleControls()
+        {
+            if (this.IsDisposed)
+            {
+                return;
+            }
+            DisplayScalingController controller = _scalingController;
+            bool ready = controller != null
+                && controller.State == ScalingControlState.Ready
+                && !IsResolutionChangeCurrentlyApplied;
+            ScalingTarget? current = controller != null ? controller.Current : null;
+
+            checkBoxScalingGpu.Checked = current == ScalingTarget.Gpu;
+            checkBoxScalingDisplay.Checked = current == ScalingTarget.Display;
+            checkBoxScalingGpu.ForeColor = checkBoxScalingGpu.Checked ? SystemColors.ControlText : SystemColors.GrayText;
+            checkBoxScalingDisplay.ForeColor = checkBoxScalingDisplay.Checked ? SystemColors.ControlText : SystemColors.GrayText;
+            checkBoxScalingGpu.Enabled = ready;
+            checkBoxScalingDisplay.Enabled = ready;
+        }
+
+        private void checkBoxScalingGpu_Click(object sender, EventArgs e)
+        {
+            RequestScaling(ScalingTarget.Gpu);
+        }
+
+        private void checkBoxScalingDisplay_Click(object sender, EventArgs e)
+        {
+            RequestScaling(ScalingTarget.Display);
+        }
+
+        private void RequestScaling(ScalingTarget target)
+        {
+            DisplayScalingController controller = _scalingController;
+            if (controller == null
+                || controller.State != ScalingControlState.Ready
+                || IsResolutionChangeCurrentlyApplied
+                || controller.Current == target)
+            {
+                return;
+            }
+
+            // Disabled first: Request blocks the UI thread, so any further clicks queue up and are
+            // only dispatched after this returns - against disabled controls, which drop them. The
+            // re-enable is therefore BeginInvoke'd (behind those queued clicks), never inline.
+            checkBoxScalingGpu.Enabled = false;
+            checkBoxScalingDisplay.Enabled = false;
+            try
+            {
+                controller.Request(target);
+            }
+            catch (Exception ex)
+            {
+                Log(ex);
+            }
+            if (!IsDisposed && IsHandleCreated)
+            {
+                BeginInvoke((MethodInvoker)UpdateScaleControls);
+            }
+        }
+
+        private void OnResolutionApplied(object sender, ResolutionAppliedEventArgs e)
+        {
+            if (this.IsDisposed || !this.IsHandleCreated)
+            {
+                return;
+            }
+            if (this.InvokeRequired)
+            {
+                try
+                {
+                    this.BeginInvoke((MethodInvoker)delegate { OnResolutionApplied(sender, e); });
+                }
+                catch (InvalidOperationException)
+                {
+                }
+                return;
+            }
+            if (!_notifyResolutionChangeEnabled)
+            {
+                return;
+            }
+            this.notifyIcon.ShowBalloonTip(5000, "vibranceGUI \u2013 resolution changed", ResolutionChangeNotifier.FormatText(e), ToolTipIcon.Info);
+        }
+
+        private void checkBoxNotifyResolution_CheckedChanged(object sender, EventArgs e)
+        {
+            _notifyResolutionChangeEnabled = this.checkBoxNotifyResolution.Checked;
+            if (_isLoadingNotifyResolutionChangeEnabled)
+            {
+                return;
+            }
+            new SettingsController().SetResolutionChangeNotificationEnabled(_notifyResolutionChangeEnabled);
         }
 
         protected override void SetVisibleCore(bool value)
@@ -628,6 +801,7 @@ namespace vibrance.GUI.common
             {
                 this.statusLabel.Text = "Running!";
                 this.statusLabel.ForeColor = Color.Green;
+                RefreshScaling();
             }
             else if (e.ProgressPercentage == 2)
             {
@@ -1614,6 +1788,18 @@ namespace vibrance.GUI.common
             // guarantees neither handler is still listening by the time that happens.
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed;
+            ResolutionChangeNotifier.ResolutionApplied -= OnResolutionApplied;
+            if (_scalingController != null)
+            {
+                _scalingController.StateChanged -= OnScalingStateChanged;
+            }
+
+            // Before HandleDvcExit below: a game exit callback landing mid-cleanup would race the
+            // restore. Idempotent and safe if the watcher was never armed.
+            if (_gameExitWatcher != null)
+            {
+                _gameExitWatcher.Cancel();
+            }
 
             try
             {
@@ -1753,6 +1939,10 @@ namespace vibrance.GUI.common
             // game's own resolved level toward what Windows is currently reporting - there is
             // nothing here for a debounce to protect against).
             OnHdrRecheckTick();
+
+            // The driver's scaling mode can change under us (NVIDIA Control Panel, a resolution
+            // change) - re-read it unless a write of our own is in flight.
+            RefreshScaling();
 
             // showFailureDialog: false - a MessageBox popping up on every hot-plug or resolution
             // change, potentially over a fullscreen game, is exactly the modal-on-the-callback-
@@ -2044,6 +2234,11 @@ namespace vibrance.GUI.common
                 _isLoadingUpdateCheckEnabled = true;
                 checkBoxUpdateCheck.Checked = _updateCheckEnabled;
                 _isLoadingUpdateCheckEnabled = false;
+
+                _notifyResolutionChangeEnabled = settingsController.ReadResolutionChangeNotificationEnabled();
+                _isLoadingNotifyResolutionChangeEnabled = true;
+                checkBoxNotifyResolution.Checked = _notifyResolutionChangeEnabled;
+                _isLoadingNotifyResolutionChangeEnabled = false;
 
                 _toggleHotkeyEnabled = settingsController.ReadToggleHotkeyEnabled();
                 // Setting Checked to a value equal to its current (designer-default, unchecked)

@@ -217,6 +217,16 @@ namespace vibrance.GUI.NVIDIA
         private WinEventHook _hook;
         private static Screen _gameScreen;
 
+        // The display-mode seam both the foreground and the game-exit revert drive. Swapped for a fake by
+        // SetGameExitWatcherForTests only; production always uses the real device.
+        private static IDisplayModeDevice _displayModeDevice = ResolutionHelper.RealDevice;
+
+        internal static void SetGameExitWatcherForTests(IGameExitWatcher watcher, IDisplayModeDevice displayModeDevice)
+        {
+            AttachGameExitWatcher(watcher);
+            _displayModeDevice = displayModeDevice ?? ResolutionHelper.RealDevice;
+        }
+
         // The only production INvidiaVibranceDevice. Not readonly - ResetForTests below swaps it
         // for a fake so VibranceRestoreFixture can drive ApplyGameVibranceLevel/
         // RestoreWindowsVibranceLevel (and, through them, OnWinEventHook itself, which is private
@@ -389,6 +399,8 @@ namespace vibrance.GUI.NVIDIA
                 {
                     ResolutionHelper.ResolutionChangeResult result = ResolutionHelper.ChangeResolutionEx(
                         applicationSetting.ResolutionSettings, screen.DeviceName, false);
+                    ResolutionChangeNotifier.OnApplied(applicationSetting.Name, screen.DeviceName,
+                        applicationSetting.ResolutionSettings, result);
                     // AppliedUnverified means CDS_UPDATEREGISTRY itself reported success but the
                     // post-apply readback did not confirm it - the mode most likely DID change, so
                     // this still counts as applied for the purpose of a later revert attempt.
@@ -422,6 +434,13 @@ namespace vibrance.GUI.NVIDIA
                     _vibranceInfo.isColorSettingApplied = DeviceGammaRampHelper.ApplyGameGammaRamp(
                         screen, applicationSetting.Brightness, applicationSetting.Contrast, applicationSetting.Gamma);
                 }
+
+                // Watch the game's process so everything applied above is undone the moment it
+                // exits, instead of waiting for a foreground event that a fullscreen game closing
+                // often never raises (or raises on another monitor). Same process again returns the
+                // existing token without re-arming - see RealGameExitWatcher.Watch.
+                _trackedToken = _gameExitWatcher != null ? _gameExitWatcher.Watch(e.Handle) : 0;
+                _trackedGameName = applicationSetting.Name;
             }
             else
             {
@@ -445,32 +464,15 @@ namespace vibrance.GUI.NVIDIA
                     VibranceRestoreHelper.GetPrimaryDeviceName(), _vibranceInfo.displayHandles,
                     _vibranceInfo.userVibranceSettingDefault, _vibranceInfo.isWindowsLevelKnown);
 
-                if (_vibranceInfo.neverChangeResolution == false && _vibranceInfo.isResolutionChangeApplied == true &&
-                    _gameScreen != null && _gameScreen.Equals(currentScreen) &&
-                    _windowsResolutionSettings.ContainsKey(currentScreen.DeviceName) &&
-                    ResolutionHelper.IsResolutionChangeNeeded(currentScreen.DeviceName, _windowsResolutionSettings[currentScreen.DeviceName].Item1))
+                if (_gameScreen != null && _gameScreen.Equals(currentScreen))
                 {
-                    ResolutionHelper.ResolutionChangeResult result = ResolutionHelper.ChangeResolutionEx(
-                        _windowsResolutionSettings[currentScreen.DeviceName].Item1, currentScreen.DeviceName, true);
-                    // A failed (or unverified) revert must leave the flag true, or the next
-                    // foreground event would never retry it - AppliedUnverified here means the
-                    // revert's own CDS_UPDATEREGISTRY reported success but the readback did not
-                    // confirm the desktop is really back, so it is treated the same as Failed:
-                    // still worth another attempt. Suppressed (the give-up state) deliberately
-                    // still clears it: once ChangeResolutionEx has stopped calling the driver at
-                    // all, holding this true would retry forever with the device call skipped
-                    // every time.
-                    if (result != ResolutionHelper.ResolutionChangeResult.Failed &&
-                        result != ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
-                        _vibranceInfo.isResolutionChangeApplied = false;
-
-                    // D4's resolution half, journaling rule 4 - see
-                    // ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord's own header for
-                    // why this is deliberately NOT the same condition as the flag-clearing "if"
-                    // just above (Suppressed clears the flag but must never clear the record).
-                    if (ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord(result))
+                    ResolutionHelper.ResolutionChangeResult? revertResult = RevertGameResolution(_displayModeDevice, currentScreen.DeviceName);
+                    // With an exit watch armed the session lasts until the game itself exits
+                    // (OnGameExited ends it): ending it here would make the re-apply on the next
+                    // alt-tab back into the game announce the same change again.
+                    if (revertResult.HasValue && !_vibranceInfo.isResolutionChangeApplied && _trackedToken == 0)
                     {
-                        ResolutionRestoreHelper.ClearModeRecord(currentScreen.DeviceName);
+                        ResolutionChangeNotifier.OnGameSessionEnded(_trackedGameName);
                     }
                 }
 
@@ -479,6 +481,82 @@ namespace vibrance.GUI.NVIDIA
                 {
                     RestoreWindowsColorSettings();
                 }
+            }
+        }
+
+        // Tracks the process the last apply armed a watch on. OnGameExited ignores any token that
+        // is not this one, so a stale exit (game A closing after game B was applied) is a no-op.
+        private static int _trackedToken;
+        private static string _trackedGameName;
+
+        // The revert half of OnWinEventHook's old else-branch, extracted so the foreground path and
+        // the game-exit path share every guard. Returns null when no revert was attempted (the
+        // guards said there was nothing to do), otherwise ChangeResolutionEx's own result.
+        internal static ResolutionHelper.ResolutionChangeResult? RevertGameResolution(IDisplayModeDevice device, string deviceName)
+        {
+            if (_vibranceInfo.neverChangeResolution == false && _vibranceInfo.isResolutionChangeApplied == true &&
+                !string.IsNullOrEmpty(deviceName) &&
+                _windowsResolutionSettings != null &&
+                _windowsResolutionSettings.ContainsKey(deviceName) &&
+                ResolutionHelper.IsResolutionChangeNeeded(device, deviceName, _windowsResolutionSettings[deviceName].Item1))
+            {
+                ResolutionHelper.ResolutionChangeResult result = ResolutionHelper.ChangeResolutionEx(
+                    device, _windowsResolutionSettings[deviceName].Item1, deviceName, true);
+                // A failed (or unverified) revert must leave the flag true, or the next
+                // foreground event would never retry it - AppliedUnverified here means the
+                // revert's own CDS_UPDATEREGISTRY reported success but the readback did not
+                // confirm the desktop is really back, so it is treated the same as Failed:
+                // still worth another attempt. Suppressed (the give-up state) deliberately
+                // still clears it: once ChangeResolutionEx has stopped calling the driver at
+                // all, holding this true would retry forever with the device call skipped
+                // every time.
+                if (result != ResolutionHelper.ResolutionChangeResult.Failed &&
+                    result != ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
+                    _vibranceInfo.isResolutionChangeApplied = false;
+
+                // D4's resolution half, journaling rule 4 - see
+                // ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord's own header for
+                // why this is deliberately NOT the same condition as the flag-clearing "if"
+                // just above (Suppressed clears the flag but must never clear the record).
+                if (ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord(result))
+                {
+                    ResolutionRestoreHelper.ClearModeRecord(deviceName);
+                }
+                return result;
+            }
+            return null;
+        }
+
+        // Runs on the UI thread (RealGameExitWatcher posts there). Undoes what the tracked game's
+        // apply did WITHOUT the foreground/screen gates the foreground revert needs - the game is
+        // gone, so there is no foreground window to wait for. The display seam is a parameter-less
+        // static (_displayModeDevice) so fixtures can substitute a fake.
+        internal static void OnGameExited(int token)
+        {
+            if (token == 0 || token != _trackedToken)
+                return;
+
+            try
+            {
+                RestoreWindowsVibranceLevel(_device, _vibranceInfo.affectPrimaryMonitorOnly,
+                    VibranceRestoreHelper.GetPrimaryDeviceName(), _vibranceInfo.displayHandles,
+                    _vibranceInfo.userVibranceSettingDefault, _vibranceInfo.isWindowsLevelKnown);
+
+                RevertGameResolution(_displayModeDevice, _gameScreen != null ? _gameScreen.DeviceName : null);
+
+                if (_vibranceInfo.neverChangeColorSettings == false && _vibranceInfo.isColorSettingApplied == true)
+                {
+                    RestoreWindowsColorSettings();
+                }
+            }
+            catch (Exception ex)
+            {
+                Program.LogSafely(string.Format("Restoring after the game exited failed: {0}", ex));
+            }
+            finally
+            {
+                ResolutionChangeNotifier.OnGameSessionEnded(_trackedGameName);
+                _trackedToken = 0;
             }
         }
 
@@ -1073,6 +1151,10 @@ namespace vibrance.GUI.NVIDIA
             _vibranceInfo = vibranceInfo;
             _applicationSettings = applicationSettings ?? new List<ApplicationSetting>();
             _gameScreen = null;
+            AttachGameExitWatcher(null);
+            _trackedToken = 0;
+            _trackedGameName = null;
+            _displayModeDevice = ResolutionHelper.RealDevice;
             _loggedDisplayFailures.Clear();
             VibranceRestoreHelper.ResetForTests();
             // The toggle hotkey's own suppression state (upstream #143) - reset here too so a
@@ -1125,11 +1207,26 @@ namespace vibrance.GUI.NVIDIA
         {
             _vibranceInfo.shouldRun = shouldRun;
         }
-        private IGameExitWatcher _gameExitWatcher;
+        private static IGameExitWatcher _gameExitWatcher;
 
         public void SetGameExitWatcher(IGameExitWatcher watcher)
         {
+            AttachGameExitWatcher(watcher);
+        }
+
+        // Static because every piece of state OnWinEventHook/OnGameExited reason about is static.
+        // Unsubscribes the previous watcher so a replaced one can never fire into this proxy again.
+        private static void AttachGameExitWatcher(IGameExitWatcher watcher)
+        {
+            if (_gameExitWatcher != null)
+            {
+                _gameExitWatcher.GameExited -= OnGameExited;
+            }
             _gameExitWatcher = watcher;
+            if (_gameExitWatcher != null)
+            {
+                _gameExitWatcher.GameExited += OnGameExited;
+            }
         }
 
         public void SetNeverSwitchResolution(bool neverChangeResolution)

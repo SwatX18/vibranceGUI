@@ -28,7 +28,9 @@
         /// </summary>
         private void InitializeComponent()
         {
+            this.components = new System.ComponentModel.Container();
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(VibranceSettings));
+            this.toolTip = new System.Windows.Forms.ToolTip(this.components);
             this.groupBox2 = new System.Windows.Forms.GroupBox();
             this.trackBarIngameLevel = new System.Windows.Forms.TrackBar();
             this.labelIngameLevel = new System.Windows.Forms.Label();
@@ -176,6 +178,7 @@
             this.cBoxResolution.Name = "cBoxResolution";
             this.cBoxResolution.Size = new System.Drawing.Size(349, 28);
             this.cBoxResolution.TabIndex = 17;
+            this.toolTip.SetToolTip(this.cBoxResolution, "Default = let the driver decide (it may keep a previous Center/Stretch choice for this resolution). Center/Stretch force that scaling.");
             // 
             // groupBox1
             // 
@@ -406,6 +409,7 @@
         private System.Windows.Forms.Label labelTitle;
         private System.Windows.Forms.PictureBox pictureBox;
         private System.Windows.Forms.ComboBox cBoxResolution;
+        private System.Windows.Forms.ToolTip toolTip;
         private System.Windows.Forms.GroupBox groupBox1;
         private System.Windows.Forms.CheckBox checkBoxResolution;
         private System.Windows.Forms.Label labelResolution;

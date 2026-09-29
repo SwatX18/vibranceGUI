@@ -117,6 +117,18 @@ extern "C"
 		return v.getAssociatedNvidiaDisplayHandle(szDisplayName, length);
 	}
 
+	int vibrance_getDisplayScaling(const char *gdiDisplayName, int *outScaling)
+	{
+		vibranceDLL::vibrance v;
+		return v.getDisplayScaling(gdiDisplayName, outScaling);
+	}
+
+	int vibrance_setDisplayScaling(const char *gdiDisplayName, int scaling)
+	{
+		vibranceDLL::vibrance v;
+		return v.setDisplayScaling(gdiDisplayName, scaling);
+	}
+
 	vibrance_handle_t vibrance_abi_echoHandle(vibrance_handle_t handle)
 	{
 		// Deliberately does not construct a vibranceDLL::vibrance or touch any NvAPI state - see
