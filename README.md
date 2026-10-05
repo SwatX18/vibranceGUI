@@ -6,7 +6,7 @@ This is a fork of [juv/vibranceGUI](https://github.com/juv/vibranceGUI). Almost 
 
 ## Download
 
-**[Latest release: v2.10.4](https://github.com/SwatX18/vibranceGUI/releases)** - in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
+**[Latest release: v2.11.0](https://github.com/SwatX18/vibranceGUI/releases)** - in two flavours, **x64 and x86**. Each is a zip with two files, no installer: unzip anywhere and run `vibrance.GUI.exe`. Take the x64 build unless you are on 32-bit Windows; the title bar tells you which one you are running.
 
 The download at vibrancegui.com is the original author's build and contains none of the changes below.
 
@@ -17,11 +17,12 @@ goes back to the normal Windows level on exit, across several Counter-Strike 2 s
 machine. That is the core behaviour and the part most people use. It was watched on an **x86**
 build.
 
-**What has not:** everything else. Resolution switching and its restore-on-exit, the colour
+**What has not:** everything else. Resolution switching and its restore-on-exit, the GPU/Display
+scaling switch (its write has never been run against a real driver), the resolution notification, the colour
 settings (gamma, brightness and contrast, off by default), the separate HDR vibrance level (where
 an open question remains over whether NVIDIA's DVC does anything at all while a display is in
 HDR), and the apply-on-startup behaviour have only ever been exercised by automated checks, which
-drive fakes and stubs rather than a real GPU driver, display or game. There are 813 of those
+drive fakes and stubs rather than a real GPU driver, display or game. There are 996 of those
 checks, and they are not the same thing as somebody using the program.
 
 Two gaps worth knowing about before you rely on either:
@@ -123,8 +124,21 @@ New:
   until the next start, and rolls back if it fails. It never updates without being asked, and
   there is no silent background updater. See "Does it phone home?" and "Can it install the update
   for itself?" above.
+- **The resolution comes back as soon as the game closes**, without a click. The revert used to
+  wait for Windows to report a new foreground window on the game's screen, and after a fullscreen
+  game exits it often reports none - so the desktop sat at the game's resolution until you clicked
+  somewhere. vibranceGUI now watches the game's process and restores resolution, vibrance and
+  colour settings when it exits.
+- **"Default" scaling in a game's resolution leaves the scaler alone.** It no longer sends the
+  scaling field at all, so whatever the driver holds stays. Center and Stretch still force theirs.
+- **"Scale (primary display): GPU / Display"** (NVIDIA only) - the same switch as NVIDIA Control
+  Panel's "Perform scaling on". It reads the driver first, stays disabled until that read works
+  and while a game's resolution is applied, and can never have both boxes unticked.
+- **A short notification when a game's resolution is changed**, naming the game, the mode and the
+  scaling. Once per game session, not on every alt-tab; turn it off in Settings. Windows may hold
+  it back while a fullscreen game is running (Do not disturb while gaming).
 
-The [v2.10.4 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.10.4) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
+The [v2.11.0 release notes](https://github.com/SwatX18/vibranceGUI/releases/tag/v2.11.0) are the full version. Issue numbers above are the upstream issues a change addresses, not reports confirmed fixed by the people who filed them.
 
 ## Graphics card support
 
