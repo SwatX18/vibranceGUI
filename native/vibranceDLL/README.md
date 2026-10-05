@@ -119,3 +119,15 @@ source and still is not the goal.
    value through the real ABI boundary and catch a truncating C# signature that
    `Marshal.Prelink` cannot detect on its own - see that export's own comment in
    `vibrance_c.h`.
+9. Display scaling: `vibrance_getDisplayScaling` / `vibrance_setDisplayScaling` (in `vibrance_c.h`/`.cpp`,
+   backed by `vibrance::getDisplayScaling`/`setDisplayScaling`) read and change one display's
+   `NV_SCALING` via `NvAPI_DISP_GetDisplayConfig` / `NvAPI_DISP_SetDisplayConfig`, resolved by
+   `nvapi_QueryInterface` id in `initializeLibrary()`. Unlike the older exports they return the NvAPI
+   status (0 = OK). The struct layouts, `NV_SCALING` values, flags and query ids live in the new
+   `vibrance/nvapi_display.h`, copied from NVIDIA's official SDK (https://github.com/NVIDIA/nvapi,
+   MIT) with per-declaration `nvapi.h` line citations; the licence text is `NVAPI_LICENSE.txt`.
+   Set replays the whole configuration exactly as read (sourceModeInfo included), changes only the
+   target's `scaling`, and passes `NV_DISPLAYCONFIG_SAVE_TO_PERSISTENCE` (so it behaves like the
+   NVIDIA Control Panel) but not `DRIVER_RELOAD_ALLOWED`. It accepts only NV_SCALING 1,2,3,5,6,7,8.
+   The three new pointers are deliberately outside the mandatory-pointer check, so a driver without
+   them still initialises and these two exports return `NVAPI_NO_IMPLEMENTATION` (-3).

@@ -650,8 +650,19 @@ namespace vibrance.GUI.common
             mode.dmPelsHeight = target.DmPelsHeight;
             mode.dmBitsPerPel = target.DmBitsPerPel;
             mode.dmDisplayFrequency = target.DmDisplayFrequency;
-            mode.dmDisplayFixedOutput = target.DmDisplayFixedOutput;
             mode.dmFields |= (uint)OwnedFields;
+            if (target.DmDisplayFixedOutput == (uint)Dmdfo.Default)
+            {
+                // "Default" means the user asked vibranceGUI not to touch the scaler: the bit is
+                // cleared (EnumDisplaySettings may have reported it set) and dmDisplayFixedOutput is
+                // left exactly as reported. Because the bit is then absent, the step-4 fallback
+                // retry in ChangeResolutionEx (which requires the bit) never fires for Default.
+                mode.dmFields &= ~(uint)DevmodeFields.DmDisplayFixedOutput;
+            }
+            else
+            {
+                mode.dmDisplayFixedOutput = target.DmDisplayFixedOutput;
+            }
         }
 
         // Step 7 from the design: increments the consecutive-failure count for this exact

@@ -37,6 +37,7 @@ namespace vibrance.GUI.common
             CheckAuthoritativeResult(checklist);
             CheckPostApplyVerification(checklist);
             CheckFixedOutputFallback(checklist);
+            CheckDefaultScalerIsNotTouched(checklist);
             CheckNoRepeatNotification(checklist);
             CheckApplyBound(checklist);
             CheckRevertBound(checklist);
@@ -326,6 +327,66 @@ namespace vibrance.GUI.common
 
             checklist.Check(device.CallLog.Count(call => call.Flags == ChangeDisplaySettingsFlags.CdsUpdateregistry) == 1,
                 "exactly one CDS_UPDATEREGISTRY call follows the successful retry");
+
+            checklist.Lines.Add(string.Empty);
+        }
+
+        // "Default" scaler means vibranceGUI does not touch the scaling behaviour: the target's
+        // Default must never put DM_DISPLAYFIXEDOUTPUT into a call, and must leave the value
+        // EnumDisplaySettings reported alone. Center is the control - it still declares the bit.
+        private static void CheckDefaultScalerIsNotTouched(Checklist checklist)
+        {
+            checklist.Lines.Add("A Default (driver) scaler target never sets DM_DISPLAYFIXEDOUTPUT and leaves the device's own value untouched; Center still sets it:");
+            ResolutionHelper.ResetForTests();
+
+            const string deviceName = "FAKE-RES-DEFAULT-SCALER";
+            FakeDisplayModeDevice device = new FakeDisplayModeDevice();
+            // The device's own scaler is Stretch, and its reported dmFields already carries the bit -
+            // the worst case for "leave it alone", since clearing must beat the reported bit.
+            Devmode current = BuildDevmode(1920, 1080, 32, 60, (uint)Dmdfo.Stretch);
+            current.dmFields |= (uint)DevmodeFields.DmDisplayFixedOutput;
+            device.SetCurrentMode(deviceName, current);
+
+            ResolutionModeWrapper defaultTarget = BuildTarget(2560, 1440, 32, 144, (uint)Dmdfo.Default);
+            ResolutionHelper.ResolutionChangeResult result = ResolutionHelper.ChangeResolutionEx(device, defaultTarget, deviceName, false);
+            checklist.Check(result == ResolutionHelper.ResolutionChangeResult.Applied,
+                string.Format("a Default target applies normally, got {0}", result));
+            checklist.Check(device.CallLog.Count == 2 && device.CallLog.All(call => (call.Mode.dmFields & (uint)DevmodeFields.DmDisplayFixedOutput) == 0),
+                "neither the CDS_TEST nor the CDS_UPDATEREGISTRY call sends the DM_DISPLAYFIXEDOUTPUT bit for a Default target");
+            checklist.Check(device.CallLog.All(call => call.Mode.dmDisplayFixedOutput == (uint)Dmdfo.Stretch),
+                "a Default target leaves the mode's dmDisplayFixedOutput exactly as the device reported it");
+            checklist.Check(device.CallLog.All(call => (call.Mode.dmFields & (uint)DevmodeFields.DmPosition) != 0),
+                "a Default target still preserves the other dmFields bits (DM_POSITION) EnumDisplaySettings reported");
+
+            // A rejected CDS_TEST must not trigger the fixed-output fallback retry for Default - the
+            // bit is already absent, so a second call would change nothing.
+            ResolutionHelper.ResetForTests();
+            FakeDisplayModeDevice rejecting = new FakeDisplayModeDevice();
+            rejecting.SetCurrentMode(deviceName, BuildDevmode(1920, 1080, 32, 60, (uint)Dmdfo.Stretch));
+            rejecting.QueueResult(deviceName, ChangeDisplaySettingsFlags.CdsTest, DispChange.DispChangeBadflags);
+            ResolutionHelper.ChangeResolutionEx(rejecting, defaultTarget, deviceName, false);
+            checklist.Check(rejecting.CallLog.Count(call => call.Flags == ChangeDisplaySettingsFlags.CdsTest) == 1,
+                "a rejected Default CDS_TEST is not retried with a fixed-output fallback");
+
+            ResolutionHelper.ResetForTests();
+            FakeDisplayModeDevice centerDevice = new FakeDisplayModeDevice();
+            centerDevice.SetCurrentMode(deviceName, BuildDevmode(1920, 1080, 32, 60, (uint)Dmdfo.Default));
+            ResolutionModeWrapper centerTarget = BuildTarget(2560, 1440, 32, 144, (uint)Dmdfo.Center);
+            ResolutionHelper.ChangeResolutionEx(centerDevice, centerTarget, deviceName, false);
+            checklist.Check(centerDevice.CallLog.Count == 2 && centerDevice.CallLog.All(call =>
+                    (call.Mode.dmFields & (uint)DevmodeFields.DmDisplayFixedOutput) != 0 && call.Mode.dmDisplayFixedOutput == (uint)Dmdfo.Center),
+                "a Center target still declares DM_DISPLAYFIXEDOUTPUT with the Center value on both calls");
+
+            // Reverting to a desktop mode captured as Default, from a game mode that was Center.
+            ResolutionHelper.ResetForTests();
+            FakeDisplayModeDevice revertDevice = new FakeDisplayModeDevice();
+            revertDevice.SetCurrentMode(deviceName, BuildDevmode(2560, 1440, 32, 144, (uint)Dmdfo.Center));
+            ResolutionModeWrapper desktopDefault = BuildTarget(1920, 1080, 32, 60, (uint)Dmdfo.Default);
+            ResolutionHelper.ResolutionChangeResult revertResult = ResolutionHelper.ChangeResolutionEx(revertDevice, desktopDefault, deviceName, true);
+            checklist.Check(revertResult == ResolutionHelper.ResolutionChangeResult.Applied &&
+                    revertDevice.CallLog.Count == 2 &&
+                    revertDevice.CallLog.All(call => (call.Mode.dmFields & (uint)DevmodeFields.DmDisplayFixedOutput) == 0),
+                string.Format("a revert to a desktop mode captured as Default does not set DM_DISPLAYFIXEDOUTPUT, got {0}", revertResult));
 
             checklist.Lines.Add(string.Empty);
         }
@@ -2476,7 +2537,7 @@ namespace vibrance.GUI.common
         // happened to already be set on the current mode" (a real EnumDisplaySettings result would
         // typically carry both, but folding them into this baseline too would make that check
         // unable to fail no matter what ApplyTargetFields does - see CheckDmFieldsDeclared).
-        private static Devmode BuildDevmode(uint width, uint height, uint bpp, uint freq, uint fixedOutput)
+        internal static Devmode BuildDevmode(uint width, uint height, uint bpp, uint freq, uint fixedOutput)
         {
             Devmode mode = new Devmode();
             mode.dmSize = (ushort)Marshal.SizeOf(mode);
@@ -2492,7 +2553,7 @@ namespace vibrance.GUI.common
             return mode;
         }
 
-        private static ResolutionModeWrapper BuildTarget(uint width, uint height, uint bpp, uint freq, uint fixedOutput)
+        internal static ResolutionModeWrapper BuildTarget(uint width, uint height, uint bpp, uint freq, uint fixedOutput)
         {
             ResolutionModeWrapper target = new ResolutionModeWrapper();
             target.DmPelsWidth = width;
@@ -2509,7 +2570,7 @@ namespace vibrance.GUI.common
         // Screen.DeviceName ("\\.\DISPLAYn"), since ResolutionHelper's own failure-tracking
         // dictionaries are static and would otherwise be shared with any real hardware use in the
         // same process - the same note GammaRestoreFixture.cs carries for its own fake.
-        private class FakeDisplayModeDevice : IDisplayModeDevice
+        internal class FakeDisplayModeDevice : IDisplayModeDevice
         {
             public struct RecordedCall
             {

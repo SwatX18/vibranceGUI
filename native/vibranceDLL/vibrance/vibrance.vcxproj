@@ -168,6 +168,7 @@
     <ClInclude Include="targetver.h" />
     <ClInclude Include="vibrance.h" />
     <ClInclude Include="vibrance_c.h" />
+    <ClInclude Include="nvapi_display.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">

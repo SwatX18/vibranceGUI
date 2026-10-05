@@ -48,6 +48,13 @@ extern "C"
 	__declspec(dllexport) int  __cdecl vibrance_getGpuSystemType(vibrance_handle_t gpuHandle);
 	__declspec(dllexport) vibrance_handle_t __cdecl vibrance_getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length);
 
+	// Display scaling for one display, by GDI device name (e.g. \\.\DISPLAY1). These return the NvAPI
+	// status (0 = OK, negative = NVAPI_* error), NOT the 0/1 convention above. *outScaling / scaling are
+	// NV_SCALING values (nvapi.h): 1,2,3,5,6,7,8. Set accepts only those and returns NVAPI_INVALID_ARGUMENT
+	// otherwise. Requires vibrance_initializeLibrary() to have succeeded first.
+	__declspec(dllexport) int  __cdecl vibrance_getDisplayScaling(const char *gdiDisplayName, int *outScaling);
+	__declspec(dllexport) int  __cdecl vibrance_setDisplayScaling(const char *gdiDisplayName, int scaling);
+
 	// Test-only: exists solely so NvidiaInteropFixture's N23 can round-trip a handle-shaped
 	// value through the real __cdecl ABI boundary and catch a truncating x64 P/Invoke
 	// signature. Marshal.Prelink cannot catch this on its own - it builds the marshalling

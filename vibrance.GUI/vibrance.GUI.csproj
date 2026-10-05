@@ -185,6 +185,11 @@
     <Compile Include="common\ResolutionRestoreHelper.cs" />
     <Compile Include="common\ResolutionRestorePersistenceFixture.cs" />
     <Compile Include="common\ResolutionChangeFixture.cs" />
+    <Compile Include="common\GameExitWatcher.cs" />
+    <Compile Include="common\GameExitFixture.cs" />
+    <Compile Include="common\ResolutionChangeNotifier.cs" />
+    <Compile Include="NVIDIA\NvidiaDisplayScaling.cs" />
+    <Compile Include="NVIDIA\DisplayScalingFixture.cs" />
     <Compile Include="common\TrackbarLabelHelper.cs" />
     <Compile Include="common\WinEventHook.cs" />
     <Compile Include="common\WinEventHookEventArgs.cs" />

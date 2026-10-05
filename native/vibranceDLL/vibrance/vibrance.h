@@ -104,5 +104,9 @@ namespace vibranceDLL
 		bool unloadLibrary();
 		void *getAssociatedNvidiaDisplayHandle(const char *szDisplayName, int length);
 		int getGpuSystemType(int *gpuHandle);
+		// Display scaling (NvAPI_DISP_Get/SetDisplayConfig). gdiDisplayName is a GDI device name such as
+		// e.g. \\.\DISPLAY1. Both return an NvAPI status (0 = OK); scaling is an NV_SCALING value.
+		int getDisplayScaling(const char *gdiDisplayName, int *outScaling);
+		int setDisplayScaling(const char *gdiDisplayName, int scaling);
 	};
 }
