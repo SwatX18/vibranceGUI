@@ -83,7 +83,7 @@ namespace vibrance.GUI.common.gamefinder
         // First candidate that exists and contains a steamapps folder wins. Every probe is
         // individually guarded, so a machine with no Valve key at all falls through to the
         // literal paths rather than failing the whole source.
-        private static string FindSteamRoot()
+        internal static string FindSteamRoot()
         {
             // The process is x86, so a plain Registry.LocalMachine read is redirected by WOW64
             // into WOW6432Node, which is empty on some machines while the unredirected 64-bit key

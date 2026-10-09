@@ -40,6 +40,7 @@ namespace vibrance.GUI
         private const string GameExitSelfTestMessageBoxCaption = "vibranceGUI game exit watcher self test";
         private const string ScalingSelfTestMessageBoxCaption = "vibranceGUI display scaling self test";
         private const string ResolutionPickerSelfTestMessageBoxCaption = "vibranceGUI resolution picker self test";
+        private const string Cs2VideoSelfTestMessageBoxCaption = "vibranceGUI CS2 video settings self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
@@ -310,6 +311,15 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, ResolutionCatalogFixture.Run().ToArray()),
                     ResolutionPickerSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: Cs2VideoSettingsFixture drives Cs2VideoConfigPatcher and
+            // Cs2VideoSettingsWriter over temp directories only - never the real Steam folder.
+            if (args.Contains("--selftest-cs2video"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, Cs2VideoSettingsFixture.Run().ToArray()),
+                    Cs2VideoSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

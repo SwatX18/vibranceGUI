@@ -2695,11 +2695,54 @@ namespace vibrance.GUI.common
                     ApplyApplicationListItemAppearance(selectedItem, newSetting);
                     RefreshUnconfirmedCache();
                     ForceSaveVibranceSettings();
+                    // Only here: saving the profile in this dialog is the one moment the user asked for the
+                    // write (never startup, launch, exit or the debounced saves). AddProgramIntern and the
+                    // list's double click both end up in this method, so a new profile passes through it too
+                    SyncCs2VideoSettingsIfRequested(newSetting, settingsWindow.IsSelectedModeOffered);
                 }
                 else if (actualSetting == null)
                 {
                     removeApplicationListItem(selectedItem);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Writes the profile's resolution to CS2's cs2_video.txt when the user ticked the option in the
+        /// profile dialog. Reports the outcome in a message box, a failure never undoes the saved profile.
+        /// </summary>
+        private void SyncCs2VideoSettingsIfRequested(ApplicationSetting setting, bool modeOffered)
+        {
+            if (!setting.SyncCs2VideoSettings || !setting.IsResolutionChangeNeeded || setting.ResolutionSettings == null ||
+                _v.GetVibranceInfo().neverChangeResolution || !Cs2VideoSettingsWriter.IsCs2Executable(setting.FileName))
+            {
+                return;
+            }
+
+            if (!modeOffered)
+            {
+                //the saved mode is one the display no longer offers: never push it into CS2. The tick stays saved
+                Program.LogSafely("CS2 video settings sync skipped: the profile's resolution is not offered by the display");
+                return;
+            }
+
+            try
+            {
+                Cs2VideoSyncResult result = Cs2VideoSettingsWriter.CreateDefault().Apply(setting.ResolutionSettings);
+                Program.LogSafely(string.Format("CS2 video settings sync: {0}, {1} of {2} account(s) written", result.Status, result.SucceededCount, result.AccountCount));
+                foreach (Cs2VideoAccountOutcome account in result.Accounts)
+                {
+                    Program.LogSafely(string.Format("CS2 video settings sync, account {0}: {1} ({2}) {3}", account.AccountId, account.Status, account.FilePath, account.Detail));
+                }
+                MessageBox.Show(this, result.UserMessage, "vibranceGUI – CS2 video settings", MessageBoxButtons.OK,
+                    result.IsFullSuccess ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                //the profile is already saved, the sync is a convenience on top of it
+                Log(ex);
+                MessageBox.Show(this, "The profile was saved, but CS2's video settings could not be updated: " + ex.Message,
+                    "vibranceGUI – CS2 video settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 

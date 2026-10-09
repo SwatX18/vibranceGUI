@@ -630,7 +630,7 @@ namespace vibrance.GUI.common
         // Constructs the real VibranceSettings form (never shown, no handle needed) over fake modes
         // and drives its private handlers by reflection, exactly like a click would.
 
-        private sealed class FakeProxy : IVibranceProxy
+        internal sealed class FakeProxy : IVibranceProxy
         {
             public bool NeverChangeResolution;
 

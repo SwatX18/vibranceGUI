@@ -37,6 +37,9 @@ namespace vibrance.GUI.common
         private readonly Action<ResolutionStarPreferences> _saveResolutionStars;
         // True while syncResolutionControls fills the combos, so programmatic changes do not re-enter the handlers
         private bool _syncingResolution;
+        // Whether the edited executable is cs2.exe. Kept as a field because it must outlive the form:
+        // Control.Visible of the checkbox is false once the dialog is closed, which is when GetApplicationSetting runs
+        private bool _isCs2Profile;
 
         // internal: the star preferences type is internal, and VibranceGUI is the only caller
         internal VibranceSettings(IVibranceProxy v, int minValue, int maxValue, int defaultValue, ListViewItem sender, ApplicationSetting setting,
@@ -59,6 +62,7 @@ namespace vibrance.GUI.common
             this._graphicsAdapter = graphicsAdapter;
             this._v = v;
             this._filePath = sender.Tag == null ? string.Empty : sender.Tag.ToString();
+            updateCs2Profile();
             this._installDirectory = setting == null ? null : setting.InstallDirectory;
             this._isExecutableUnconfirmed = setting != null && setting.IsExecutableUnconfirmed;
             this._labelTitlePrefix = this.labelTitle.Text;
@@ -93,6 +97,7 @@ namespace vibrance.GUI.common
                 this.trackBarContrast.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarContrast, setting.Contrast);
                 this.trackBarGamma.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarGamma, setting.Gamma);
                 this.checkBoxResolution.Checked = setting.IsResolutionChangeNeeded;
+                this.checkBoxSyncCs2Video.Checked = setting.SyncCs2VideoSettings;
 
                 // Separate SDR/HDR vibrance level (upstream #147). HasSeparateHdrLevel
                 // distinguishes a real configured level from HdrLevelUnset, the only value a
@@ -185,6 +190,13 @@ namespace vibrance.GUI.common
             // The constructor above knows nothing about these two, they have to be assigned afterwards
             setting.InstallDirectory = _installDirectory;
             setting.IsExecutableUnconfirmed = _isExecutableUnconfirmed;
+            // Only the effective value is persisted, computed from the fields and the checkboxes' Checked
+            // states - not Visible / Enabled, which are unreliable once the dialog is closed. A tick left
+            // over from an executable which is not cs2.exe (changed in this very session), or with
+            // "Change Resolution" unticked afterwards, is never persisted. A tick on a mode the display
+            // no longer offers IS kept (it applies again if the mode returns); the write itself is
+            // gated by IsSelectedModeOffered in VibranceGUI.SyncCs2VideoSettingsIfRequested.
+            setting.SyncCs2VideoSettings = _isCs2Profile && this.checkBoxSyncCs2Video.Checked && this.checkBoxResolution.Checked;
             // HdrLevelUnset unless the checkbox is actually ticked - an unticked box must never
             // leave behind whatever value the trackbar happens to be showing. HasSeparateHdrLevel
             // would otherwise treat that stale value as a real configured level the next time this
@@ -217,6 +229,7 @@ namespace vibrance.GUI.common
                 _filePath = dialog.FileName;
                 // The user just told us which executable it is, so it is not a guess of the game finder anymore
                 _isExecutableUnconfirmed = false;
+                updateCs2Profile();
                 // An executable outside the stored folder means this entry is no longer that game. Keeping
                 // the old install directory would leave it matching the old game with the new game's profile
                 if (!ApplicationSettingMatcher.IsUnderDirectory(_installDirectory, _filePath))
@@ -226,6 +239,21 @@ namespace vibrance.GUI.common
                 reloadTitle();
                 reloadIcon();
             }
+        }
+
+        /// <summary>
+        /// False when the saved mode is one the display no longer offers (the picker then hands back
+        /// that stale mode). Safe to read after the dialog is closed.
+        /// </summary>
+        public bool IsSelectedModeOffered
+        {
+            get { return !_resolutionPicker.IsSavedModeUnavailable; }
+        }
+
+        private void updateCs2Profile()
+        {
+            _isCs2Profile = Cs2VideoSettingsWriter.IsCs2Executable(_filePath);
+            this.checkBoxSyncCs2Video.Visible = _isCs2Profile;
         }
 
         private string resolveInitialDirectory()
@@ -456,6 +484,7 @@ namespace vibrance.GUI.common
             this.cBoxRefreshRate.Enabled = enabled && modeAvailable;
             this.cBoxScaling.Enabled = enabled && modeAvailable;
             this.checkBoxStarResolution.Enabled = enabled && _resolutionPicker.CanToggleStar;
+            this.checkBoxSyncCs2Video.Enabled = enabled && modeAvailable;
         }
 
         private void buttonReset_Click(object sender, EventArgs e)
@@ -465,6 +494,7 @@ namespace vibrance.GUI.common
             this.trackBarContrast.Value = 50;
             this.trackBarGamma.Value = 100;
             this.checkBoxResolution.Checked = false;
+            this.checkBoxSyncCs2Video.Checked = false;
             _resolutionPicker.SelectDefault();
             syncResolutionControls();
 
