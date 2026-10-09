@@ -31,8 +31,17 @@ namespace vibrance.GUI.common
         // re-checking the box within the same session would clobber a value the user (or the
         // saved profile) already set.
         private bool _hdrLevelHasBeenSet;
+        // Owns the resolution / refresh rate / scaling selection, the combos below only mirror it
+        private readonly ResolutionPicker _resolutionPicker;
+        // Persists the starred sizes right away (even when the dialog is cancelled later)
+        private readonly Action<ResolutionStarPreferences> _saveResolutionStars;
+        // True while syncResolutionControls fills the combos, so programmatic changes do not re-enter the handlers
+        private bool _syncingResolution;
 
-        public VibranceSettings(IVibranceProxy v, int minValue, int maxValue, int defaultValue, ListViewItem sender, ApplicationSetting setting, List<ResolutionModeWrapper> supportedResolutionList, GraphicsAdapter graphicsAdapter)
+        // internal: the star preferences type is internal, and VibranceGUI is the only caller
+        internal VibranceSettings(IVibranceProxy v, int minValue, int maxValue, int defaultValue, ListViewItem sender, ApplicationSetting setting,
+            List<ResolutionModeWrapper> supportedResolutionList, ResolutionModeWrapper windowsResolutionMode, ResolutionStarPreferences resolutionStars,
+            Action<ResolutionStarPreferences> saveResolutionStars, GraphicsAdapter graphicsAdapter)
         {
             InitializeComponent();
             this._vibranceDefaultValue = defaultValue;
@@ -57,7 +66,8 @@ namespace vibrance.GUI.common
             labelHdrIngameLevel.Text = TrackbarLabelHelper.ResolveVibranceLabelLevel(_graphicsAdapter, trackBarHdrIngameLevel.Value);
             reloadTitle();
             this.pictureBox.Image = this._sender.ListView.LargeImageList.Images[this._sender.ImageIndex];
-            this.cBoxResolution.DataSource = supportedResolutionList;
+            this._saveResolutionStars = saveResolutionStars;
+            this._resolutionPicker = new ResolutionPicker(ResolutionCatalog.Build(supportedResolutionList, windowsResolutionMode, resolutionStars));
 
             if(_v.GetVibranceInfo().neverChangeColorSettings)
             {
@@ -68,9 +78,9 @@ namespace vibrance.GUI.common
 
             if(_v.GetVibranceInfo().neverChangeResolution)
             {
-                this.cBoxResolution.Enabled = false;
                 this.checkBoxResolution.Enabled = false;
                 this.checkBoxResolution.Checked = false;
+                updateResolutionEnabled();
             }
 
             // If the setting is new, we don't need to set the progress bar value
@@ -82,7 +92,6 @@ namespace vibrance.GUI.common
                 this.trackBarBrightness.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarBrightness, setting.Brightness);
                 this.trackBarContrast.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarContrast, setting.Contrast);
                 this.trackBarGamma.Value = TrackbarLabelHelper.ClampToTrackBarRange(this.trackBarGamma, setting.Gamma);
-                this.cBoxResolution.SelectedItem = setting.ResolutionSettings;
                 this.checkBoxResolution.Checked = setting.IsResolutionChangeNeeded;
 
                 // Separate SDR/HDR vibrance level (upstream #147). HasSeparateHdrLevel
@@ -104,6 +113,10 @@ namespace vibrance.GUI.common
             // trackbar disabled to match the checkbox's own unchecked default, not just whatever
             // Enabled the designer happened to leave it at.
             this.trackBarHdrIngameLevel.Enabled = this.checkBoxHdrIngameLevel.Checked;
+
+            // Loaded after the checkbox above has its final state; a new entry (setting == null) gets the default selection
+            _resolutionPicker.Load(setting == null ? null : setting.ResolutionSettings);
+            syncResolutionControls();
         }
 
         private void trackBarIngameLevel_Scroll(object sender, EventArgs e)
@@ -167,7 +180,7 @@ namespace vibrance.GUI.common
         public ApplicationSetting GetApplicationSetting()
         {
             ApplicationSetting setting = new ApplicationSetting(resolveApplicationName(), _filePath, this.trackBarIngameLevel.Value,
-                (ResolutionModeWrapper)this.cBoxResolution.SelectedItem, this.checkBoxResolution.Checked,
+                _resolutionPicker.GetSelectedMode(), this.checkBoxResolution.Checked,
                 this.trackBarBrightness.Value, this.trackBarContrast.Value, this.trackBarGamma.Value);
             // The constructor above knows nothing about these two, they have to be assigned afterwards
             setting.InstallDirectory = _installDirectory;
@@ -289,7 +302,160 @@ namespace vibrance.GUI.common
 
         private void checkBoxResolution_CheckedChanged(object sender, EventArgs e)
         {
-            this.cBoxResolution.Enabled = this.checkBoxResolution.Checked;
+            updateResolutionEnabled();
+        }
+
+        private void cBoxResolution_SelectionChangeCommitted(object sender, EventArgs e)
+        {
+            if (_syncingResolution)
+            {
+                return;
+            }
+            ResolutionEntry committed = this.cBoxResolution.SelectedItem as ResolutionEntry;
+            if (committed != null && committed.IsSeparator)
+            {
+                // Arrow keys and the mouse wheel step onto the separator one entry at a time; refusing it
+                // would trap them on its near side. Continue one more entry in the direction they came
+                // from (a click on the separator has no direction, one step past it is harmless). While the
+                // saved mode is unavailable the selection stays put so the saved mode is never lost.
+                List<ResolutionEntry> entries = _resolutionPicker.Entries;
+                int separatorIndex = entries.IndexOf(committed);
+                int previousIndex = entries.IndexOf(_resolutionPicker.SelectedEntry);
+                if (!_resolutionPicker.IsSavedModeUnavailable && separatorIndex >= 0 && previousIndex >= 0 && previousIndex != separatorIndex)
+                {
+                    int targetIndex = previousIndex < separatorIndex ? separatorIndex + 1 : separatorIndex - 1;
+                    if (targetIndex >= 0 && targetIndex < entries.Count)
+                    {
+                        _resolutionPicker.SelectEntry(entries[targetIndex]);
+                    }
+                }
+            }
+            else
+            {
+                _resolutionPicker.SelectEntry(committed);
+            }
+            // Whatever SelectEntry refused is restored by this resync
+            syncResolutionControls();
+        }
+
+        private void cBoxRefreshRate_SelectionChangeCommitted(object sender, EventArgs e)
+        {
+            if (_syncingResolution)
+            {
+                return;
+            }
+            ResolutionChoice choice = this.cBoxRefreshRate.SelectedItem as ResolutionChoice;
+            if (choice != null)
+            {
+                _resolutionPicker.SelectRefreshRate(choice.Value);
+            }
+            syncResolutionControls();
+        }
+
+        private void cBoxScaling_SelectionChangeCommitted(object sender, EventArgs e)
+        {
+            if (_syncingResolution)
+            {
+                return;
+            }
+            ResolutionChoice choice = this.cBoxScaling.SelectedItem as ResolutionChoice;
+            if (choice != null)
+            {
+                _resolutionPicker.SelectScaling(choice.Value);
+            }
+            syncResolutionControls();
+        }
+
+        private void checkBoxStarResolution_CheckedChanged(object sender, EventArgs e)
+        {
+            if (_syncingResolution)
+            {
+                return;
+            }
+            _resolutionPicker.ToggleStar();
+            // The catalog copies the preferences it is built with, so the changed set lives on the catalog
+            if (_saveResolutionStars != null)
+            {
+                _saveResolutionStars(_resolutionPicker.Catalog.Stars);
+            }
+            syncResolutionControls();
+        }
+
+        // Mirrors the picker into the four controls. Entries is rebuilt in place by the picker, so the
+        // items are refilled by hand instead of rebinding a DataSource (which would not notice the change).
+        private void syncResolutionControls()
+        {
+            bool wasSyncing = _syncingResolution;
+            _syncingResolution = true;
+            try
+            {
+                ResolutionEntry selected = _resolutionPicker.SelectedEntry;
+
+                this.cBoxResolution.BeginUpdate();
+                try
+                {
+                    this.cBoxResolution.Items.Clear();
+                    foreach (ResolutionEntry entry in _resolutionPicker.Entries)
+                    {
+                        this.cBoxResolution.Items.Add(entry);
+                    }
+                    this.cBoxResolution.SelectedItem = selected;
+                }
+                finally
+                {
+                    this.cBoxResolution.EndUpdate();
+                }
+
+                fillChoices(this.cBoxRefreshRate, _resolutionPicker.RefreshRateChoices, _resolutionPicker.SelectedRefreshRate);
+                fillChoices(this.cBoxScaling, _resolutionPicker.ScalingChoices, _resolutionPicker.SelectedScaling);
+
+                this.checkBoxStarResolution.Checked = selected != null && selected.IsStarred;
+                // The warning takes the place of the rate / scaling row: the unavailable entry's own text already names the saved values
+                bool unavailable = _resolutionPicker.IsSavedModeUnavailable;
+                this.labelResolutionUnavailable.Visible = unavailable;
+                this.labelRefreshRate.Visible = !unavailable;
+                this.cBoxRefreshRate.Visible = !unavailable;
+                this.labelScaling.Visible = !unavailable;
+                this.cBoxScaling.Visible = !unavailable;
+            }
+            finally
+            {
+                _syncingResolution = wasSyncing;
+            }
+            updateResolutionEnabled();
+        }
+
+        private static void fillChoices(System.Windows.Forms.ComboBox box, List<ResolutionChoice> choices, uint selectedValue)
+        {
+            box.BeginUpdate();
+            try
+            {
+                box.Items.Clear();
+                ResolutionChoice current = null;
+                foreach (ResolutionChoice choice in choices)
+                {
+                    box.Items.Add(choice);
+                    if (choice.Value == selectedValue)
+                    {
+                        current = choice;
+                    }
+                }
+                box.SelectedItem = current;
+            }
+            finally
+            {
+                box.EndUpdate();
+            }
+        }
+
+        private void updateResolutionEnabled()
+        {
+            bool enabled = this.checkBoxResolution.Checked && !_v.GetVibranceInfo().neverChangeResolution;
+            bool modeAvailable = !_resolutionPicker.IsSavedModeUnavailable;
+            this.cBoxResolution.Enabled = enabled;
+            this.cBoxRefreshRate.Enabled = enabled && modeAvailable;
+            this.cBoxScaling.Enabled = enabled && modeAvailable;
+            this.checkBoxStarResolution.Enabled = enabled && _resolutionPicker.CanToggleStar;
         }
 
         private void buttonReset_Click(object sender, EventArgs e)
@@ -299,7 +465,8 @@ namespace vibrance.GUI.common
             this.trackBarContrast.Value = 50;
             this.trackBarGamma.Value = 100;
             this.checkBoxResolution.Checked = false;
-            this.cBoxResolution.SelectedIndex = 0;
+            _resolutionPicker.SelectDefault();
+            syncResolutionControls();
 
             // Reset clears any separate HDR level back to "none configured" (HdrLevelUnset, via
             // GetApplicationSetting reading the unchecked checkbox) rather than leaving a stale

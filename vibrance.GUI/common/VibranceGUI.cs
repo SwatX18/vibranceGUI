@@ -2664,7 +2664,17 @@ namespace vibrance.GUI.common
                 //captured before the dialog runs, "Change executable..." is allowed to replace the path
                 string originalFileName = selectedItem.Tag.ToString();
                 ApplicationSetting actualSetting = _applicationSettings.FirstOrDefault(x => x.FileName == originalFileName);
-                VibranceSettings settingsWindow = new VibranceSettings(_v, _minTrackBarValue, _maxTrackBarValue, _defaultIngameValue, selectedItem, actualSetting, _supportedResolutionList, _graphicsAdapter);
+                // The mode Windows currently uses on the primary screen decides which list entry is "native"
+                ResolutionModeWrapper windowsResolutionMode = null;
+                Screen primaryScreen = Screen.PrimaryScreen;
+                Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>> primaryEntry;
+                if (primaryScreen != null && _windowsResolutionSettings.TryGetValue(primaryScreen.DeviceName, out primaryEntry))
+                {
+                    windowsResolutionMode = primaryEntry.Item1;
+                }
+                // Starred sizes are global and written immediately, even if the dialog is cancelled afterwards
+                VibranceSettings settingsWindow = new VibranceSettings(_v, _minTrackBarValue, _maxTrackBarValue, _defaultIngameValue, selectedItem, actualSetting, _supportedResolutionList,
+                    windowsResolutionMode, new SettingsController().ReadResolutionStars(), stars => new SettingsController().SetResolutionStars(stars), _graphicsAdapter);
                 DialogResult result = settingsWindow.ShowDialog();
                 if (result == DialogResult.OK)
                 {
