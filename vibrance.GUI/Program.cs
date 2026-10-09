@@ -39,6 +39,7 @@ namespace vibrance.GUI
         private const string ResolutionPersistenceSelfTestMessageBoxCaption = "vibranceGUI persisted resolution restore self test";
         private const string GameExitSelfTestMessageBoxCaption = "vibranceGUI game exit watcher self test";
         private const string ScalingSelfTestMessageBoxCaption = "vibranceGUI display scaling self test";
+        private const string ResolutionPickerSelfTestMessageBoxCaption = "vibranceGUI resolution picker self test";
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
@@ -300,6 +301,15 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, DisplayScalingFixture.Run().ToArray()),
                     ScalingSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: ResolutionCatalogFixture drives the resolution picker model
+            // over fake mode lists and a temp INI - fakes only, no hardware, no display change.
+            if (args.Contains("--selftest-resolution-picker"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, ResolutionCatalogFixture.Run().ToArray()),
+                    ResolutionPickerSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

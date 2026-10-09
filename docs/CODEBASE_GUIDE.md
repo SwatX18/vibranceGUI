@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 996 automated checks across eighteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 1251 automated checks across nineteen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture, and neither has the NVIDIA display-scaling write
@@ -451,13 +451,13 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 996 of them across eighteen
-  `*Fixture.cs` files — fourteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
+- **There is no test project**, but there are automated checks: 1251 of them across nineteen
+  `*Fixture.cs` files — fifteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
   (`NvidiaInteropFixture.cs`, §7.3, and `DisplayScalingFixture.cs`, §7.10) in `vibrance.GUI/NVIDIA/` —
-  compiled into the app and run through eighteen `--selftest-*` flags (one per fixture except
+  compiled into the app and run through nineteen `--selftest-*` flags (one per fixture except
   `UpdateCheckFixture`, which has none and runs only through the reflection harness, plus the opt-in
   hardware variant `--selftest-gamma-display`) dispatched early in `Program.cs`, but *after* the
-  single-instance mutex (`Program.cs:85`, second-instance bail at `:120-121`, the flags at `:171-381`), so a fixture will not run
+  single-instance mutex (`Program.cs:86`, second-instance bail at `:121-122`, the flags at `:172-391`), so a fixture will not run
   while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
   reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`
   at all, since every `--selftest-*` flag does) instead has its `Run()` called directly by reflection —
@@ -472,17 +472,21 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
   They report through `Checklist` (PASS/FAIL/SKIP), not a third-party assertion library, so
   searching for `Assert.` or
   `*Test*` finds nothing and wrongly suggests the project is untested.
-- **Per-fixture totals as last run for this revision** (self-reported `PASSED n/n`, identical on x86 and
-  x64): CliOptions 52, DisplayScaling 98, ExecutablePicker 7, GameExit 70, GraphicsAdapter 55,
-  HdrVibrance 58, Matching 55, NvidiaInterop 53, ProfileToggle 91, ResolutionChange 221,
-  ResolutionRestorePersistence 40, Stability 6, StartMenuShortcutSource 14, StartupForeground 11,
-  VibranceRestore 38, VibranceRestorePersistence 40, UpdateCheck 66 — **975 across seventeen
-  fixtures**. `GammaRestoreFixture` was **not** run in that pass (hardware); the 996 above adds its last
-  documented count, 21, so it is composed from two runs, not observed as one. The two fixtures new in
-  this revision both run on fakes only and have no hardware variant: `GameExitFixture`
-  (`--selftest-gameexit`, [§6.11](#611-restoring-when-the-game-exits-the-game-exit-watcher)) and
-  `DisplayScalingFixture` (`--selftest-scaling`,
-  [§7.10](#710-display-scaling-the-gpu--display-toggle)).
+- **Per-fixture totals as last run for this revision** (self-reported `PASSED n/n`, one pass of the
+  headless reflection harness over the x86 `Debug` build; x64 was **not** re-run for this revision):
+  CliOptions 52, DisplayScaling 98, ExecutablePicker 7, GameExit 70, GammaRestore 21,
+  GraphicsAdapter 55, HdrVibrance 58, Matching 55, NvidiaInterop 53, ProfileToggle 91,
+  ResolutionCatalog 255, ResolutionChange 221, ResolutionRestorePersistence 40, Stability 6,
+  StartMenuShortcutSource 14, StartupForeground 11, VibranceRestore 38, VibranceRestorePersistence 40,
+  UpdateCheck 66 — **1251 across nineteen fixtures**, all observed in that one pass. Unlike the
+  previous revision's count, `GammaRestoreFixture` **was** run this time, but only its pure half
+  (`Run()`, the same code `--selftest-gamma` runs, on fake displays); its hardware half
+  (`RunWithDisplay()`, `--selftest-gamma-display`, which writes a probe ramp to a real monitor) was
+  **not** run, so its 21 says nothing about a real display's gamma ramp. The one fixture new in this
+  revision runs on fakes only and has no hardware variant: `ResolutionCatalogFixture`
+  (`--selftest-resolution-picker`,
+  [§11.8](#118-resolutioncatalog-and-resolutionpicker)). Its dialog checks construct a real
+  `VibranceSettings` form but never show it.
 - **The harness has no staleness guard, and a failed build reports green.** MSBuild leaves the
   previous `vibrance.GUI.exe` in `bin/` when compilation fails, and the reflection harness loads
   whatever is there without ever learning that a build failed - so a source tree that does not
@@ -609,7 +613,8 @@ vibranceGUI/
     │   │   forms and their designers
     │   ├── VibranceGUI.cs             main form + de-facto orchestrator (2781 lines) (§6, §10.1)
     │   ├── VibranceGUI.Designer.cs    control layout (German designer comments)
-    │   ├── VibranceSettings.cs        per-game modal dialog, incl. the HDR level (§10.2)
+    │   ├── VibranceSettings.cs        per-game modal dialog, incl. the HDR level and the
+    │   │                              resolution picker (§10.2)
     │   ├── VibranceSettings.Designer.cs
     │   ├── ProcessExplorer.cs         running-process picker (§10.3)
     │   ├── ProcessExplorer.Designer.cs
@@ -663,6 +668,8 @@ vibranceGUI/
     │   │                                    TryRestorePersistedMode, D4's resolution replay verify
     │   │                                    gate (§9.9)
     │   ├── ResolutionModeWrapper.cs        serialisable display mode (§11.3)
+    │   ├── ResolutionCatalog.cs            per-game resolution picker model: sizes, refresh rates,
+    │   │                                    per-mode scaling, stars, unavailable saved mode (§11.8)
     │   ├── ResolutionAdoptionDebouncer.cs  a mode must hold before it is adopted as the desktop's
     │   ├── FormsResolutionAdoptionTimer.cs the one-shot timer behind that debounce
     │   ├── WindowsResolutionRefresher.cs   re-reads the user's own mode after a change
@@ -687,11 +694,13 @@ vibranceGUI/
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
     │   ├── CliOptionsFixture.cs        52 checks
     │   ├── GameExitFixture.cs          70 checks — run via --selftest-gameexit (§6.11)
-    │   ├── GammaRestoreFixture.cs      21 checks (last documented count; not re-run this revision)
+    │   ├── GammaRestoreFixture.cs      21 checks (pure half only; the hardware half,
+    │   │                                --selftest-gamma-display, was not run)
     │   ├── GraphicsAdapterFixture.cs   55 checks
     │   ├── HdrVibranceFixture.cs       58 checks
     │   ├── MatchingFixture.cs          55 checks
     │   ├── ProfileToggleFixture.cs     91 checks
+    │   ├── ResolutionCatalogFixture.cs 255 checks — run via --selftest-resolution-picker (§11.8)
     │   ├── ResolutionChangeFixture.cs 221 checks
     │   ├── StabilityFixture.cs          6 checks
     │   ├── StartupForegroundFixture.cs 11 checks
@@ -1200,9 +1209,15 @@ driver would reject before anything is written — which matters because `CDS_UP
 `EnumDisplaySettings` reported it set — and leaves `dmDisplayFixedOutput` exactly as read, so the
 driver keeps whatever scaling it already had. Because the bit is then absent, step 4's fallback retry,
 which requires the bit to have been declared, **never fires for `Default`**: a rejected `CDS_TEST` fails
-after one call. The per-game dialog's resolution combo box now says this in a tooltip: "Default = let
-the driver decide (it may keep a previous Center/Stretch choice for this resolution). Center/Stretch
-force that scaling." `ResolutionChangeFixture` pins the cleared bit, the untouched value, the surviving
+after one call. The per-game dialog says this in a tooltip which, since the resolution picker
+([§10.2](#102-vibrancesettings--the-per-game-modal-dialog)), sits on the separate **Scaling** combo
+(`cBoxScaling`) rather than on the resolution combo: "Default = let the driver decide (it may keep a
+previous Center/Stretch choice for this resolution). Center/Stretch force that scaling. Where scaling
+happens (GPU or display) is set in the main window." That last sentence points at a **different**
+setting: the per-game Scaling combo picks a mode's `dmDisplayFixedOutput` (saved in the profile),
+while the main window's v2.11.0 "GPU / Display" toggle
+([§7.10](#710-display-scaling-the-gpu--display-toggle)) picks which device does the scaling, through
+NvAPI, for the primary display. `ResolutionChangeFixture` pins the cleared bit, the untouched value, the surviving
 `DM_POSITION`, the single `CDS_TEST` on rejection, a `Center` control case, and a revert from a `Center`
 game mode to a desktop mode captured as `Default`.
 
@@ -2438,11 +2453,26 @@ keys are read in one pass by `ReadVibranceSettings` and written in one pass by `
 | `graphicsAdapter` | `SzKeyNameGraphicsAdapter` (`:40`) | `:153` (`SetGraphicsAdapterPreference`) | `:122-128` (`ReadGraphicsAdapterPreference`) | `""` (`:125`) → `Unknown` | `"Nvidia"` or `"Amd"`, the vendor picked in the both-drivers dialog; the writer rejects every other value (`:148-151`) |
 | `toggleHotkey` | `SzKeyNameToggleHotkey` (`:41`) | `:189` (`SetToggleHotkey`) | `:171-177` (`ReadToggleHotkey`) | `""` (`:174`) → no binding | the toggle hotkey's canonical text, e.g. `Ctrl+Alt+F9` |
 | `toggleHotkeyEnabled` | `SzKeyNameToggleHotkeyEnabled` (`:42`) | `:223` (`SetToggleHotkeyEnabled`) | `:205-211` (`ReadToggleHotkeyEnabled`) | **`"False"`** (`:208`) → disabled | `bool.TryParse`d, so an unparseable value is `false` too (`:214`) |
-| `resolutionChangeNotification` | `SzKeyNameResolutionChangeNotification` (`:44`) | `:288` (`SetResolutionChangeNotificationEnabled`) | `:267-284` (`ReadResolutionChangeNotificationEnabled`) | **`"True"`** → the notice is **on** | `bool.TryParse`d; a missing file, a missing key or an unparseable value all read as `true`, like `updateCheckEnabled` (§3.8). Written immediately from `checkBoxNotifyResolution` ("Notify when a game's resolution is changed"), not through the debounced save. Gates the balloon in §6.9 |
+| `resolutionChangeNotification` | `SzKeyNameResolutionChangeNotification` (`:44`) | `:290` (`SetResolutionChangeNotificationEnabled`) | `:269-286` (`ReadResolutionChangeNotificationEnabled`) | **`"True"`** → the notice is **on** | `bool.TryParse`d; a missing file, a missing key or an unparseable value all read as `true`, like `updateCheckEnabled` (§3.8). Written immediately from `checkBoxNotifyResolution` ("Notify when a game's resolution is changed"), not through the debounced save. Gates the balloon in §6.9 |
+| `starredResolutions` | `SzKeyNameStarredResolutions` (`:46`) | `:322` (`SetResolutionStars`) | `:298-315` (`ReadResolutionStars`, through `ReadStarList`, `:332-342`) | `""` → no extra stars | comma-separated `WxH` tokens, e.g. `1600x900,2560x1440`: the **non-default** sizes the user starred in the per-game resolution picker (§10.2). Global, not per display |
+| `unstarredResolutions` | `SzKeyNameUnstarredResolutions` (`:47`) | `:323` (`SetResolutionStars`) | `:298-315` (`ReadResolutionStars`, through `ReadStarList`, `:332-342`) | `""` → every default candidate stays starred | same format: the **default candidates** (§11.8) the user unstarred |
 
 `resolutionChangeNotification` is newer than the "eleven keys" count above, as are `updateCheckEnabled`
 and `lastUpdateCheckUtc` (described in §3.8, not in this table). It is also the one boolean here that
 defaults to **on**.
+
+`starredResolutions` and `unstarredResolutions` (branch `work/60-resolution-picker`) are newer still,
+and are likewise outside the "eleven keys" and P/Invoke-call counts above: both are read by the one
+`GetPrivateProfileString` call in `ReadStarList` (a 4096-char buffer, trimmed) and written through
+`SetVibranceSetting`. Together they store a **delta** against the built-in default star list
+(`ResolutionCatalog.DefaultStarCandidates`, §11.8), so changing the defaults later never needs to
+rewrite anyone's INI. On write, tokens use a lowercase `x` and are deduplicated and sorted (width,
+then height); `SetResolutionStars` always writes both keys. On read (`ResolutionStarPreferences.Parse`)
+an uppercase `X` and surrounding whitespace are accepted, and malformed, zero, duplicate and mis-filed
+tokens (a default candidate under `starredResolutions`, a non-default size under
+`unstarredResolutions`) are silently dropped; a missing file, a missing key or any exception reads as
+empty, i.e. defaults only. Both are written **immediately** whenever the dialog's "Starred" box is
+toggled — not through the debounced save, and not undone if the dialog is then cancelled.
 
 **Every boolean in the original eleven defaults to the feature being off**, and the two `never…` keys are double
 negatives, so the literal in the code reads backwards from the behaviour. On a machine with no INI at
@@ -2926,39 +2956,90 @@ Behavioural details worth knowing:
 
 ### 10.2 `VibranceSettings` — the per-game modal dialog
 
-`ClientSize 270×266`, `CenterParent`, `FixedSingle`. Contains the game icon, a title ("Settings for
+`ClientSize 405×997`, `CenterParent`, `FixedSingle`. Contains the game icon, a title ("Settings for
 \"csgo\""), an "Ingame Vibrance Level" trackbar with its label, and an "Ingame Resolution" group
 (a "For (Borderless) Windowed Mode players only!" note, the "Change Resolution when Ingame" checkbox and
-the mode combo), plus Save.
+the resolution picker described below), plus Save.
 
 Data flow, in full:
 
 ```
-VibranceGUI.listApplications_DoubleClick            (VibranceGUI.cs:1638-1678)
+VibranceGUI.listApplications_DoubleClick                  (VibranceGUI.cs:2654-2704)
+  windowsResolutionMode = _windowsResolutionSettings[Screen.PrimaryScreen.DeviceName].Item1
+                          /* null when there is no entry for the primary screen */  (:2667-2674)
   new VibranceSettings(_v, _minTrackBarValue, _maxTrackBarValue, _defaultIngameValue,
                        selectedItem /* ListViewItem */, actualSetting /* may be null */,
-                       _supportedResolutionList, _resolveLabelLevel)
+                       _supportedResolutionList, windowsResolutionMode,
+                       new SettingsController().ReadResolutionStars(),
+                       stars => new SettingsController().SetResolutionStars(stars),
+                       _graphicsAdapter)            /* internal ctor, VibranceSettings.cs:42-120 */
+      ├─ _resolutionPicker = new ResolutionPicker(ResolutionCatalog.Build(
+      │      supportedResolutionList, windowsResolutionMode, resolutionStars))      (:70)
+      └─ _resolutionPicker.Load(setting?.ResolutionSettings)   /* null -> SelectDefault */  (:118)
   ShowDialog()
-      └─ buttonSave_Click  ->  DialogResult.OK                      (VibranceSettings.cs:101-105)
+      ├─ "Starred" toggled  ->  ToggleStar(); saveResolutionStars(Catalog.Stars)    (:369-382)
+      │                         /* written to the INI now, even if the dialog is cancelled */
+      └─ buttonSave_Click   ->  DialogResult.OK                                      (:174-178)
   if OK:
-      newSetting = settingsWindow.GetApplicationSetting()            (VibranceSettings.cs:107-116)
-                 = new ApplicationSetting(_sender.Text, _sender.Tag.ToString(),
+      newSetting = settingsWindow.GetApplicationSetting()                            (:180-196)
+                 = new ApplicationSetting(resolveApplicationName(), _filePath,
                        trackBarIngameLevel.Value,
-                       (ResolutionModeWrapper)cBoxResolution.SelectedItem,
-                       checkBoxResolution.Checked)
+                       _resolutionPicker.GetSelectedMode(),
+                       checkBoxResolution.Checked, brightness, contrast, gamma)
+                   + InstallDirectory, IsExecutableUnconfirmed, HdrIngameLevel
       remove any existing entry with the same FileName, add newSetting, ForceSaveVibranceSettings()
   else if the setting was new:
-      roll back the ListViewItem that was just added                 (VibranceGUI.cs:1673-1676)
+      roll back the ListViewItem that was just added                 (VibranceGUI.cs:2699-2702)
 ```
 
+**The resolution picker** (branch `work/60-resolution-picker`). The old single combo listed every raw
+`EnumDisplaySettings` mode — one row per size × rate × bit depth × scaling — as
+`ResolutionModeWrapper.ToString()`. It is now four controls that only **mirror** a `ResolutionPicker`
+([§11.8](#118-resolutioncatalog-and-resolutionpicker)); the dialog holds no selection state of its own.
+
+| Control | Shows | Handler (`VibranceSettings.cs`) |
+|---|---|---|
+| `cBoxResolution` (`DropDownList`) | one row per **size**: the starred section (native first, every row prefixed `★ `), one `----------------` separator, then the rest — e.g. `★ 2560 x 1440 (16:9, native)`, `1366 x 768 (16:9)` | `cBoxResolution_SelectionChangeCommitted` (`:308-339`) |
+| `checkBoxStarResolution` ("Starred") | whether the selected size is starred | `checkBoxStarResolution_CheckedChanged` (`:369-382`) |
+| `labelRefreshRate` + `cBoxRefreshRate` | the selected size's refresh rates, highest first | `cBoxRefreshRate_SelectionChangeCommitted` (`:341-353`) |
+| `labelScaling` + `cBoxScaling` | the per-mode scaling values (`dmDisplayFixedOutput`: Default / Center / Stretch) offered at that size and rate; carries the tooltip quoted in [§6.4](#64-the-optional-resolution-switch) | `cBoxScaling_SelectionChangeCommitted` (`:355-367`) |
+| `labelResolutionUnavailable` (Firebrick, hidden by default) | "This display doesn't offer the saved mode. Save keeps it; pick a resolution to replace it." — shown **in place of** the refresh-rate/scaling row | — |
+
+Each handler forwards to the picker and then calls `syncResolutionControls` (`:386-426`), which refills
+every combo by hand (not through a `DataSource`, because the picker rebuilds `Entries` in place and a
+binding would not notice), restores the selection, and swaps the warning label for the rate/scaling row
+when `IsSavedModeUnavailable`. It runs under `_syncingResolution`, which every handler checks first, so
+its own programmatic changes never re-enter them. `updateResolutionEnabled` (`:451-459`) enables the
+resolution combo only while "Change Resolution when Ingame" is ticked and `neverChangeResolution` is
+off; the rate and scaling combos are additionally disabled while the saved mode is unavailable, and the
+"Starred" box whenever `CanToggleStar` is false (the native size, which is always starred, or an
+unavailable saved mode).
+
+- **The separator is a real item.** Arrow keys and the mouse wheel step onto it one entry at a time, so
+  the handler continues one more entry in the direction the selection came from rather than refusing
+  it, which would trap the keyboard on its near side (`:315-332`). While the saved mode is unavailable
+  the selection stays put instead, so the saved mode is never lost by accident.
+- **What Save writes.** `GetSelectedMode()` returns the matching instance **from
+  `_supportedResolutionList` itself**, or — while the saved mode is not offered — the saved instance
+  unchanged, so opening and saving a profile whose mode this display lacks never rewrites it.
+- **Stars bypass Save and Cancel.** Toggling "Starred" persists the whole star set at once through the
+  `saveResolutionStars` callback (`starredResolutions`/`unstarredResolutions`,
+  [§9.2](#92-file-formats)); this is deliberate, since stars are a global preference, not part of the
+  profile being edited.
+- **Two kinds of "scaling".** `cBoxScaling` is the per-mode `dmDisplayFixedOutput` stored in **this
+  game's profile**. It has nothing to do with the main window's v2.11.0 "Scale (primary display): GPU /
+  Display" toggle ([§7.10](#710-display-scaling-the-gpu--display-toggle)), an NvAPI setting that decides
+  which device performs the scaling; the picker never reads or writes that.
+
 Two traps live here. The dialog's icon comes from `_sender.ListView.LargeImageList.Images[_sender.ImageIndex]`
-(`VibranceSettings.cs:59`, `VibranceSettings`), so the `ImageIndex` bookkeeping in the main form is load-bearing. And the
-resolution combo is always filled from `_supportedResolutionList`, which is **only the primary
-monitor's mode list** (`VibranceGUI.cs:216-221`, `VibranceGUI`) — for a game on a secondary monitor you can only pick
+(`VibranceSettings.cs:68`, `VibranceSettings`), so the `ImageIndex` bookkeeping in the main form is load-bearing. And the
+resolution picker is always built from `_supportedResolutionList`, which is **only the primary
+monitor's mode list** (`VibranceGUI.cs:243-248`, `VibranceGUI`), and "native" likewise comes from the
+primary screen's current Windows mode — for a game on a secondary monitor you can only pick
 modes the primary supports, and if the secondary does not support the chosen mode the `Contains` guard
 in the proxy silently skips the change with no feedback.
 
-`trackBarIngameLevel_Scroll` (`:76-81`) calls `_v.SetVibranceIngameLevel(...)`, which does nothing
+`trackBarIngameLevel_Scroll` (`:122-127`) calls `_v.SetVibranceIngameLevel(...)`, which does nothing
 ([§2.2](#22-five-facts-that-will-bite-you-first)), and updates the label.
 
 ### 10.3 `ProcessExplorer` — the running-process picker
@@ -3073,7 +3154,9 @@ parameterless constructor for XML and one taking a `Devmode` (`:18-25`).
 - `ToString()` (`:27-31`) uses **deliberately shuffled format indices** —
   `"{0} x {1} @ {3} hz ({2} bit, {4})"`, e.g. `1920 x 1080 @ 144 hz (32 bit, Default)`. The last token
   is `Enum.GetName(typeof(Dmdfo), DmDisplayFixedOutput)`, which returns `null` for out-of-range values.
-  This is the text shown in the settings combo box.
+  The per-game dialog **no longer displays it**: since the resolution picker, its combos show
+  `ResolutionEntry` and `ResolutionChoice` labels instead
+  ([§11.8](#118-resolutioncatalog-and-resolutionpicker)).
 - `Equals` (`:33-56`) accepts **either** a `ResolutionModeWrapper` **or** a raw `Devmode` (converting on
   the fly) and compares all five fields; `GetHashCode()` (`:58-67`) is overridden to match.
 - `MatchesAchievedMode(Devmode)` (`:84-90`, added on `work/resolution-change`) — a **second**,
@@ -3132,6 +3215,77 @@ Added on `work/resolution-change`, alongside the seam described in
   `Applied`, `AlreadyMatching`, `Failed`, `Suppressed`.
 - `public class ResolutionFailureEventArgs : EventArgs` (`:40-54`, a **sibling** top-level type, not
   nested) — `DeviceName`, `Target`, `FailureCode`, `IsRevert`, `IsGivingUp`.
+
+### 11.8 `ResolutionCatalog` and `ResolutionPicker`
+
+`vibrance.GUI/common/ResolutionCatalog.cs` (branch `work/60-resolution-picker`) — the model behind the
+per-game resolution picker ([§10.2](#102-vibrancesettings--the-per-game-modal-dialog)). Six
+`internal sealed` types with no `System.Windows.Forms` dependency, so `ResolutionCatalogFixture` can
+drive all of it with fake mode lists. `ResolutionModeWrapper` (§11.3) is **unchanged**, so the
+`applicationData.xml` format is too. The header comment (`:12-19`) separates the two meanings of
+"scaling": per-mode `dmDisplayFixedOutput` (this file) versus the v2.11.0 GPU/Display toggle
+([§7.10](#710-display-scaling-the-gpu--display-toggle)), which nothing here touches.
+
+| Type | Lines | Role |
+|---|---|---|
+| `ResolutionSize` | `:21-90` | width × height with value equality. `ToToken()` → `1920x1080` (INI), `ToString()` → `1920 x 1080` (UI). `TryParse` trims and accepts `x` or `X`; rejects null, garbage, signs, overflow and a zero side |
+| `ResolutionStarPreferences` | `:96-167` | the star **delta**: `Added` (non-default sizes starred) and `Removed` (default candidates unstarred). `Parse` never throws; `FormatAdded`/`FormatRemoved` sort by width, then height (§9.2) |
+| `ResolutionEntry` | `:171-238` | one resolution-combo row: a size, the separator, or the unavailable saved mode |
+| `ResolutionChoice` | `:241-257` | one refresh-rate or scaling combo item: the raw `uint` value plus its label |
+| `ResolutionCatalog` | `:261-621` | what the display offers, grouped; built once per dialog |
+| `ResolutionPicker` | `:625-876` | the selection state machine; the dialog only renders it |
+
+**`ResolutionCatalog` rules.**
+
+- **Grouping.** Null modes and modes with a zero width or height are dropped. One `ResolutionSize` per
+  distinct (width, height), ordered by width, then height, both descending.
+- **Refresh rates** (`GetRefreshRates`, `:478-499`): distinct, highest first; `0` and `1` (the
+  hardware-default rate, labelled "Default rate") always sort last.
+- **Scalings** (`GetScalings`, `:508-524`): the distinct raw `DmDisplayFixedOutput` values at that
+  (size, rate), ordered Default (0), Center (2), Stretch (1), then unknown values ascending, labelled
+  "Unknown (n)". Kept as `uint` and never cast to `Dmdfo` (§11.7), so an unknown driver value survives
+  a round trip.
+- **Native** (`DetermineNative`, `:332-359`): the size of the mode Windows is using if the list offers
+  it, else the largest area (the wider one on a tie), null for an empty list.
+- **Aspect label** (`DescribeAspect`, `:362-386`): the nearest of 4:3, 5:4, 3:2, 16:10, 16:9, 21:9 and
+  32:9 within 3% relative tolerance, else no label — so 1366×768 reads 16:9 and 2560×1080 reads 21:9.
+  Label only; nothing else depends on it.
+- **Stars.** `DefaultStarCandidates` (`:263-272`): 1280×960, 1440×1080, 1024×768, 1680×1050, 1280×800,
+  1920×1080, 1280×720. Effective star (`IsStarred`, `:429-444`) = native **or** (default candidate not
+  in `Removed`) **or** in `Added`; a size the display does not offer is never starred, so the defaults
+  only ever show up where they exist. The native size is pinned: `SetStarred` is a no-op for it. The
+  catalog keeps a **private copy** of the preferences it is built with (`:310-322`), which is why the
+  dialog persists `Catalog.Stars` rather than the object it passed in.
+- **Entries** (`BuildEntries`, `:568-598`): the starred sizes (native first, then largest first), one
+  separator **only** when both sections are non-empty, then the rest.
+- **`Resolve`** (`:528-547`) returns the **instance from the supported list**, not a copy, matching size,
+  rate and scaling at the preferred bit depth, else the highest bit depth available, else null.
+  **`FindExact`** (`:550-564`) finds the instance that `Equals` a saved mode on all five fields.
+
+**`ResolutionPicker` rules.**
+
+- **New profile and Reset** (`SelectDefault`, `:735-748`): native size, highest rate, Default scaling
+  (else the first one offered), 32 bpp.
+- **Changing the size** (`SelectEntry`, `:752-780`) resets the rate to the new size's highest, keeps
+  the scaling if the new (size, rate) offers it (else Default, else the first), and resets the bit
+  depth to 32. **Changing the rate** applies the same scaling fallback but keeps the bit depth, so a
+  loaded profile carries its saved bit depth until the user picks a different size. `SelectEntry`
+  refuses null and the separator.
+- **A saved mode the display does not offer** (`Load`, `:706-732`): when no supported mode `Equals` it
+  — a missing size, rate, scaling or bit depth all count — an extra entry is inserted at index 0 and
+  selected, reading for example `1920 x 1080 @ 240 Hz, Stretch (not offered by this display)`. The rate
+  and scaling choices then contain only the saved values, `CanToggleStar` is false, and
+  `GetSelectedMode()` returns the saved instance itself, so Save and Cancel both leave the profile as it
+  was. Selecting any real entry removes the extra entry and clears `IsSavedModeUnavailable`.
+- **`ToggleStar`** (`:804-814`) flips the selected size's star, rebuilds `Entries` in place (the same
+  list instance for the picker's lifetime) and keeps the selection. Persisting is the caller's job.
+
+**Coverage.** `ResolutionCatalogFixture` (255 checks, `--selftest-resolution-picker`) has seven groups:
+grouping and ordering; highest rate, size change and scaling fallback; default stars; star persistence
+through a `SettingsController` pointed at a temp INI; the picker round trip including unavailable
+saved modes; the dialog (a real `VibranceSettings` built from a saved profile and read back, never
+shown); and edge cases (empty, single and odd lists, duplicates, INI abuse). All of it runs on fake mode
+lists. Nothing in that suite feeds the picker a real display's `EnumDisplaySettings` output.
 
 ---
 

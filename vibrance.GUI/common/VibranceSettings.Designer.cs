@@ -42,6 +42,12 @@
             this.pictureBox = new System.Windows.Forms.PictureBox();
             this.cBoxResolution = new System.Windows.Forms.ComboBox();
             this.groupBox1 = new System.Windows.Forms.GroupBox();
+            this.checkBoxStarResolution = new System.Windows.Forms.CheckBox();
+            this.labelRefreshRate = new System.Windows.Forms.Label();
+            this.cBoxRefreshRate = new System.Windows.Forms.ComboBox();
+            this.labelScaling = new System.Windows.Forms.Label();
+            this.cBoxScaling = new System.Windows.Forms.ComboBox();
+            this.labelResolutionUnavailable = new System.Windows.Forms.Label();
             this.labelResolution = new System.Windows.Forms.Label();
             this.checkBoxResolution = new System.Windows.Forms.CheckBox();
             this.groupBoxBrightness = new System.Windows.Forms.GroupBox();
@@ -140,7 +146,7 @@
             //
             // buttonSave
             // 
-            this.buttonSave.Location = new System.Drawing.Point(247, 906);
+            this.buttonSave.Location = new System.Drawing.Point(247, 946);
             this.buttonSave.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonSave.Name = "buttonSave";
             this.buttonSave.Size = new System.Drawing.Size(140, 37);
@@ -171,25 +177,33 @@
             // 
             // cBoxResolution
             // 
+            this.cBoxResolution.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            this.cBoxResolution.DropDownWidth = 349;
             this.cBoxResolution.Enabled = false;
             this.cBoxResolution.FormattingEnabled = true;
             this.cBoxResolution.Location = new System.Drawing.Point(9, 88);
             this.cBoxResolution.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.cBoxResolution.Name = "cBoxResolution";
-            this.cBoxResolution.Size = new System.Drawing.Size(349, 28);
-            this.cBoxResolution.TabIndex = 17;
-            this.toolTip.SetToolTip(this.cBoxResolution, "Default = let the driver decide (it may keep a previous Center/Stretch choice for this resolution). Center/Stretch force that scaling.");
+            this.cBoxResolution.Size = new System.Drawing.Size(255, 28);
+            this.cBoxResolution.TabIndex = 2;
+            this.cBoxResolution.SelectionChangeCommitted += new System.EventHandler(this.cBoxResolution_SelectionChangeCommitted);
             // 
             // groupBox1
             // 
             this.groupBox1.Controls.Add(this.labelResolution);
             this.groupBox1.Controls.Add(this.checkBoxResolution);
             this.groupBox1.Controls.Add(this.cBoxResolution);
+            this.groupBox1.Controls.Add(this.checkBoxStarResolution);
+            this.groupBox1.Controls.Add(this.labelRefreshRate);
+            this.groupBox1.Controls.Add(this.cBoxRefreshRate);
+            this.groupBox1.Controls.Add(this.labelScaling);
+            this.groupBox1.Controls.Add(this.cBoxScaling);
+            this.groupBox1.Controls.Add(this.labelResolutionUnavailable);
             this.groupBox1.Location = new System.Drawing.Point(18, 680);
             this.groupBox1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBox1.Name = "groupBox1";
             this.groupBox1.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.groupBox1.Size = new System.Drawing.Size(369, 131);
+            this.groupBox1.Size = new System.Drawing.Size(369, 171);
             this.groupBox1.TabIndex = 19;
             this.groupBox1.TabStop = false;
             this.groupBox1.Text = "Ingame Resolution";
@@ -202,7 +216,7 @@
             this.labelResolution.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelResolution.Name = "labelResolution";
             this.labelResolution.Size = new System.Drawing.Size(360, 20);
-            this.labelResolution.TabIndex = 19;
+            this.labelResolution.TabIndex = 0;
             this.labelResolution.Text = "For (Borderless) Windowed Mode players only!";
             // 
             // checkBoxResolution
@@ -212,10 +226,81 @@
             this.checkBoxResolution.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.checkBoxResolution.Name = "checkBoxResolution";
             this.checkBoxResolution.Size = new System.Drawing.Size(271, 24);
-            this.checkBoxResolution.TabIndex = 18;
+            this.checkBoxResolution.TabIndex = 1;
             this.checkBoxResolution.Text = "Change Resolution when Ingame";
             this.checkBoxResolution.UseVisualStyleBackColor = true;
             this.checkBoxResolution.CheckedChanged += new System.EventHandler(this.checkBoxResolution_CheckedChanged);
+            //
+            // checkBoxStarResolution
+            //
+            this.checkBoxStarResolution.AutoSize = true;
+            this.checkBoxStarResolution.Enabled = false;
+            this.checkBoxStarResolution.Location = new System.Drawing.Point(272, 90);
+            this.checkBoxStarResolution.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxStarResolution.Name = "checkBoxStarResolution";
+            this.checkBoxStarResolution.Size = new System.Drawing.Size(84, 24);
+            this.checkBoxStarResolution.TabIndex = 3;
+            this.checkBoxStarResolution.Text = "Starred";
+            this.checkBoxStarResolution.UseVisualStyleBackColor = true;
+            this.checkBoxStarResolution.CheckedChanged += new System.EventHandler(this.checkBoxStarResolution_CheckedChanged);
+            //
+            // labelRefreshRate
+            //
+            this.labelRefreshRate.AutoSize = true;
+            this.labelRefreshRate.Location = new System.Drawing.Point(9, 133);
+            this.labelRefreshRate.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.labelRefreshRate.Name = "labelRefreshRate";
+            this.labelRefreshRate.Size = new System.Drawing.Size(88, 20);
+            this.labelRefreshRate.TabIndex = 4;
+            this.labelRefreshRate.Text = "Refresh rate";
+            //
+            // cBoxRefreshRate
+            //
+            this.cBoxRefreshRate.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            this.cBoxRefreshRate.Enabled = false;
+            this.cBoxRefreshRate.FormattingEnabled = true;
+            this.cBoxRefreshRate.Location = new System.Drawing.Point(100, 128);
+            this.cBoxRefreshRate.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.cBoxRefreshRate.Name = "cBoxRefreshRate";
+            this.cBoxRefreshRate.Size = new System.Drawing.Size(95, 28);
+            this.cBoxRefreshRate.TabIndex = 5;
+            this.cBoxRefreshRate.SelectionChangeCommitted += new System.EventHandler(this.cBoxRefreshRate_SelectionChangeCommitted);
+            //
+            // labelScaling
+            //
+            this.labelScaling.AutoSize = true;
+            this.labelScaling.Location = new System.Drawing.Point(205, 133);
+            this.labelScaling.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.labelScaling.Name = "labelScaling";
+            this.labelScaling.Size = new System.Drawing.Size(60, 20);
+            this.labelScaling.TabIndex = 6;
+            this.labelScaling.Text = "Scaling";
+            //
+            // cBoxScaling
+            //
+            this.cBoxScaling.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            this.cBoxScaling.Enabled = false;
+            this.cBoxScaling.FormattingEnabled = true;
+            this.cBoxScaling.Location = new System.Drawing.Point(268, 128);
+            this.cBoxScaling.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.cBoxScaling.Name = "cBoxScaling";
+            this.cBoxScaling.Size = new System.Drawing.Size(92, 28);
+            this.cBoxScaling.TabIndex = 7;
+            this.toolTip.SetToolTip(this.cBoxScaling, "Default = let the driver decide (it may keep a previous Center/Stretch choice for this resolution). Center/Stretch force that scaling. Where scaling happens (GPU or display) is set in the main window.");
+            this.cBoxScaling.SelectionChangeCommitted += new System.EventHandler(this.cBoxScaling_SelectionChangeCommitted);
+            //
+            // labelResolutionUnavailable
+            //
+            this.labelResolutionUnavailable.AutoSize = true;
+            this.labelResolutionUnavailable.ForeColor = System.Drawing.Color.Firebrick;
+            this.labelResolutionUnavailable.Location = new System.Drawing.Point(9, 122);
+            this.labelResolutionUnavailable.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.labelResolutionUnavailable.MaximumSize = new System.Drawing.Size(349, 0);
+            this.labelResolutionUnavailable.Name = "labelResolutionUnavailable";
+            this.labelResolutionUnavailable.Size = new System.Drawing.Size(349, 40);
+            this.labelResolutionUnavailable.TabIndex = 8;
+            this.labelResolutionUnavailable.Text = "This display doesn't offer the saved mode. Save keeps it; pick a resolution to replace it.";
+            this.labelResolutionUnavailable.Visible = false;
             // 
             // groupBoxBrightness
             // 
@@ -322,7 +407,7 @@
             // 
             // buttonReset
             // 
-            this.buttonReset.Location = new System.Drawing.Point(18, 906);
+            this.buttonReset.Location = new System.Drawing.Point(18, 946);
             this.buttonReset.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonReset.Name = "buttonReset";
             this.buttonReset.Size = new System.Drawing.Size(140, 37);
@@ -336,7 +421,7 @@
             this.labelValidation.AutoSize = true;
             this.labelValidation.Font = new System.Drawing.Font("Microsoft Sans Serif", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.labelValidation.ForeColor = System.Drawing.Color.Red;
-            this.labelValidation.Location = new System.Drawing.Point(14, 816);
+            this.labelValidation.Location = new System.Drawing.Point(14, 856);
             this.labelValidation.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelValidation.Name = "labelValidation";
             this.labelValidation.Size = new System.Drawing.Size(0, 20);
@@ -344,7 +429,7 @@
             // 
             // buttonChangeExecutable
             // 
-            this.buttonChangeExecutable.Location = new System.Drawing.Point(18, 859);
+            this.buttonChangeExecutable.Location = new System.Drawing.Point(18, 899);
             this.buttonChangeExecutable.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonChangeExecutable.Name = "buttonChangeExecutable";
             this.buttonChangeExecutable.Size = new System.Drawing.Size(369, 37);
@@ -357,7 +442,7 @@
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(144F, 144F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
-            this.ClientSize = new System.Drawing.Size(405, 957);
+            this.ClientSize = new System.Drawing.Size(405, 997);
             this.Controls.Add(this.buttonChangeExecutable);
             this.Controls.Add(this.labelValidation);
             this.Controls.Add(this.buttonReset);
@@ -425,5 +510,11 @@
         private System.Windows.Forms.Button buttonReset;
         private System.Windows.Forms.Label labelValidation;
         private System.Windows.Forms.Button buttonChangeExecutable;
+        private System.Windows.Forms.CheckBox checkBoxStarResolution;
+        private System.Windows.Forms.Label labelRefreshRate;
+        private System.Windows.Forms.ComboBox cBoxRefreshRate;
+        private System.Windows.Forms.Label labelScaling;
+        private System.Windows.Forms.ComboBox cBoxScaling;
+        private System.Windows.Forms.Label labelResolutionUnavailable;
     }
 }

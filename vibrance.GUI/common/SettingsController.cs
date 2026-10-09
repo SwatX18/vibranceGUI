@@ -43,6 +43,8 @@ namespace vibrance.GUI.common
         const string SzKeyNameUpdateCheckEnabled = "updateCheckEnabled";
         const string SzKeyNameResolutionChangeNotification = "resolutionChangeNotification";
         const string SzKeyNameLastUpdateCheckUtc = "lastUpdateCheckUtc";
+        const string SzKeyNameStarredResolutions = "starredResolutions";
+        const string SzKeyNameUnstarredResolutions = "unstarredResolutions";
 
 
         private string _fileName = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData).ToString() + "\\vibranceGUI\\vibranceGUI.ini";
@@ -286,6 +288,57 @@ namespace vibrance.GUI.common
         public bool SetResolutionChangeNotificationEnabled(bool enabled)
         {
             return SetVibranceSetting(SzKeyNameResolutionChangeNotification, enabled.ToString());
+        }
+
+        /// <summary>
+        /// The user's starred resolution sizes in the per-game resolution picker, stored as a delta
+        /// against the built-in defaults (see ResolutionStarPreferences). Global, not per display.
+        /// A missing file, a missing key or garbage reads as empty (= defaults only); never throws.
+        /// </summary>
+        public ResolutionStarPreferences ReadResolutionStars()
+        {
+            try
+            {
+                if (!IsFileExisting(_fileName))
+                {
+                    return new ResolutionStarPreferences();
+                }
+
+                return ResolutionStarPreferences.Parse(
+                    ReadStarList(SzKeyNameStarredResolutions),
+                    ReadStarList(SzKeyNameUnstarredResolutions));
+            }
+            catch (Exception)
+            {
+                return new ResolutionStarPreferences();
+            }
+        }
+
+        public bool SetResolutionStars(ResolutionStarPreferences stars)
+        {
+            try
+            {
+                ResolutionStarPreferences prefs = stars ?? new ResolutionStarPreferences();
+                bool added = SetVibranceSetting(SzKeyNameStarredResolutions, prefs.FormatAdded());
+                bool removed = SetVibranceSetting(SzKeyNameUnstarredResolutions, prefs.FormatRemoved());
+                return added && removed;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        private string ReadStarList(string keyName)
+        {
+            StringBuilder szValue = new StringBuilder(4096);
+            GetPrivateProfileString(SzSectionName,
+                keyName,
+                "",
+                szValue,
+                Convert.ToUInt32(szValue.Capacity),
+                _fileName);
+            return szValue.ToString().Trim();
         }
 
         /// <summary>
