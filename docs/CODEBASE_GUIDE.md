@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 1251 automated checks across nineteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 1406 automated checks across twenty fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture, and neither has the NVIDIA display-scaling write
@@ -442,7 +442,7 @@ specifically so that a locked `%APPDATA%\vibranceGUI\x86\vibranceDLL.dll` or `\x
 | `--help`, `-h`, `/?` | show every flag in a message box and exit (`CliOptions.cs`, `IsHelpRequested`). Dispatched **before** the mutex, so it answers while another instance is running. |
 | `--set-vibrance <n>` | set the Windows-level vibrance and continue. With an instance already running, the value is relayed to it rather than opening a second one (`VibranceCliRelay.cs`); otherwise applied in-process after `ReadVibranceSettings` populates the trackbar. Range-checked per vendor (NVIDIA 0–63, AMD 0–300). |
 | `--force-nvidia`, `--force-amd` | skip vendor detection (§6.1). |
-| `--selftest-*` | run one fixture and exit (§3.7) — for example `--selftest-gameexit` (`GameExitFixture`, §6.11) or `--selftest-scaling` (`DisplayScalingFixture`, §7.10). |
+| `--selftest-*` | run one fixture and exit (§3.7) — for example `--selftest-gameexit` (`GameExitFixture`, §6.11), `--selftest-scaling` (`DisplayScalingFixture`, §7.10) or `--selftest-cs2video` (`Cs2VideoSettingsFixture`, §9.10). |
 
 Anything else is ignored. Upstream feature request #120 asked for the options above and is
 addressed by them. Only one instance may run
@@ -451,17 +451,17 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 1251 of them across nineteen
-  `*Fixture.cs` files — fifteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
+- **There is no test project**, but there are automated checks: 1406 of them across twenty
+  `*Fixture.cs` files — sixteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
   (`NvidiaInteropFixture.cs`, §7.3, and `DisplayScalingFixture.cs`, §7.10) in `vibrance.GUI/NVIDIA/` —
-  compiled into the app and run through nineteen `--selftest-*` flags (one per fixture except
+  compiled into the app and run through twenty `--selftest-*` flags (one per fixture except
   `UpdateCheckFixture`, which has none and runs only through the reflection harness, plus the opt-in
   hardware variant `--selftest-gamma-display`) dispatched early in `Program.cs`, but *after* the
-  single-instance mutex (`Program.cs:86`, second-instance bail at `:121-122`, the flags at `:172-391`), so a fixture will not run
+  single-instance mutex (`Program.cs:87`, second-instance bail at `:122-123`, the flags at `:173-401`), so a fixture will not run
   while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
   reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`
   at all, since every `--selftest-*` flag does) instead has its `Run()` called directly by reflection —
-  see the note at `Program.cs:104-110` and `NvidiaInteropFixture.cs`'s own header comment for why it
+  see the note at `Program.cs:139-146` and `NvidiaInteropFixture.cs`'s own header comment for why it
   extracts `vibranceDLL.dll` to a private temp directory and loads it by absolute path, rather than
   calling `CommonUtils.LoadUnmanagedLibraryFromResource` against the shared `%APPDATA%\vibranceGUI`
   Program.cs itself uses: that call's `File.WriteAllBytes` would throw a sharing-violation `IOException`
@@ -472,21 +472,25 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
   They report through `Checklist` (PASS/FAIL/SKIP), not a third-party assertion library, so
   searching for `Assert.` or
   `*Test*` finds nothing and wrongly suggests the project is untested.
-- **Per-fixture totals as last run for this revision** (self-reported `PASSED n/n`, one pass of the
-  headless reflection harness over the x86 `Debug` build; x64 was **not** re-run for this revision):
-  CliOptions 52, DisplayScaling 98, ExecutablePicker 7, GameExit 70, GammaRestore 21,
+- **Per-fixture totals as last run for this revision** (self-reported `PASSED n/n`, from one full pass of
+  all twenty fixtures through the headless reflection harness over the x86 `Release` build; x64 was
+  **not** re-run for this revision):
+  CliOptions 52, Cs2Video 155, DisplayScaling 98, ExecutablePicker 7, GameExit 70, GammaRestore 21,
   GraphicsAdapter 55, HdrVibrance 58, Matching 55, NvidiaInterop 53, ProfileToggle 91,
   ResolutionCatalog 255, ResolutionChange 221, ResolutionRestorePersistence 40, Stability 6,
   StartMenuShortcutSource 14, StartupForeground 11, VibranceRestore 38, VibranceRestorePersistence 40,
-  UpdateCheck 66 — **1251 across nineteen fixtures**, all observed in that one pass. Unlike the
+  UpdateCheck 66 — **1406 across twenty fixtures**, all observed in that one pass. Unlike the
   previous revision's count, `GammaRestoreFixture` **was** run this time, but only its pure half
   (`Run()`, the same code `--selftest-gamma` runs, on fake displays); its hardware half
   (`RunWithDisplay()`, `--selftest-gamma-display`, which writes a probe ramp to a real monitor) was
-  **not** run, so its 21 says nothing about a real display's gamma ramp. The one fixture new in this
-  revision runs on fakes only and has no hardware variant: `ResolutionCatalogFixture`
+  **not** run, so its 21 says nothing about a real display's gamma ramp. The two fixtures new in this
+  revision run on fakes only and have no hardware variant. The first is `ResolutionCatalogFixture`
   (`--selftest-resolution-picker`,
   [§11.8](#118-resolutioncatalog-and-resolutionpicker)). Its dialog checks construct a real
   `VibranceSettings` form but never show it.
+  The second is `Cs2VideoSettingsFixture` (155 checks, `--selftest-cs2video`, [§9.10](#910-the-cs2-video-settings-sync-issue-61)),
+  also on fakes only (temp directories, never the real Steam folder); its last 20 checks are the dialog checks
+  and again construct a `VibranceSettings` without showing it.
 - **The harness has no staleness guard, and a failed build reports green.** MSBuild leaves the
   previous `vibrance.GUI.exe` in `bin/` when compilation fails, and the reflection harness loads
   whatever is there without ever learning that a build failed - so a source tree that does not
@@ -693,6 +697,9 @@ vibranceGUI/
     │   │
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
     │   ├── CliOptionsFixture.cs        52 checks
+    │   ├── Cs2VideoSettingsFixture.cs  155 checks — run via --selftest-cs2video (§9.10)
+    │   ├── Cs2VideoConfigPatcher.cs    pure text edit of cs2_video.txt (§9.10)
+    │   ├── Cs2VideoSettingsWriter.cs   finds the Steam accounts' files and writes them (§9.10)
     │   ├── GameExitFixture.cs          70 checks — run via --selftest-gameexit (§6.11)
     │   ├── GammaRestoreFixture.cs      21 checks (pure half only; the hardware half,
     │   │                                --selftest-gamma-display, was not run)
@@ -1561,6 +1568,9 @@ source; the ellipses mark text abbreviated for this table only.
 | "Current resolution mode could not be determined. Switching back to your Windows resolution will not work." | `ShowResolutionReadFailureDialog` (`VibranceGUI.cs:1359`), passed as the `onUnreadableDevice` callback to `WindowsResolutionRefresher.Refresh` only when `RebuildWindowsResolutionSettings`'s `showFailureDialog` is true | `EnumDisplaySettings` failed for a monitor. Shown only from the constructor's own build — the `SystemEvents.DisplaySettingsChanged` refresh path (`showFailureDialog: false`) never shows it, deliberately: see [§6.4](#64-the-optional-resolution-switch). The callback's `deviceName` parameter is unused in the message on purpose — it exists so `ResolutionChangeFixture` can assert *which* device reported, not to make this dialog start naming devices |
 | *(historical)* "Changing the resolution failed: DispChangeBadflags" (or any other `DispChange` member name) | **removed** — `ResolutionHelper.cs` has no `using System.Windows.Forms` and no `MessageBox` call site after `work/resolution-change` | was a staging `ChangeDisplaySettingsEx` failure, raised **inside the foreground-change callback**, repeating on every subsequent switch (**D2**, issues #114/#132 — see [§6.4](#64-the-optional-resolution-switch) for the replacement: a `notifyIcon` balloon tip via `ResolutionHelper.ResolutionChangeFailed`) |
 | Balloon tip "vibranceGUI – resolution changed", text such as "cs2: 1280 x 960 @ 144 Hz, Center" — the scaling reads "Default (driver)" for `Default`, and " (unconfirmed)" is appended when the read-back did not confirm the mode | `VibranceGUI.OnResolutionApplied`, text from `ResolutionChangeNotifier.FormatText` | a game profile's resolution apply returned `Applied` or `AppliedUnverified` and "Notify when a game's resolution is changed" is ticked (the default, `resolutionChangeNotification`, §9.2). **At most once per game session** — an alt-tab back into the same game does not repeat it (§6.4). Shown for 5 s; Windows may hold it back while a fullscreen game runs (Focus Assist / gaming do-not-disturb) — see §6.8 item 8 |
+| "CS2 video settings: updated N of M account(s)." plus one "Account <id>: the file is read-only / in use or could not be written / not in the expected format, not changed." line per failed account (caption "vibranceGUI – CS2 video settings"; Information icon when every account succeeded, Warning otherwise) | `VibranceGUI.SyncCs2VideoSettingsIfRequested`, text from `Cs2VideoSettingsWriter` (`BuildCompletedMessage`) | the user pressed Save on a CS2 profile with "Also set this resolution in CS2's video settings" ticked (§10.2, §9.10) |
+| "CS2 is running; video settings not changed. Close CS2 and save again." / "No resolution is configured; …" / "Steam was not found on this PC; …" / "No Steam accounts were found (no userdata folder); …" / "No Steam account on this PC has CS2 video settings yet. Start CS2 once, then save again." (same caption and Warning icon) | `Cs2VideoSettingsWriter.Messages` | the same Save, when the write was refused as a whole; nothing was written. The profile itself is saved either way |
+| "The profile was saved, but CS2's video settings could not be updated: " + the exception message (same caption, Warning) | `VibranceGUI.SyncCs2VideoSettingsIfRequested` (`catch`) | the writer threw despite its own never-throws contract; defensive only |
 | Balloon tips: "Registered to Autostart!" / "Registering to Autostart failed!" / "Updated Autostart Path!" / "Updating Autostart Path failed!" / "Unregistered from Autostart!" / "Unregistering from Autostart failed!" | `VibranceGUI.cs:638-660` (`checkBoxAutostart_CheckedChanged`) | the autostart checkbox — **including when it is set programmatically at startup** ([§9.5](#95-autostart)) |
 | Status label: "Initializing…" → "Running!" (green) → "Closing…" (red) | `VibranceGUI.Designer.cs:301` (`InitializeComponent`); `VibranceGUI.cs:572-573` (`backgroundWorker_ProgressChanged`); `:971-972` (`CleanUp`) | "Running!" appears only if `isInitialized` was true (`:329-331`, `backgroundWorker_DoWork`) — if it never turns green, the vendor layer failed silently (**D23**) |
 | "NVAPI Unloaded: …" | `VibranceGUI.cs:577` (`backgroundWorker_ProgressChanged`) | **never** — `ReportProgress(2)` is never called (**§12.7**) |
@@ -2423,6 +2433,8 @@ the **static** `_adlCheckLibrary._adlLibrary` rather than `this._adlLibrary` (`:
 | Extracted native DLL | `%APPDATA%\vibranceGUI\vibranceDLL.dll` (`AMD/vendor/utils/CommonUtils.cs:29`) | rewritten on every NVIDIA launch, never deleted |
 | Diagnostic log | `%APPDATA%\vibranceGUI\vibranceGUI.log` — beside the INI, **inside** the `vibranceGUI` folder (`ILogSink.cs:33,50`, `RealLogSink.Write`) | append-only text; one `Log Entry :` block per write |
 | Persisted vibrance restore (D4, NVIDIA only) | `%APPDATA%\vibranceGUI\vibranceRestore.xml` (`common/VibranceRestoreStore.cs`) | `XmlSerializer` of `VibranceRestoreRecord`; written atomically, deleted once fully replayed or fully drained in-session — see [§9.8](#98-the-persisted-vibrance-restore-record-d4) |
+| CS2 video settings (opt-in, **not ours**) | `<Steam root>\userdata\<account id>\730\local\cfg\cs2_video.txt`, one per Steam account; the root comes from `SteamLibrarySource.FindSteamRoot` | Valve's VDF-style text; edited in place only when "Also set this resolution in CS2's video settings" is ticked and the profile is saved — see [§9.10](#910-the-cs2-video-settings-sync-issue-61) |
+| Backup of the above | `cs2_video.txt.vibrance.bak`, beside each file we changed | byte copy of the user's original, made once before our first write and never overwritten |
 | Persisted resolution restore (D4, vendor-agnostic) | `%APPDATA%\vibranceGUI\resolutionRestore.xml` (`common/ResolutionRestoreStore.cs`) | `XmlSerializer` of `ResolutionRestoreRecord`; same atomic-write/delete discipline, a deliberately SEPARATE file from `vibranceRestore.xml` — see [§9.9](#99-the-persisted-resolution-restore-record-d4-resolution-half) |
 
 Nothing else is stored per monitor, per vendor or per version, and even the two exceptions just added
@@ -2912,6 +2924,61 @@ not a feature seen working.
 
 ---
 
+### 9.10 The CS2 video settings sync (issue #61)
+
+CS2 keeps its own start-up size and refresh rate in `cs2_video.txt`, and rewrites it on exit. Left alone,
+it can disagree with the mode vibranceGUI switches to. An opt-in per-profile checkbox
+(`ApplicationSetting.SyncCs2VideoSettings`, §10.2) makes Save write the profile's resolution into that file.
+
+- **When it runs.** Exactly once per profile save from the per-game dialog: `listApplications_DoubleClick`
+  calls `SyncCs2VideoSettingsIfRequested(newSetting, settingsWindow.IsSelectedModeOffered)` right after `ForceSaveVibranceSettings()`. Adding a
+  program (`AddProgramIntern`) reaches the same method through `listApplications_DoubleClick`, so a new
+  profile takes the same path; the game finder's bulk add creates profiles with the option off and never
+  writes. Not on startup, game launch, game exit or the debounced save.
+- **Guard.** Requires `SyncCs2VideoSettings`, `IsResolutionChangeNeeded`, a non-null `ResolutionSettings`,
+  `neverChangeResolution` off and a `cs2.exe` file name. Otherwise nothing happens and no message is shown.
+  It also skips (log line only, no message) when the saved mode is one the display no longer offers
+  (`IsSelectedModeOffered` false, i.e. the picker's `IsSavedModeUnavailable`): the picker then hands back the
+  stale saved mode, and it must never be pushed into CS2. The dialog keeps the tick saved in that case (so it
+  applies again if the mode returns) but disables the checkbox (`enabled && modeAvailable`). The saved value
+  is only ever the effective one: `GetApplicationSetting` stores `SyncCs2VideoSettings` as
+  `_isCs2Profile && sync ticked && "Change Resolution" ticked`, read from the checkboxes' `Checked` states
+  (not `Visible`/`Enabled`), so ticking sync and then unticking "Change Resolution" saves `false`.
+- **What is written.** `Cs2VideoConfigPatcher` rewrites the size and refresh-rate settings
+  (`setting.defaultres`, `setting.defaultresheight`, `setting.refreshrate_numerator`,
+  `setting.refreshrate_denominator`) in the file's text and keeps the rest, the BOM and the line endings
+  (`Cs2VideoSettingsFixture` covers the exact patch, missing keys, the refresh pair rule, malformed and
+  nested/duplicate keys). Two shape rules worth knowing: an unquoted word in **key** position at depth 1
+  (`Version "16"`, `#base "x"`, `#include "x"`) makes the file Malformed, because the quoted token after it
+  would shift every following key/value pairing and the four settings would be appended as duplicates; an
+  unquoted refresh **value** is still tolerated when there is no refresh rate to apply (Hz 0 or 1). The
+  inserted keys use the file's own line ending, detected from its first line break: CRLF, LF or a lone CR
+  (a CR-only file stays CR-only; `//` comments end at a CR too).
+- **Safety rules** (`Cs2VideoSettingsWriter`): nothing is written while a `cs2` process runs; a file is never
+  created (an account without `730\local\cfg\cs2_video.txt` has never run CS2); the read-only attribute is
+  never cleared, and `ReadOnly` is reported only when a write is actually needed - the file is read and
+  patched first, so a read-only file that already holds the target is `AlreadyCurrent` (a success); any
+  other access failure (ACL, a denied backup copy, a failing `File.Replace`) is `Locked` ("in use or could
+  not be written", with the exception message kept in `Detail`), never `ReadOnly`; the first change to a file makes `cs2_video.txt.vibrance.bak` and never replaces
+  it (Valve's own `cs2_video.txt.bak` is untouched); the new text goes to a temp file and `File.Replace`
+  swaps it in. Every Steam account under `userdata` is processed, and the outcome per account is logged
+  through `Program.LogSafely` and summarised in the message box (§6.9). `Apply` never throws: an unexpected
+  exception with no account processed yet is `Cs2VideoSyncStatus.Failed` ("CS2 video settings could not be
+  updated because of an unexpected error; nothing else was changed."); with accounts already recorded it stays
+  `Completed` with what was done. Neither is `IsFullSuccess`, so the caller shows the Warning icon.
+- **The running check is not airtight.** There is a small window between the "is `cs2` running" check and
+  `File.Replace` in which CS2 could start. That is accepted because CS2 rewrites the file only on exit, so a
+  process that starts in that window does not write it back at once; nobody should read the guard as a lock.
+- **Caveats.** The option sets the file to the profile's size and refresh rate when you press Save, not
+  when the game launches; Steam Cloud may overwrite the file later (said in the checkbox tooltip). The
+  Steam root comes from `SteamLibrarySource.FindSteamRoot`.
+- **Coverage.** `Cs2VideoSettingsFixture` (155 checks, `--selftest-cs2video`) runs over fake Steam trees in
+  temp directories and a stubbed "is CS2 running" probe, never the real Steam folder. Its dialog checks
+  build a `VibranceSettings` without showing it. **The feature has not been watched on a real CS2 launch**;
+  the fixture shows that the file edits and the dialog wiring behave as described, nothing more.
+
+---
+
 ## 10. UI surface
 
 Three forms, all WinForms with designer files. Data moves between them by constructor parameters and
@@ -2956,40 +3023,42 @@ Behavioural details worth knowing:
 
 ### 10.2 `VibranceSettings` — the per-game modal dialog
 
-`ClientSize 405×997`, `CenterParent`, `FixedSingle`. Contains the game icon, a title ("Settings for
+`ClientSize 405×1027`, `CenterParent`, `FixedSingle`. Contains the game icon, a title ("Settings for
 \"csgo\""), an "Ingame Vibrance Level" trackbar with its label, and an "Ingame Resolution" group
 (a "For (Borderless) Windowed Mode players only!" note, the "Change Resolution when Ingame" checkbox and
-the resolution picker described below), plus Save.
+the resolution picker described below, and — for a `cs2.exe` profile only — the "Also set this resolution
+in CS2's video settings" checkbox described below), plus Save.
 
 Data flow, in full:
 
 ```
-VibranceGUI.listApplications_DoubleClick                  (VibranceGUI.cs:2654-2704)
+VibranceGUI.listApplications_DoubleClick                  (VibranceGUI.cs:2654-2708)
   windowsResolutionMode = _windowsResolutionSettings[Screen.PrimaryScreen.DeviceName].Item1
-                          /* null when there is no entry for the primary screen */  (:2667-2674)
+                          /* null when there is no entry for the primary screen */  (:2668-2674)
   new VibranceSettings(_v, _minTrackBarValue, _maxTrackBarValue, _defaultIngameValue,
                        selectedItem /* ListViewItem */, actualSetting /* may be null */,
                        _supportedResolutionList, windowsResolutionMode,
                        new SettingsController().ReadResolutionStars(),
                        stars => new SettingsController().SetResolutionStars(stars),
-                       _graphicsAdapter)            /* internal ctor, VibranceSettings.cs:42-120 */
+                       _graphicsAdapter)            /* internal ctor, VibranceSettings.cs:45-125 */
       ├─ _resolutionPicker = new ResolutionPicker(ResolutionCatalog.Build(
-      │      supportedResolutionList, windowsResolutionMode, resolutionStars))      (:70)
-      └─ _resolutionPicker.Load(setting?.ResolutionSettings)   /* null -> SelectDefault */  (:118)
+      │      supportedResolutionList, windowsResolutionMode, resolutionStars))      (:74)
+      └─ _resolutionPicker.Load(setting?.ResolutionSettings)   /* null -> SelectDefault */  (:123)
   ShowDialog()
-      ├─ "Starred" toggled  ->  ToggleStar(); saveResolutionStars(Catalog.Stars)    (:369-382)
+      ├─ "Starred" toggled  ->  ToggleStar(); saveResolutionStars(Catalog.Stars)    (:397-410)
       │                         /* written to the INI now, even if the dialog is cancelled */
-      └─ buttonSave_Click   ->  DialogResult.OK                                      (:174-178)
+      └─ buttonSave_Click   ->  DialogResult.OK                                      (:179-183)
   if OK:
-      newSetting = settingsWindow.GetApplicationSetting()                            (:180-196)
+      newSetting = settingsWindow.GetApplicationSetting()                            (:185-208)
                  = new ApplicationSetting(resolveApplicationName(), _filePath,
                        trackBarIngameLevel.Value,
                        _resolutionPicker.GetSelectedMode(),
                        checkBoxResolution.Checked, brightness, contrast, gamma)
                    + InstallDirectory, IsExecutableUnconfirmed, HdrIngameLevel
       remove any existing entry with the same FileName, add newSetting, ForceSaveVibranceSettings()
+      SyncCs2VideoSettingsIfRequested(newSetting, settingsWindow.IsSelectedModeOffered)   /* §9.10; a no-op unless the box was ticked */
   else if the setting was new:
-      roll back the ListViewItem that was just added                 (VibranceGUI.cs:2699-2702)
+      roll back the ListViewItem that was just added                 (VibranceGUI.cs:2703-2706)
 ```
 
 **The resolution picker** (branch `work/60-resolution-picker`). The old single combo listed every raw
@@ -2999,10 +3068,10 @@ VibranceGUI.listApplications_DoubleClick                  (VibranceGUI.cs:2654-2
 
 | Control | Shows | Handler (`VibranceSettings.cs`) |
 |---|---|---|
-| `cBoxResolution` (`DropDownList`) | one row per **size**: the starred section (native first, every row prefixed `★ `), one `----------------` separator, then the rest — e.g. `★ 2560 x 1440 (16:9, native)`, `1366 x 768 (16:9)` | `cBoxResolution_SelectionChangeCommitted` (`:308-339`) |
-| `checkBoxStarResolution` ("Starred") | whether the selected size is starred | `checkBoxStarResolution_CheckedChanged` (`:369-382`) |
-| `labelRefreshRate` + `cBoxRefreshRate` | the selected size's refresh rates, highest first | `cBoxRefreshRate_SelectionChangeCommitted` (`:341-353`) |
-| `labelScaling` + `cBoxScaling` | the per-mode scaling values (`dmDisplayFixedOutput`: Default / Center / Stretch) offered at that size and rate; carries the tooltip quoted in [§6.4](#64-the-optional-resolution-switch) | `cBoxScaling_SelectionChangeCommitted` (`:355-367`) |
+| `cBoxResolution` (`DropDownList`) | one row per **size**: the starred section (native first, every row prefixed `★ `), one `----------------` separator, then the rest — e.g. `★ 2560 x 1440 (16:9, native)`, `1366 x 768 (16:9)` | `cBoxResolution_SelectionChangeCommitted` (`:336-367`) |
+| `checkBoxStarResolution` ("Starred") | whether the selected size is starred | `checkBoxStarResolution_CheckedChanged` (`:397-410`) |
+| `labelRefreshRate` + `cBoxRefreshRate` | the selected size's refresh rates, highest first | `cBoxRefreshRate_SelectionChangeCommitted` (`:369-381`) |
+| `labelScaling` + `cBoxScaling` | the per-mode scaling values (`dmDisplayFixedOutput`: Default / Center / Stretch) offered at that size and rate; carries the tooltip quoted in [§6.4](#64-the-optional-resolution-switch) | `cBoxScaling_SelectionChangeCommitted` (`:383-395`) |
 | `labelResolutionUnavailable` (Firebrick, hidden by default) | "This display doesn't offer the saved mode. Save keeps it; pick a resolution to replace it." — shown **in place of** the refresh-rate/scaling row | — |
 
 Each handler forwards to the picker and then calls `syncResolutionControls` (`:386-426`), which refills
@@ -3031,8 +3100,22 @@ unavailable saved mode).
   Display" toggle ([§7.10](#710-display-scaling-the-gpu--display-toggle)), an NvAPI setting that decides
   which device performs the scaling; the picker never reads or writes that.
 
+- **The CS2 video settings checkbox** (`checkBoxSyncCs2Video`, issue #61). Shown only while the edited
+  executable's file name is `cs2.exe` (`Cs2VideoSettingsWriter.IsCs2Executable`, case-insensitive, basename
+  only): `_isCs2Profile` is recomputed from `_filePath` in the constructor and again after
+  "Change executable...". It is enabled by the same flag as the resolution combo
+  (`updateResolutionEnabled`: "Change Resolution when Ingame" ticked and `neverChangeResolution` off) and,
+  in addition, only while the saved mode is one the display still offers (`enabled && modeAvailable`), is
+  loaded from `ApplicationSetting.SyncCs2VideoSettings`, and "Reset values" unticks it. `GetApplicationSetting`
+  saves `_isCs2Profile && sync Checked && checkBoxResolution Checked` and deliberately does not read
+  `Visible`/`Enabled` (unreliable once the form is closed, which is when it runs), so a box ticked before
+  changing the executable to a non-CS2 one, or before unticking "Change Resolution", saves `false`. A tick on
+  a mode the display no longer offers is kept; `VibranceGUI` then skips the write (`IsSelectedModeOffered`). Tooltip: "Writes size and refresh rate to cs2_video.txt for every Steam account when you
+  press Save. Steam Cloud may overwrite the file." The write itself happens in `VibranceGUI`, not in the
+  dialog (§9.10).
+
 Two traps live here. The dialog's icon comes from `_sender.ListView.LargeImageList.Images[_sender.ImageIndex]`
-(`VibranceSettings.cs:68`, `VibranceSettings`), so the `ImageIndex` bookkeeping in the main form is load-bearing. And the
+(`VibranceSettings.cs:72`, `VibranceSettings`), so the `ImageIndex` bookkeeping in the main form is load-bearing. And the
 resolution picker is always built from `_supportedResolutionList`, which is **only the primary
 monitor's mode list** (`VibranceGUI.cs:243-248`, `VibranceGUI`), and "native" likewise comes from the
 primary screen's current Windows mode — for a game on a secondary monitor you can only pick
@@ -3114,6 +3197,7 @@ A single system-wide hotkey suspends and resumes the profile for whatever is in 
 | `IngameLevel` | `int` | Level to apply while this app is in front | NVIDIA `0..63`, AMD `0..300`; **not validated on load** |
 | `IsResolutionChangeNeeded` | `bool` | Whether to switch resolution for this app | |
 | `ResolutionSettings` | `ResolutionModeWrapper` | Target display mode; `[XmlElement(IsNullable = true)]` | may be `null`; nulls are tolerated downstream |
+| `SyncCs2VideoSettings` | `bool` | Opt-in: on Save of this profile, also write its size and refresh rate into CS2's `cs2_video.txt` ([§9.10](#910-the-cs2-video-settings-sync-issue-61)) | serialised as a `<SyncCs2VideoSettings>` element; absent in older files, which read as `false`. Only the dialog sets it, and only for a `cs2.exe` profile |
 
 Two constructors: parameterless (required by `XmlSerializer`, `:40`, `ApplicationSetting`) and the five-argument one
 (`:42-52`, `ApplicationSetting`). **Equality is by `FileName` only** (`:54-62` (`Equals`), added in commit `cd42c3c`), with

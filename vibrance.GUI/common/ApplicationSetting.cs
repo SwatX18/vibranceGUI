@@ -37,6 +37,11 @@ namespace vibrance.GUI.common
         // something this property could fix alone - noted here so nobody assumes a downgrade is lossless.
         public int HdrIngameLevel { get; set; } = HdrVibranceHelper.HdrLevelUnset;
 
+        // Opt-in (issue #61): when this profile is saved, write its resolution and refresh rate into
+        // the Steam accounts' CS2 cs2_video.txt (Cs2VideoSettingsWriter). Default false; a profile
+        // saved before this existed has no element and XmlSerializer leaves it false.
+        public bool SyncCs2VideoSettings { get; set; }
+
         public ApplicationSetting(){ }
 
         public ApplicationSetting(string name, string fileName, int ingameLevel, ResolutionModeWrapper resolutionSettings, bool isResolutionChangeNeeded, int brightness, int contrast, int gamma)

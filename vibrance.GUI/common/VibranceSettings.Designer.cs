@@ -50,6 +50,7 @@
             this.labelResolutionUnavailable = new System.Windows.Forms.Label();
             this.labelResolution = new System.Windows.Forms.Label();
             this.checkBoxResolution = new System.Windows.Forms.CheckBox();
+            this.checkBoxSyncCs2Video = new System.Windows.Forms.CheckBox();
             this.groupBoxBrightness = new System.Windows.Forms.GroupBox();
             this.trackBarBrightness = new System.Windows.Forms.TrackBar();
             this.labelBrightness = new System.Windows.Forms.Label();
@@ -146,7 +147,7 @@
             //
             // buttonSave
             // 
-            this.buttonSave.Location = new System.Drawing.Point(247, 946);
+            this.buttonSave.Location = new System.Drawing.Point(247, 976);
             this.buttonSave.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonSave.Name = "buttonSave";
             this.buttonSave.Size = new System.Drawing.Size(140, 37);
@@ -199,11 +200,12 @@
             this.groupBox1.Controls.Add(this.labelScaling);
             this.groupBox1.Controls.Add(this.cBoxScaling);
             this.groupBox1.Controls.Add(this.labelResolutionUnavailable);
+            this.groupBox1.Controls.Add(this.checkBoxSyncCs2Video);
             this.groupBox1.Location = new System.Drawing.Point(18, 680);
             this.groupBox1.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.groupBox1.Name = "groupBox1";
             this.groupBox1.Padding = new System.Windows.Forms.Padding(4, 5, 4, 5);
-            this.groupBox1.Size = new System.Drawing.Size(369, 171);
+            this.groupBox1.Size = new System.Drawing.Size(369, 201);
             this.groupBox1.TabIndex = 19;
             this.groupBox1.TabStop = false;
             this.groupBox1.Text = "Ingame Resolution";
@@ -288,6 +290,20 @@
             this.cBoxScaling.TabIndex = 7;
             this.toolTip.SetToolTip(this.cBoxScaling, "Default = let the driver decide (it may keep a previous Center/Stretch choice for this resolution). Center/Stretch force that scaling. Where scaling happens (GPU or display) is set in the main window.");
             this.cBoxScaling.SelectionChangeCommitted += new System.EventHandler(this.cBoxScaling_SelectionChangeCommitted);
+            //
+            // checkBoxSyncCs2Video
+            //
+            this.checkBoxSyncCs2Video.AutoSize = true;
+            this.checkBoxSyncCs2Video.Enabled = false;
+            this.checkBoxSyncCs2Video.Location = new System.Drawing.Point(9, 164);
+            this.checkBoxSyncCs2Video.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
+            this.checkBoxSyncCs2Video.Name = "checkBoxSyncCs2Video";
+            this.checkBoxSyncCs2Video.Size = new System.Drawing.Size(340, 24);
+            this.checkBoxSyncCs2Video.TabIndex = 9;
+            this.checkBoxSyncCs2Video.Text = "Also set this resolution in CS2's video settings";
+            this.toolTip.SetToolTip(this.checkBoxSyncCs2Video, "Writes size and refresh rate to cs2_video.txt for every Steam account when you press Save. Steam Cloud may overwrite the file.");
+            this.checkBoxSyncCs2Video.UseVisualStyleBackColor = true;
+            this.checkBoxSyncCs2Video.Visible = false;
             //
             // labelResolutionUnavailable
             //
@@ -407,7 +423,7 @@
             // 
             // buttonReset
             // 
-            this.buttonReset.Location = new System.Drawing.Point(18, 946);
+            this.buttonReset.Location = new System.Drawing.Point(18, 976);
             this.buttonReset.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonReset.Name = "buttonReset";
             this.buttonReset.Size = new System.Drawing.Size(140, 37);
@@ -421,7 +437,7 @@
             this.labelValidation.AutoSize = true;
             this.labelValidation.Font = new System.Drawing.Font("Microsoft Sans Serif", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.labelValidation.ForeColor = System.Drawing.Color.Red;
-            this.labelValidation.Location = new System.Drawing.Point(14, 856);
+            this.labelValidation.Location = new System.Drawing.Point(14, 886);
             this.labelValidation.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelValidation.Name = "labelValidation";
             this.labelValidation.Size = new System.Drawing.Size(0, 20);
@@ -429,7 +445,7 @@
             // 
             // buttonChangeExecutable
             // 
-            this.buttonChangeExecutable.Location = new System.Drawing.Point(18, 899);
+            this.buttonChangeExecutable.Location = new System.Drawing.Point(18, 929);
             this.buttonChangeExecutable.Margin = new System.Windows.Forms.Padding(4, 5, 4, 5);
             this.buttonChangeExecutable.Name = "buttonChangeExecutable";
             this.buttonChangeExecutable.Size = new System.Drawing.Size(369, 37);
@@ -442,7 +458,7 @@
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(144F, 144F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
-            this.ClientSize = new System.Drawing.Size(405, 997);
+            this.ClientSize = new System.Drawing.Size(405, 1027);
             this.Controls.Add(this.buttonChangeExecutable);
             this.Controls.Add(this.labelValidation);
             this.Controls.Add(this.buttonReset);
@@ -497,6 +513,7 @@
         private System.Windows.Forms.ToolTip toolTip;
         private System.Windows.Forms.GroupBox groupBox1;
         private System.Windows.Forms.CheckBox checkBoxResolution;
+        private System.Windows.Forms.CheckBox checkBoxSyncCs2Video;
         private System.Windows.Forms.Label labelResolution;
         private System.Windows.Forms.GroupBox groupBoxBrightness;
         private System.Windows.Forms.TrackBar trackBarBrightness;

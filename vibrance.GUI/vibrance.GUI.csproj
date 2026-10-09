@@ -173,6 +173,9 @@
     <Compile Include="common\ResolutionModeWrapper.cs" />
     <Compile Include="common\ResolutionCatalog.cs" />
     <Compile Include="common\ResolutionCatalogFixture.cs" />
+    <Compile Include="common\Cs2VideoConfigPatcher.cs" />
+    <Compile Include="common\Cs2VideoSettingsWriter.cs" />
+    <Compile Include="common\Cs2VideoSettingsFixture.cs" />
     <Compile Include="common\DeviceGammaRampHelper.cs" />
     <Compile Include="common\GammaRestoreFixture.cs" />
     <Compile Include="common\VibranceRestoreHelper.cs" />
