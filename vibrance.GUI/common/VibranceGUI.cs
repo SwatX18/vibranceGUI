@@ -11,6 +11,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using vibrance.GUI.common.gamefinder;
+using vibrance.GUI.common.theme;
 using Application = System.Windows.Forms.Application;
 using MessageBox = System.Windows.Forms.MessageBox;
 
@@ -130,16 +131,34 @@ namespace vibrance.GUI.common
 
         // The toggle hotkey's own marker (see DescribeListItem below ApplyApplicationListItemAppearance).
         // A live status the user just set by pressing a key, not a data-quality warning like the
-        // "(?)" pair above - it gets its own suffix, tooltip and colour rather than reusing
-        // GrayText, which already means "this entry is broken", not "this is switched off".
+        // "(?)" pair above - it gets its own suffix, tooltip and colour rather than reusing the
+        // palette's secondary grey, which already means "this entry is broken", not "this is
+        // switched off".
         internal const string SuppressedMarkerSuffix = " (Off)";
         internal const string ToolTipSuppressed =
             "This profile is switched off - vibranceGUI stays at your Windows level while this game is in the foreground. Press the toggle hotkey again to switch it back on.";
-        // Color.DarkOrange itself measures 2.33:1 against the ListView's white background (WCAG AA
-        // wants 4.5:1; the GrayText this replaces is 5.17:1). This shade measures 4.78:1 and still
-        // reads as the same orange. The suffix text carries the state on its own regardless, so
+        // The suppressed marker's colour, by role rather than by value: internal for the same
+        // reason as the two constants above it - ProfileToggleFixture names the role instead of
+        // holding a second copy of the colour - and resolved from the live palette rather than
+        // frozen in a literal, because there are now two of them.
+        //
+        // The history is worth keeping, because it is the reason ThemeContrast exists at all. This
+        // marker shipped in the framework's named DarkOrange, which measures 2.33:1 against the
+        // ListView's white background where WCAG AA wants 4.5:1, and was then hand-darkened to
+        // #C05000 for a measured 4.78:1 - a figure taken against white, the only background it was
+        // ever drawn on. ThemePalette.StatusSuppressed is that same burnt orange taken one step
+        // further so it survives a card background too, and it now has a dark twin. Re-measured
+        // against the list background each one is actually drawn on:
+        //     light #B04800 on #FFFFFF -> 5.57:1
+        //     dark  #FF9A4D on #262626 -> 7.19:1
+        // ProfileToggleFixture's M7 re-measures both through ThemeContrast rather than trusting
+        // those two numbers, and also pins that neither twin collides with its own theme's primary
+        // or secondary text colour. The suffix text carries the state on its own regardless, so
         // this was never information conveyed by colour alone - just worth being legible.
-        internal static readonly Color SuppressedForeColor = Color.FromArgb(192, 80, 0);
+        internal static Color SuppressedForeColor
+        {
+            get { return Theme.Current.StatusSuppressed; }
+        }
 
         // WM_HOTKEY (winuser.h) - WndProc below dispatches on this with wParam ==
         // HotkeyRegistration.HotkeyId, the toggle hotkey's own fixed registration id.
@@ -174,6 +193,13 @@ namespace vibrance.GUI.common
 
         private bool _updateCheckEnabled;
         private bool _isLoadingUpdateCheckEnabled;
+
+        // The same guard again, for the three appearance radios. Needed here for a stronger reason
+        // than on the two checkboxes above, where it only saves an INI write: checking a radio also
+        // unchecks its sibling, so loading a stored "Dark" would otherwise persist the value it had
+        // just read AND walk this form's whole control tree a second time, moments before the
+        // constructor's own Theme.Apply does it properly.
+        private bool _isLoadingThemeMode;
 
         // Set only while the update balloon is actually on screen, and cleared again the moment it
         // closes. The tray icon shows several unrelated balloons - a hotkey that could not be
@@ -250,6 +276,14 @@ namespace vibrance.GUI.common
             // fault at shutdown.
             ResolutionHelper.ResolutionChangeFailed += OnResolutionChangeFailed;
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+            // SystemEvents.UserPreferenceChanged is what makes ThemeMode.Auto mean "what Windows is
+            // set to now" rather than "what it was set to when vibranceGUI started" - see
+            // OnUserPreferenceChanged. Unsubscribing it in CleanUp() is mandatory for exactly the
+            // reason spelled out above for DisplaySettingsChanged, and not a weaker version of it:
+            // it is the same static event class holding the same kind of strong reference to this
+            // form on the same dedicated thread, so leaving it subscribed leaks this form and can
+            // fault at shutdown. It goes in beside that one and comes out beside it.
+            SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
             // Upstream #147 part 2 - see _hdrRecheckTimer's own field comment for why this keeps
             // running (never Stop()'d again) until CleanUp().
             _hdrRecheckTimer.Start(HdrRecheckIntervalMs, OnHdrRecheckTick);
@@ -261,6 +295,36 @@ namespace vibrance.GUI.common
             settingsBackgroundWorker.WorkerReportsProgress = true;
 
             backgroundWorker.RunWorkerAsync();
+
+            // Here and not from Form1_Load, and the reason is DPI: by the time Load fires the form
+            // has been through PerformAutoScale, so every bound is in the machine's real units,
+            // whereas before the handle exists they are all still on the 144-unit grid the designer
+            // authored. ApplyColorSettingsCollapsed reads the numbers it needs off the live layout
+            // either way, so both would be correct - but running it here also means the window is
+            // never once sized for the expanded layout it is not going to show, and the scale pass
+            // carries the collapsed one across with everything else.
+            ApplyColorSettingsCollapsed(checkBoxNeverChangeColorSettings.Checked);
+
+            // Before Theme.Apply below, so the walk colours a row that already shows the right
+            // option rather than one that is corrected a moment later.
+            ApplyStoredThemeModeToRadios();
+
+            // Last two statements of the constructor on purpose: everything above -
+            // InitializeComponent and the trackbar range, resolution and worker setup - may assign a
+            // colour of its own, and the theme has to be what wins. Neither call paints, activates
+            // or shows anything (see Theme.Apply's own comment on the foreground hook), and both
+            // swallow their own failures, so a theme that cannot be applied still leaves a usable
+            // form here.
+            //
+            // The tray menu needs the second call because it is in no control tree at all: it hangs
+            // off NotifyIcon.ContextMenuStrip (see the designer), and a NotifyIcon is a Component,
+            // not a Control, so the recursive walk in Apply can never reach it from this form -
+            // Theme.ApplyRecursive says as much where it follows Control.ContextMenuStrip. Handing
+            // the strip over directly is enough: ContextMenuStrip is a Control (ToolStrip ->
+            // ScrollableControl -> Control), so it fits Apply's signature, and Apply's ToolStrip
+            // branch is the one that colours it.
+            Theme.Apply(this);
+            Theme.Apply(this.contextMenuStrip);
         }
 
         protected override void SetVisibleCore(bool value)
@@ -627,11 +691,27 @@ namespace vibrance.GUI.common
             if (e.ProgressPercentage == 1)
             {
                 this.statusLabel.Text = "Running!";
-                this.statusLabel.ForeColor = Color.Green;
+
+                // SetTextRole rather than ForeColor, here and at every other semantic label in this
+                // file: the role is recorded on the label, so ApplyThemeToThisWindow's Theme.Apply
+                // re-resolves it in the new palette instead of flattening this line to body text.
+                Theme.SetTextRole(this.statusLabel, ThemeTextRole.StatusGood);
             }
             else if (e.ProgressPercentage == 2)
             {
                 this.statusLabel.Text = $"NVAPI Unloaded: {e.UserState}";
+
+                // Neutral, not StatusGood. Without this the label keeps whatever role the
+                // branch above recorded, so "NVAPI Unloaded" would render in the success
+                // green of "Running!" - and now that the role is recorded rather than just
+                // painted, it would survive every theme switch as well.
+                //
+                // Primary rather than StatusBad because unloading NVAPI is a teardown step,
+                // not a failure. Note no caller reaches this: the only ReportProgress in the
+                // file is ReportProgress(1) at :556, so this branch is currently unreachable.
+                // It is fixed anyway because the cost is one line and the next person to wire
+                // up a progress-2 report should not inherit a colour bug with it.
+                Theme.SetTextRole(this.statusLabel, ThemeTextRole.Primary);
             }
         }
 
@@ -718,8 +798,101 @@ namespace vibrance.GUI.common
         }
 
 
+        // Whether groupBoxColorSettings is currently folded down to its checkbox. Tracks what has
+        // actually been applied to the layout rather than what the checkbox says, which is what
+        // makes ApplyColorSettingsCollapsed idempotent - the constructor calls it once, and so does
+        // every CheckedChanged, including the one ReadVibranceSettings raises when the INI disagrees
+        // with the designer default. Deliberately not persisted anywhere: it is derived from
+        // checkBoxNeverChangeColorSettings, which SaveVibranceSettings already writes.
+        private bool _colorSettingsCollapsed;
+
+        /// <summary>
+        /// Folds groupBoxColorSettings down to its checkbox, or unfolds it, and moves everything
+        /// below - groupBox5, the footer row and the window's own height - to match. When the box
+        /// is checked, which is the default, the three sliders cannot change anything, and three
+        /// disabled sliders are the largest single thing the main window would otherwise spend its
+        /// height on.
+        ///
+        /// The two numbers it needs are read off the live layout instead of written as constants,
+        /// and that is not tidiness - it is the only version that survives a second DPI. This form
+        /// is authored on a 144-unit grid and AutoScaleMode.Dpi rescales it to whatever the machine
+        /// is (x2/3 at the usual 96), so a literal "shift up by 156" would be half again too far
+        /// every time the user clicks the checkbox rather than the constructor calling this.
+        /// Subtracting one row bottom from the other gives the same movement in whatever units the
+        /// form is currently in, and the card's own bottom padding cancels out of the subtraction -
+        /// so collapse followed by expand restores the bounds it started from exactly, in either
+        /// direction, without either direction having to know what that padding was.
+        ///
+        /// Both anchors have to mean the same thing before and after the first layout pass, since
+        /// the constructor can call this before there has been one. trackBarGamma does by
+        /// construction - AutoSize is false on it, so its 36-unit height is whatever the designer
+        /// wrote - and checkBoxNeverChangeColorSettings does because its authored Size is kept
+        /// equal to what its text actually measures at Theme.BaseFont; that is the whole reason
+        /// for the note on it in the designer.
+        ///
+        /// Nothing here is on the forbidden list in Theme.Apply's comment: Visible goes false on
+        /// child controls and never true on the form, heights and tops are plain bounds writes, and
+        /// resizing a window does not raise any of the events WinEventHook asks for - its range runs
+        /// from EVENT_SYSTEM_FOREGROUND to EVENT_SYSTEM_MINIMIZEEND, and a programmatic resize is
+        /// EVENT_OBJECT_LOCATIONCHANGE. So this cannot be the reason a game's vibrance reverts.
+        /// </summary>
+        private void ApplyColorSettingsCollapsed(bool collapsed)
+        {
+            if (_colorSettingsCollapsed == collapsed)
+            {
+                return;
+            }
+
+            // Where the card's last visible row ends now, and where it will end afterwards. The
+            // early return above means the current state is always the opposite of the requested
+            // one, so these two are never the same control.
+            int currentBottom = collapsed ? trackBarGamma.Bottom : checkBoxNeverChangeColorSettings.Bottom;
+            int newBottom = collapsed ? checkBoxNeverChangeColorSettings.Bottom : trackBarGamma.Bottom;
+            int shift = newBottom - currentBottom;
+
+            this.SuspendLayout();
+            try
+            {
+                labelBrightnessCaption.Visible = !collapsed;
+                trackBarBrightness.Visible = !collapsed;
+                labelBrightness.Visible = !collapsed;
+                labelContrastCaption.Visible = !collapsed;
+                trackBarContrast.Visible = !collapsed;
+                labelContrast.Visible = !collapsed;
+                labelGammaCaption.Visible = !collapsed;
+                trackBarGamma.Visible = !collapsed;
+                labelGamma.Visible = !collapsed;
+
+                // Height rather than Size, so the card keeps whatever padding it has under its
+                // last row instead of this having to reproduce it.
+                groupBoxColorSettings.Height += shift;
+
+                groupBox5.Top += shift;
+                observerStatusLabel.Top += shift;
+                statusLabel.Top += shift;
+                labelFindGamesStatus.Top += shift;
+
+                this.ClientSize = new Size(this.ClientSize.Width, this.ClientSize.Height + shift);
+            }
+            finally
+            {
+                // ResumeLayout(false) like the designer's own: nothing above needs a layout pass
+                // run for it, and try/finally because an unbalanced SuspendLayout does not throw,
+                // it silently freezes this form's layout for the rest of the process.
+                this.ResumeLayout(false);
+            }
+
+            _colorSettingsCollapsed = collapsed;
+        }
+
         private void checkBoxNeverChangeColorSettings_CheckedChanged(object sender, EventArgs e)
         {
+            // Ahead of the _v guard below rather than after it, because the fold is a layout
+            // concern and not a vibrance one: it has to happen on the startup path too, where
+            // ReadVibranceSettings can assign Checked from the INI. Idempotent, so this and the
+            // constructor's own call cannot fold the card twice.
+            ApplyColorSettingsCollapsed(this.checkBoxNeverChangeColorSettings.Checked);
+
             if (this._v == null)
             {
                 return;
@@ -738,11 +911,6 @@ namespace vibrance.GUI.common
         }
 
         private void twitterToolStripTextBox_Click(object sender, EventArgs e)
-        {
-            Process.Start(TwitterLink);
-        }
-
-        private void linkLabelTwitter_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
             Process.Start(TwitterLink);
         }
@@ -848,30 +1016,34 @@ namespace vibrance.GUI.common
         /// </summary>
         private void ApplyToggleHotkeyStatusLabel(HotkeyRegistrationResult result)
         {
+            // Every branch below assigns a role, not a Color. This label is the one that carries a
+            // hotkey conflict, and a conflict that has stopped being red is a conflict the user
+            // reads as a success: with a Color assigned here, the next Theme.Apply - the one a theme
+            // switch runs - replaced whichever of these had been written with plain body text.
             switch (result)
             {
                 case HotkeyRegistrationResult.NotConfigured:
-                    this.labelToggleHotkeyStatus.ForeColor = SystemColors.ControlText;
+                    Theme.SetTextRole(this.labelToggleHotkeyStatus, ThemeTextRole.Primary);
                     this.labelToggleHotkeyStatus.Text = string.Empty;
                     return;
                 case HotkeyRegistrationResult.AlreadyOwnedByAnotherApplication:
-                    this.labelToggleHotkeyStatus.ForeColor = Color.Red;
+                    Theme.SetTextRole(this.labelToggleHotkeyStatus, ThemeTextRole.StatusBad);
                     this.labelToggleHotkeyStatus.Text = "Already in use by another application.";
                     return;
                 case HotkeyRegistrationResult.Failed:
-                    this.labelToggleHotkeyStatus.ForeColor = Color.Red;
+                    Theme.SetTextRole(this.labelToggleHotkeyStatus, ThemeTextRole.StatusBad);
                     this.labelToggleHotkeyStatus.Text = "Could not register this hotkey.";
                     return;
             }
 
             if ((_toggleBinding.Modifiers & ~HotkeyBindingParser.ModNoRepeat) == 0)
             {
-                this.labelToggleHotkeyStatus.ForeColor = Color.DarkOrange;
+                Theme.SetTextRole(this.labelToggleHotkeyStatus, ThemeTextRole.StatusWarning);
                 this.labelToggleHotkeyStatus.Text = "No modifier: steals the key from the game.";
                 return;
             }
 
-            this.labelToggleHotkeyStatus.ForeColor = Color.Green;
+            Theme.SetTextRole(this.labelToggleHotkeyStatus, ThemeTextRole.StatusGood);
             this.labelToggleHotkeyStatus.Text = "Hotkey registered.";
         }
 
@@ -1208,6 +1380,249 @@ namespace vibrance.GUI.common
             ApplyToggleHotkey(true);
         }
 
+        /// <summary>
+        /// The one place the user's appearance preference is written, shared by all three radios.
+        /// That sharing is what makes the "not Checked" return below non-optional rather than
+        /// defensive: checking one radio unchecks another, so every switch raises this handler
+        /// twice - once for the button that just went false - and without the test the mode would
+        /// be written and applied twice per click, the second time for the option the user just
+        /// moved away from.
+        /// </summary>
+        private void radioButtonThemeMode_CheckedChanged(object sender, EventArgs e)
+        {
+            RadioButton radio = sender as RadioButton;
+            if (radio == null || !radio.Checked)
+            {
+                return;
+            }
+
+            if (_isLoadingThemeMode)
+            {
+                return;
+            }
+
+            ThemeMode mode = ResolveThemeModeFromRadio(radio);
+
+            // Persisted before it is applied, so a preference the user just picked survives a
+            // restart even if the repaint below fails. The INI write's own result is ignored, the
+            // same way SetUpdateCheckEnabled's is: a settings file that cannot be written is not a
+            // reason to leave the window in the theme the user has just switched away from.
+            new SettingsController().SetThemeMode(mode);
+            Theme.SetMode(mode);
+
+            // Theme.SetMode returns whether IsDark actually flipped, and this deliberately does not
+            // gate on it. Switching Auto to Light on a machine whose Windows is already light does
+            // repaint nothing visible - but it is one control tree, walked once, on an explicit
+            // click, and a handler whose behaviour depends on what Windows happens to be set to is
+            // the kind of difference nobody re-tests in the other configuration.
+            ApplyThemeToThisWindow();
+        }
+
+        /// <summary>
+        /// Which mode a radio stands for, by reference against the three designer fields rather
+        /// than by parsing its Text - the labels are user-facing prose and the persisted form is
+        /// ThemeResolver.FormatMode's, and those two must never become the same string by accident.
+        /// Anything unrecognised is Auto, which is also what ThemeMode's zero value and an INI with
+        /// no themeMode key both mean.
+        /// </summary>
+        private ThemeMode ResolveThemeModeFromRadio(RadioButton radio)
+        {
+            if (radio == this.radioButtonThemeLight)
+            {
+                return ThemeMode.Light;
+            }
+            if (radio == this.radioButtonThemeDark)
+            {
+                return ThemeMode.Dark;
+            }
+            return ThemeMode.Auto;
+        }
+
+        /// <summary>
+        /// Checks whichever appearance radio the stored mode names, on startup.
+        ///
+        /// Reads Theme.Mode rather than calling ReadThemeMode() a second time, and that is not a
+        /// shortcut: Program.Main has already handed the INI's value to Theme.Initialize before any
+        /// form exists (see that call's own comment for why it has to happen there), so Theme.Mode
+        /// IS the stored mode here - while a second file read could come back with something the
+        /// palette this form is about to be painted in does not match.
+        ///
+        /// Assigning Checked on a child control is allowed under the foreground rule quoted in
+        /// Theme.Apply: RadioButton.Checked invalidates itself and unchecks its siblings through its
+        /// parent's Controls collection, and does not activate, focus, show or recreate anything.
+        /// </summary>
+        private void ApplyStoredThemeModeToRadios()
+        {
+            _isLoadingThemeMode = true;
+            try
+            {
+                switch (Theme.Mode)
+                {
+                    case ThemeMode.Light:
+                        this.radioButtonThemeLight.Checked = true;
+                        break;
+                    case ThemeMode.Dark:
+                        this.radioButtonThemeDark.Checked = true;
+                        break;
+                    default:
+                        this.radioButtonThemeAuto.Checked = true;
+                        break;
+                }
+            }
+            finally
+            {
+                // In a finally because an unbalanced guard is silent: left true, every later radio
+                // click would stop at the _isLoadingThemeMode test and the appearance control would
+                // simply do nothing for the rest of the process.
+                _isLoadingThemeMode = false;
+            }
+        }
+
+        /// <summary>
+        /// Repaints this window in whatever palette Theme.Current now holds - the whole of the
+        /// theme-switch work, in one place, so the appearance radios and the live Windows follower
+        /// below cannot drift into applying different amounts of it.
+        ///
+        /// Three calls, and none of them covers another:
+        ///  - Theme.Apply(this) walks this form's own control tree, and re-resolves each label's
+        ///    ThemeTextRole while it is there (Theme.SetTextRole) - which is what brings the status
+        ///    lines back in the NEW palette's StatusGood/StatusBad/StatusWarning. Without that they
+        ///    were flattened to body text by this very call: "Running!" stopped being green and a
+        ///    hotkey conflict stopped being red, on the one click whose whole purpose was repainting.
+        ///  - Theme.Apply(this.contextMenuStrip) reaches the tray menu, which is in no control tree
+        ///    at all: it hangs off NotifyIcon.ContextMenuStrip, and a NotifyIcon is a Component and
+        ///    not a Control, so no walk can find it - the same pair of calls, for the same reason,
+        ///    as the end of this form's constructor.
+        ///  - RefreshApplicationListItemAppearances repaints the application list's ROWS. Theme.Apply
+        ///    assigns the ListView's own BackColor/ForeColor and can go no further, so a
+        ///    ListViewItem carrying its own ForeColor - which is every "(Off)" and "(?)" marker -
+        ///    would keep the colour the OLD palette gave it. That is the one thing a theme switch
+        ///    could leave genuinely unreadable rather than merely wrong: the light theme's suppressed
+        ///    orange measures 2.72:1 against the dark list background, where AA wants 4.5:1.
+        ///
+        /// Nothing here shows, activates, focuses or raises the window, and nothing added to it ever
+        /// may - see the foreground rule in Theme.Apply's own comment for what taking the foreground
+        /// would cost the user mid-match. Safe to call while the window is hidden in the tray:
+        /// colours land on a window nobody is looking at, and its next paint uses them.
+        /// </summary>
+        private void ApplyThemeToThisWindow()
+        {
+            Theme.Apply(this);
+            Theme.Apply(this.contextMenuStrip);
+            RefreshApplicationListItemAppearances();
+        }
+
+        /// <summary>
+        /// Re-describes every row in the application list against the current palette, through the
+        /// same ApplyApplicationListItemAppearance the add path uses rather than a second copy of
+        /// that decision.
+        ///
+        /// Driven from _applicationSettings and FindApplicationListItem rather than by walking
+        /// listApplications.Items, because the setting is what carries the two facts a row's
+        /// appearance is derived from - IsExecutableUnconfirmed, and the suppression
+        /// ProfileToggleHelper holds - while a ListViewItem carries only the result. A setting with
+        /// no row on screen yet is skipped by ApplyApplicationListItemAppearance's own null guard,
+        /// exactly as ResolveListItemAppearances skips it.
+        ///
+        /// Runs on the UI thread only, like every other writer of this collection and of that
+        /// ListView; the indexed loop is what keeps a concurrent add from invalidating an
+        /// enumerator mid-walk.
+        /// </summary>
+        private void RefreshApplicationListItemAppearances()
+        {
+            if (_applicationSettings == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < _applicationSettings.Count; i++)
+            {
+                ApplicationSetting setting = _applicationSettings[i];
+                if (setting == null || string.IsNullOrEmpty(setting.FileName))
+                {
+                    continue;
+                }
+
+                ApplyApplicationListItemAppearance(FindApplicationListItem(setting.FileName), setting);
+            }
+        }
+
+        /// <summary>
+        /// Windows' own light/dark flip, noticed while vibranceGUI is running - the other half of
+        /// ThemeMode.Auto. Without this, Auto would mean "whatever Windows was set to when
+        /// vibranceGUI started", and a user who switches Windows into dark mode in the evening
+        /// would find this window still painted for the morning until they restarted it, which is
+        /// the one thing an "Auto" option must not do.
+        ///
+        /// No UserPreferenceCategory is filtered, and that is deliberate. SystemEvents raises this
+        /// for every WM_SETTINGCHANGE, so it fires far more often than the theme changes - but
+        /// which category a light/dark flip actually arrives under is not something that can be
+        /// established on one machine (Windows broadcasts it as an "ImmersiveColorSet" setting
+        /// change), and guessing wrong means silently never following the theme at all: a failure
+        /// indistinguishable from the feature not existing. What the unfiltered subscription
+        /// actually costs is one registry read per notification, and only in Auto - every other
+        /// mode returns on the first line below.
+        /// </summary>
+        private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+        {
+            // Auto is the only mode Windows gets a vote in. An explicit Light or Dark is the user
+            // having already answered this question - RefreshFromSystem would resolve their choice
+            // again and return false anyway, so this is just not paying for the read.
+            if (Theme.Mode != ThemeMode.Auto)
+            {
+                return;
+            }
+
+            // True only when IsDark actually flipped. Everything else that reaches here - a font
+            // change, a locale change, an accent colour this palette does not use - stops on this
+            // line, which is what makes not filtering by category affordable.
+            if (!Theme.RefreshFromSystem())
+            {
+                return;
+            }
+
+            // IsHandleCreated for the same reason OnDisplaySettingsChanged checks it: InvokeRequired
+            // returns false whenever the form has no handle yet, so without this the BeginInvoke
+            // below would be skipped and Theme.Apply would walk this form's controls on
+            // SystemEvents' own thread. Returning here still leaves the process in the right theme -
+            // RefreshFromSystem above has already swapped the palette, and the constructor's own
+            // Theme.Apply has not run yet or is about to paint a window nobody can see. IsDisposed
+            // guards the symmetric case at shutdown: CleanUp's unsubscribe cannot cover a
+            // notification already in flight.
+            if (this.IsDisposed || !this.IsHandleCreated)
+            {
+                return;
+            }
+
+            if (this.InvokeRequired)
+            {
+                // BeginInvoke, never Invoke. This runs on SystemEvents' own dedicated thread, and a
+                // synchronous Invoke would block that thread until this form's message loop got
+                // round to it - which deadlocks outright if the UI thread is itself waiting on
+                // anything this one holds, and holds up every other SystemEvents subscriber in the
+                // process while it waits.
+                //
+                // The work is posted directly instead of re-posting this method the way
+                // OnDisplaySettingsChanged does, and that difference matters: RefreshFromSystem
+                // above has already consumed the flip, so a second pass through this method would
+                // find it returning false and drop the repaint entirely.
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    // Re-checked inside the delegate: this runs later, off the message loop, and
+                    // CleanUp may have got there first - the same race the two guards above cover
+                    // for the synchronous path.
+                    if (this.IsDisposed || !this.IsHandleCreated)
+                    {
+                        return;
+                    }
+                    ApplyThemeToThisWindow();
+                });
+                return;
+            }
+
+            ApplyThemeToThisWindow();
+        }
+
         // Releases the live registration the moment the textbox gains focus, so the CURRENT
         // binding stops intercepting keystrokes meant for this field - closes PR #153's third
         // defect (you could not rebind to anything containing the key combination already bound,
@@ -1462,6 +1877,11 @@ namespace vibrance.GUI.common
         /// listApplications.Items directly - see its own comment for why that split needed to
         /// happen too, not just this one: this method alone was never enough to prove every
         /// returned appearance actually gets applied.
+        ///
+        /// Theme.Current is the one global this does read, and it is read here rather than taken as
+        /// a parameter because this method has no caller that could sensibly pass anything else -
+        /// the rows it describes are going onto the live ListView. DescribeListItem below takes its
+        /// palette explicitly for the opposite reason; see its own comment.
         /// </summary>
         internal static List<ApplicationListItemAppearance> ResolveListItemAppearances(
             List<ApplicationSetting> settings, string toggledName, HashSet<string> availableTags)
@@ -1479,7 +1899,7 @@ namespace vibrance.GUI.common
                 ApplicationListItemAppearance appearance = new ApplicationListItemAppearance();
                 appearance.Tag = matched.FileName;
                 DescribeListItem(matched.Name, matched.IsExecutableUnconfirmed, ProfileToggleHelper.IsSuppressed(matched.Name),
-                    out appearance.Text, out appearance.ForeColor, out appearance.ToolTip);
+                    Theme.Current, out appearance.Text, out appearance.ForeColor, out appearance.ToolTip);
                 appearances.Add(appearance);
             }
 
@@ -1612,13 +2032,23 @@ namespace vibrance.GUI.common
             // would reach OnDisplaySettingsChanged/OnResolutionChangeFailed and their own
             // BeginInvoke onto a form that is already mid-FormClosing. Detaching first is what
             // guarantees neither handler is still listening by the time that happens.
+            //
+            // UserPreferenceChanged is detached here too, and it is the same obligation rather than
+            // hygiene: SystemEvents holds the same strong reference to it on the same dedicated
+            // thread, so leaving it subscribed leaks this form and can fault at shutdown. It has a
+            // shutdown hazard of its own on top of that - its handler ends in Theme.Apply over this
+            // form's control tree, which is the last thing that should still be running against a
+            // form mid-FormClosing - and, like the two beside it, detaching cannot cover a
+            // notification already in flight; OnUserPreferenceChanged's own IsDisposed check is
+            // what handles that half.
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             ResolutionHelper.ResolutionChangeFailed -= OnResolutionChangeFailed;
 
             try
             {
                 this.statusLabel.Text = "Closing...";
-                this.statusLabel.ForeColor = Color.Red;
+                Theme.SetTextRole(this.statusLabel, ThemeTextRole.StatusBad);
                 this.Update();
                 if (_v != null && _v.GetVibranceInfo().isInitialized)
                 {
@@ -2280,9 +2710,25 @@ namespace vibrance.GUI.common
         /// </summary>
         private void SetFindGamesStatus(int addedCount)
         {
-            this.labelFindGamesStatus.Text = addedCount > 0
+            string status = addedCount > 0
                 ? string.Format("Added {0} game{1}. Double-click a game to set its ingame vibrance level.", addedCount, addedCount == 1 ? "" : "s")
                 : "No games were added.";
+            this.labelFindGamesStatus.Text = status;
+
+            // No colour is assigned here, and none should be. labelFindGamesStatus carries
+            // ThemeTextRole.StatusGood from the designer, and Theme.Apply resolves that role - at
+            // the end of this form's constructor, and again on every theme switch - so this method
+            // owns the text and the tooltip and nothing else. It did assign Theme.Current.StatusGood
+            // as well, because the walk used to overwrite every Label with TextPrimary and the
+            // designer's green never survived to be seen; with the role recorded there is one owner
+            // for this label's colour again, and it is the designer line.
+
+            // The label is AutoEllipsis inside 306 units and the longer of these two strings
+            // measures 583 (labelFindGamesStatus in the designer has the arithmetic for why it
+            // cannot be given more room), so the tail - the half that says what to do with the
+            // games just added - is only reachable from here. Assigned per call rather than once
+            // in the designer because the text is different on every call.
+            this.toolTip.SetToolTip(this.labelFindGamesStatus, status);
         }
 
         /// <summary>
@@ -2304,7 +2750,7 @@ namespace vibrance.GUI.common
             Color foreColor;
             string toolTip;
             DescribeListItem(setting.Name, setting.IsExecutableUnconfirmed, ProfileToggleHelper.IsSuppressed(setting.Name),
-                out text, out foreColor, out toolTip);
+                Theme.Current, out text, out foreColor, out toolTip);
 
             lvi.Text = text;
             lvi.ForeColor = foreColor;
@@ -2324,10 +2770,19 @@ namespace vibrance.GUI.common
         /// off, or a confirmed one can be - so a doubly-marked item shows BOTH suffixes and BOTH
         /// tooltip paragraphs; neither ever silently wins over the other. Suppression is the live
         /// fact ("this is what the profile is doing RIGHT NOW") and takes the colour when both
-        /// apply - GrayText already means "this entry might be broken", the wrong message to give
-        /// a profile the user just switched off on purpose.
+        /// apply - the secondary grey already means "this entry might be broken", the wrong message
+        /// to give a profile the user just switched off on purpose.
+        ///
+        /// The palette comes in as a parameter and is deliberately NOT read from Theme.Current
+        /// here, even though both callers pass exactly that. A ListViewItem's ForeColor is the one
+        /// colour in this application that Theme.Apply cannot reach - the walk assigns the
+        /// ListView's own ForeColor and never touches the items inside it - so these three markers
+        /// are the colours a theme switch is most likely to leave stale, and the fixture has to be
+        /// able to drive this decision through both palettes in one run to prove either is right.
+        /// A method reading the global would only ever answer for whichever theme the machine
+        /// running the self test happened to be in.
         /// </summary>
-        internal static void DescribeListItem(string name, bool isUnconfirmed, bool isSuppressed,
+        internal static void DescribeListItem(string name, bool isUnconfirmed, bool isSuppressed, ThemePalette palette,
             out string text, out Color foreColor, out string toolTip)
         {
             text = name ?? string.Empty;
@@ -2346,8 +2801,8 @@ namespace vibrance.GUI.common
             }
 
             foreColor = isSuppressed
-                ? SuppressedForeColor
-                : (isUnconfirmed ? SystemColors.GrayText : SystemColors.WindowText);
+                ? palette.StatusSuppressed
+                : (isUnconfirmed ? palette.TextSecondary : palette.ListText);
             toolTip = string.Join(Environment.NewLine + Environment.NewLine, toolTipParts.ToArray());
         }
 

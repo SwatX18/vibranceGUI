@@ -6,6 +6,7 @@ using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 using System.Xml.Linq;
 using System.Drawing;
 using System.IO;
+using vibrance.GUI.common.theme;
 
 namespace vibrance.GUI.common
 {
@@ -104,6 +105,12 @@ namespace vibrance.GUI.common
             // trackbar disabled to match the checkbox's own unchecked default, not just whatever
             // Enabled the designer happened to leave it at.
             this.trackBarHdrIngameLevel.Enabled = this.checkBoxHdrIngameLevel.Checked;
+
+            // Last statement of the constructor on purpose - see the identical call at the end of
+            // VibranceGUI's constructor for why. It matters most here: this dialog is the one that
+            // disables three trackbars and a combo box above, and the theme has to colour whatever
+            // enabled state that left behind rather than be overwritten by it.
+            Theme.Apply(this);
         }
 
         private void trackBarIngameLevel_Scroll(object sender, EventArgs e)
@@ -324,14 +331,19 @@ namespace vibrance.GUI.common
 
         private void validateIngameValues()
         {
+            // SetTextRole rather than ForeColor in both branches, for the same reason as the status
+            // labels in VibranceGUI.cs: the role is recorded on the label, so any later Theme.Apply
+            // re-resolves it in the palette then in force instead of flattening this line to body
+            // text. It also leaves one owner for this label's colour - this method - which is why
+            // the designer file no longer assigns one.
             if(matchesWindowsValues())
             {
-                labelValidation.ForeColor = Color.Red;
+                Theme.SetTextRole(labelValidation, ThemeTextRole.StatusBad);
                 labelValidation.Text = "⚠️ Ingame settings match your Windows settings!" + Environment.NewLine + "No color change will happen.";
             }
             else
             {
-                labelValidation.ForeColor = Color.Green;
+                Theme.SetTextRole(labelValidation, ThemeTextRole.StatusGood);
                 labelValidation.Text = "Validation of ingame settings was successful";
             }
         }

@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
 using vibrance.GUI.common.gamefinder;
+using vibrance.GUI.common.theme;
 
 namespace vibrance.GUI.common
 {
@@ -71,6 +72,16 @@ namespace vibrance.GUI.common
                     }
                 }
             }
+
+            // Last statement of the constructor on purpose - see the identical call at the end of
+            // VibranceGUI's constructor for why. The columns and the scan run later, in
+            // GameFinder_Load, because AutoScaleMode.Dpi resizes the controls only after the
+            // constructor returns; the rows they add inherit the ListView's themed ForeColor, so no
+            // second Apply is owed there. The one exception is the "already added" row further down
+            // this file, which colours itself from ThemePalette.TextSecondary directly - a
+            // ListViewItem's ForeColor is a colour the walk cannot reach, because it lives on the
+            // item and not on the control.
+            Theme.Apply(this);
         }
 
         // Valid only after ShowDialog() returned DialogResult.OK.
@@ -376,7 +387,7 @@ namespace vibrance.GUI.common
 
             if (candidate.IsAlreadyAdded)
             {
-                lvi.ForeColor = SystemColors.GrayText;
+                lvi.ForeColor = Theme.Current.TextSecondary;
                 _alreadyAddedCount++;
             }
             else

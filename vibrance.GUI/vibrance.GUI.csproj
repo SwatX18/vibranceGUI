@@ -138,6 +138,14 @@
       <DependentUpon>ProcessExplorer.cs</DependentUpon>
     </Compile>
     <Compile Include="common\UpdateInstaller.cs" />
+    <Compile Include="common\ThemeFixture.cs" />
+    <Compile Include="common\theme\Theme.cs" />
+    <Compile Include="common\theme\ThemeMode.cs" />
+    <Compile Include="common\theme\ThemePalette.cs" />
+    <Compile Include="common\theme\ThemeContrast.cs" />
+    <Compile Include="common\theme\ISystemThemeReader.cs" />
+    <Compile Include="common\theme\ThemeResolver.cs" />
+    <Compile Include="common\theme\ThemedCard.cs" />
     <Compile Include="common\UpdateCheck.cs" />
     <Compile Include="common\UpdateCheckFixture.cs" />
     <Compile Include="common\gamefinder\GameCandidate.cs" />

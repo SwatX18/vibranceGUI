@@ -9,6 +9,7 @@ using System.Linq;
 using System.Management;
 using System.Windows.Forms;
 using vibrance.GUI.AMD;
+using vibrance.GUI.common.theme;
 using vibrance.GUI.NVIDIA;
 
 namespace vibrance.GUI.common
@@ -33,6 +34,13 @@ namespace vibrance.GUI.common
 
             backgroundWorker.WorkerReportsProgress = true;
             backgroundWorker.RunWorkerAsync();
+
+            // Last statement of the constructor on purpose - see the identical call at the end of
+            // VibranceGUI's constructor for why. After RunWorkerAsync deliberately: the worker only
+            // reports entries back for the list, it assigns no colours, and the theme walk touches
+            // the ListView control rather than the items it will be filled with, so the two cannot
+            // race each other over the same property.
+            Theme.Apply(this);
         }
 
         private void GetAllProcesses()

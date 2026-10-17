@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 813 automated checks across sixteen fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 980 automated checks across seventeen fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture.
@@ -450,10 +450,10 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 813 of them across sixteen
-  `*Fixture.cs` files — twelve in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
+- **There is no test project**, but there are automated checks: 980 of them across seventeen
+  `*Fixture.cs` files — fourteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, one
   (`NvidiaInteropFixture.cs`, §7.3) in `vibrance.GUI/NVIDIA/` — compiled into the app and run through
-  sixteen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
+  seventeen `--selftest-*` flags dispatched early in `Program.cs`, but *after* the single-instance mutex
   (`Program.cs:78`, second-instance bail at `:92`, the flags at `:120-284`), so a fixture will not run
   while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
   reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`

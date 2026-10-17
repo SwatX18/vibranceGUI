@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Windows.Forms;
+using vibrance.GUI.common.theme;
 
 namespace vibrance.GUI.common
 {
@@ -63,6 +64,12 @@ namespace vibrance.GUI.common
             {
                 // The window icon is not worth failing a startup dialog over.
             }
+
+            // Last statement of the constructor on purpose - see the identical call at the end of
+            // VibranceGUI's constructor for why. This is the first window the application can ever
+            // show (Program.Main constructs it before a VibranceGUI exists), so it is also the first
+            // proof that Theme.Initialize ran ahead of every constructor rather than in one of them.
+            Theme.Apply(this);
         }
 
         /// <summary>

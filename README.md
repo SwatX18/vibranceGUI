@@ -21,7 +21,7 @@ build.
 settings (gamma, brightness and contrast, off by default), the separate HDR vibrance level (where
 an open question remains over whether NVIDIA's DVC does anything at all while a display is in
 HDR), and the apply-on-startup behaviour have only ever been exercised by automated checks, which
-drive fakes and stubs rather than a real GPU driver, display or game. There are 813 of those
+drive fakes and stubs rather than a real GPU driver, display or game. There are 980 of those
 checks, and they are not the same thing as somebody using the program.
 
 Two gaps worth knowing about before you rely on either:

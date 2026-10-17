@@ -12,6 +12,7 @@ using vibrance.GUI.AMD.vendor;
 using vibrance.GUI.AMD.vendor.utils;
 using vibrance.GUI.common;
 using vibrance.GUI.common.gamefinder;
+using vibrance.GUI.common.theme;
 using vibrance.GUI.NVIDIA;
 
 namespace vibrance.GUI
@@ -41,6 +42,7 @@ namespace vibrance.GUI
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
         private const string CliSelfTestMessageBoxCaption = "vibranceGUI command line self test";
+        private const string ThemeSelfTestMessageBoxCaption = "vibranceGUI theme self test";
         private const string NvapiSelfTestMessageBoxCaption = "vibranceGUI NVIDIA interop self test";
         private const string HelpMessageBoxCaption = "vibranceGUI command line options";
         private const string DisplayDriverUninstallerUrl = "http://www.guru3d.com/files-details/display-driver-uninstaller-download.html";
@@ -161,7 +163,28 @@ namespace vibrance.GUI
                 // requests to api.github.com on every suite run. A normal run is the only thing
                 // that ever gets a source which can reach the network.
                 ReleaseSource.Current = new GitHubReleaseSource();
+
+                // The fifth swap, and the same argument once more: SystemThemeReader.Current
+                // defaults to the inert UnknownSystemThemeReader, which reports "I do not know" and
+                // so resolves ThemeMode.Auto to the light theme on every machine. Leaving the
+                // registry reader as the default instead would make the theme fixture's Auto cases
+                // read the real HKCU\...\Themes\Personalize through the reflection harness, which
+                // never enters this method - so they would pass on a developer machine in light mode
+                // and fail on the same commit in dark mode. Exactly the reason ReleaseSource above
+                // defaults to offline. See UnknownSystemThemeReader's own header comment.
+                SystemThemeReader.Current = new RegistrySystemThemeReader();
             }
+
+            // After the block above, never before it: Auto is resolved here and once here, so the
+            // registry reader installed just above has to already be in place or a normal run would
+            // resolve Auto against the inert default and paint light on a dark Windows.
+            //
+            // Ahead of every --selftest-* branch and of GetAdapter() below, because the first window
+            // this application can show is GraphicsAdapterChooser, constructed inside GetAdapter -
+            // and every form's constructor ends in Theme.Apply(this), which reads what this sets. A
+            // fresh SettingsController, like ReadGraphicsAdapterPreference's own call site further
+            // down, since no form exists yet to own one.
+            Theme.Initialize(new SettingsController().ReadThemeMode());
 
             // Runs before the GPU vendor detection below on purpose: the picker is pure, so the
             // self test must stay runnable on a build agent or a reviewer's machine that has
@@ -305,6 +328,20 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, CliOptionsFixture.Run().ToArray()),
                     CliSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again, and for the same reason as --selftest-cli above: every check is
+            // arithmetic over two colours, or a mode resolved through a fake ISystemThemeReader, so
+            // this needs no driver, no settings file, no registry read and no window. The block
+            // further up skips all five source swaps for any --selftest-* argument, which is what
+            // leaves SystemThemeReader.Current as the inert UnknownSystemThemeReader here - and that
+            // is the one property that makes the Auto cases answer the same on a build agent as on a
+            // machine running Windows in dark mode. See ThemeFixture's own header comment.
+            if (args.Contains("--selftest-theme"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, ThemeFixture.Run().ToArray()),
+                    ThemeSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 

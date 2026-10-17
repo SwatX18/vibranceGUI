@@ -92,7 +92,12 @@
             // labelDdu
             //
             this.labelDdu.AutoSize = true;
-            this.labelDdu.ForeColor = System.Drawing.SystemColors.GrayText;
+            // The role, not the colour: Theme.Apply resolves ThemeTextRole.Secondary against the
+            // live palette, so this hint is quieter than the body text above it in both themes
+            // (TextSecondary is held to 4.5:1 in each). The Theme.Current.TextSecondary this
+            // replaced was overwritten with TextPrimary by the Theme.Apply at the end of this
+            // form's constructor, before the label was ever painted.
+            vibrance.GUI.common.theme.Theme.SetTextRole(this.labelDdu, vibrance.GUI.common.theme.ThemeTextRole.Secondary);
             this.labelDdu.Location = new System.Drawing.Point(18, 432);
             this.labelDdu.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelDdu.Name = "labelDdu";
