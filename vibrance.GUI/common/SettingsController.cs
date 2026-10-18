@@ -7,6 +7,7 @@ using System.Text;
 using System.Xml;
 using System.Xml.Serialization;
 using vibrance.GUI.AMD;
+using vibrance.GUI.common.theme;
 using vibrance.GUI.NVIDIA;
 
 namespace vibrance.GUI.common
@@ -45,6 +46,7 @@ namespace vibrance.GUI.common
         const string SzKeyNameLastUpdateCheckUtc = "lastUpdateCheckUtc";
         const string SzKeyNameStarredResolutions = "starredResolutions";
         const string SzKeyNameUnstarredResolutions = "unstarredResolutions";
+        const string SzKeyNameThemeMode = "themeMode";
 
 
         private string _fileName = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData).ToString() + "\\vibranceGUI\\vibranceGUI.ini";
@@ -378,6 +380,41 @@ namespace vibrance.GUI.common
         {
             return SetVibranceSetting(SzKeyNameLastUpdateCheckUtc,
                 whenUtc.ToUniversalTime().ToString("o", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>
+        /// Which theme the user picked, or Auto when the INI holds no preference - which is what
+        /// every existing installation looks like, and what an INI written by an older version looks
+        /// like too. Auto is where an unrecognised value lands as well (ThemeResolver.ParseMode),
+        /// deliberately the same place as a missing key rather than the other explicit mode: the
+        /// fallback for a typo in a hand-edited INI has to be "follow Windows", which is the same
+        /// choice ReadUpdateCheckEnabled makes about its own unparseable value above.
+        /// Read on its own, not folded into ReadVibranceSettings' 8-parameter signature, for the
+        /// same reason as ReadGraphicsAdapterPreference and ReadToggleHotkey before it: the first
+        /// form has to be painted before it is shown, so this is needed earlier than the
+        /// application settings XML exists, and it has nothing to do with vibrance levels.
+        /// </summary>
+        public ThemeMode ReadThemeMode()
+        {
+            if (!IsFileExisting(_fileName))
+            {
+                return ThemeMode.Auto;
+            }
+
+            StringBuilder szValueThemeMode = new StringBuilder(1024);
+            GetPrivateProfileString(SzSectionName,
+                SzKeyNameThemeMode,
+                ThemeResolver.FormatMode(ThemeMode.Auto),
+                szValueThemeMode,
+                Convert.ToUInt32(szValueThemeMode.Capacity),
+                _fileName);
+
+            return ThemeResolver.ParseMode(szValueThemeMode.ToString().Trim());
+        }
+
+        public bool SetThemeMode(ThemeMode mode)
+        {
+            return SetVibranceSetting(SzKeyNameThemeMode, ThemeResolver.FormatMode(mode));
         }
 
         private bool PrepareFile()

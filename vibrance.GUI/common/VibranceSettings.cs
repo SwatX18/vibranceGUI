@@ -6,6 +6,7 @@ using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 using System.Xml.Linq;
 using System.Drawing;
 using System.IO;
+using vibrance.GUI.common.theme;
 
 namespace vibrance.GUI.common
 {
@@ -122,6 +123,21 @@ namespace vibrance.GUI.common
             // Loaded after the checkbox above has its final state; a new entry (setting == null) gets the default selection
             _resolutionPicker.Load(setting == null ? null : setting.ResolutionSettings);
             syncResolutionControls();
+
+            // Last statement of the constructor on purpose - see the identical call at the end of
+            // VibranceGUI's constructor for why. It matters most here: this dialog is the one that
+            // disables three trackbars and four combo boxes above, and the theme has to colour
+            // whatever enabled state that left behind rather than be overwritten by it. It also has
+            // to run after syncResolutionControls, which is what decides whether the unavailable-mode
+            // warning is visible at all: the warning's colour comes from the StatusBad role its
+            // designer line records, and Apply is the only thing that resolves a role to a colour.
+            Theme.Apply(this);
+
+            // The ToolTip is a Component, not a Control, so the walk above cannot reach it - the
+            // same hand-off VibranceGUI.ApplyThemeToThisWindow makes for its own tip and menu.
+            // This dialog gained its first ToolTip with the resolution picker and the CS2 checkbox,
+            // so without this line those two tips would be the only light surfaces in a dark form.
+            Theme.ApplyToToolTip(this.toolTip);
         }
 
         private void trackBarIngameLevel_Scroll(object sender, EventArgs e)
@@ -521,14 +537,19 @@ namespace vibrance.GUI.common
 
         private void validateIngameValues()
         {
+            // SetTextRole rather than ForeColor in both branches, for the same reason as the status
+            // labels in VibranceGUI.cs: the role is recorded on the label, so any later Theme.Apply
+            // re-resolves it in the palette then in force instead of flattening this line to body
+            // text. It also leaves one owner for this label's colour - this method - which is why
+            // the designer file no longer assigns one.
             if(matchesWindowsValues())
             {
-                labelValidation.ForeColor = Color.Red;
+                Theme.SetTextRole(labelValidation, ThemeTextRole.StatusBad);
                 labelValidation.Text = "⚠️ Ingame settings match your Windows settings!" + Environment.NewLine + "No color change will happen.";
             }
             else
             {
-                labelValidation.ForeColor = Color.Green;
+                Theme.SetTextRole(labelValidation, ThemeTextRole.StatusGood);
                 labelValidation.Text = "Validation of ingame settings was successful";
             }
         }

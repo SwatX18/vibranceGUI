@@ -8,6 +8,7 @@ using System.Runtime.Serialization;
 using System.Windows.Forms;
 using vibrance.GUI.AMD;
 using vibrance.GUI.AMD.vendor;
+using vibrance.GUI.common.theme;
 using vibrance.GUI.NVIDIA;
 
 namespace vibrance.GUI.common
@@ -1136,9 +1137,11 @@ namespace vibrance.GUI.common
             CheckDescribeListItemBothFlagsComposeBothSuffixes(checklist);
             CheckDescribeListItemBothFlagsSuppressionWinsTheColour(checklist);
             CheckDescribeListItemBothFlagsComposeBothTooltipParagraphs(checklist);
-            CheckDescribeListItemSuppressedColourIsNotGrayTextOrWindowText(checklist);
+            CheckDescribeListItemMarkerColoursPerTheme(checklist);
             CheckDescribeListItemNullNameDoesNotThrow(checklist);
             CheckMarkerSuffixesAreDistinct(checklist);
+            CheckDescribeListItemUsesThePaletteItIsGiven(checklist);
+            CheckSuppressedForeColorFollowsTheLivePalette(checklist);
             CheckShouldRefreshOnlyOnConfirmedToggles(checklist);
             CheckFindApplicationSettingsByNameReturnsOnlyTheMatchingOne(checklist);
             CheckFindApplicationSettingsByNameReturnsEveryProfileSharingTheName(checklist);
@@ -1166,13 +1169,20 @@ namespace vibrance.GUI.common
         // neither flag is set.
         private static void CheckDescribeListItemNeitherFlag(Checklist checklist)
         {
+            // The light palette explicitly, here and in every marker check below, rather than
+            // Theme.Current: --selftest-profiletoggle runs after Program.Main has already called
+            // Theme.Initialize with whatever the INI and Windows say, so a check written against
+            // the global would assert a different colour on a machine in dark mode and could pass
+            // or fail for a reason that has nothing to do with this decision. M7 covers both
+            // palettes on purpose, and M10 is what pins that the parameter is used at all.
+            ThemePalette palette = ThemePalette.Light();
             string text;
             Color foreColor;
             string toolTip;
-            VibranceGUI.DescribeListItem("TestMarkerGame", false, false, out text, out foreColor, out toolTip);
+            VibranceGUI.DescribeListItem("TestMarkerGame", false, false, palette, out text, out foreColor, out toolTip);
 
-            checklist.Check(text == "TestMarkerGame" && foreColor == SystemColors.WindowText && toolTip == string.Empty,
-                string.Format("M1: neither flag set -> unchanged name, WindowText, empty tooltip, got text=\"{0}\" foreColor={1} toolTip=\"{2}\"",
+            checklist.Check(text == "TestMarkerGame" && foreColor == palette.ListText && toolTip == string.Empty,
+                string.Format("M1: neither flag set -> unchanged name, the palette's own list text, empty tooltip, got text=\"{0}\" foreColor={1} toolTip=\"{2}\"",
                     text, foreColor, toolTip));
         }
 
@@ -1181,16 +1191,17 @@ namespace vibrance.GUI.common
         // untouched.
         private static void CheckDescribeListItemUnconfirmedOnly(Checklist checklist)
         {
+            ThemePalette palette = ThemePalette.Light();
             string text;
             Color foreColor;
             string toolTip;
-            VibranceGUI.DescribeListItem("TestMarkerGame", true, false, out text, out foreColor, out toolTip);
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, false, palette, out text, out foreColor, out toolTip);
 
             bool ok = text == "TestMarkerGame" + VibranceGUI.UnconfirmedMarkerSuffix &&
-                      foreColor == SystemColors.GrayText &&
+                      foreColor == palette.TextSecondary &&
                       toolTip == VibranceGUI.ToolTipExecutableUnconfirmed;
             checklist.Check(ok,
-                string.Format("M2: unconfirmed only -> \"{0}\", GrayText, the unconfirmed tooltip verbatim, got text=\"{1}\" foreColor={2} toolTip=\"{3}\"",
+                string.Format("M2: unconfirmed only -> \"{0}\", the palette's secondary text, the unconfirmed tooltip verbatim, got text=\"{1}\" foreColor={2} toolTip=\"{3}\"",
                     "TestMarkerGame" + VibranceGUI.UnconfirmedMarkerSuffix, text, foreColor, toolTip));
         }
 
@@ -1198,13 +1209,14 @@ namespace vibrance.GUI.common
         // of the dedicated colour, or lose the suppressed tooltip.
         private static void CheckDescribeListItemSuppressedOnly(Checklist checklist)
         {
+            ThemePalette palette = ThemePalette.Light();
             string text;
             Color foreColor;
             string toolTip;
-            VibranceGUI.DescribeListItem("TestMarkerGame", false, true, out text, out foreColor, out toolTip);
+            VibranceGUI.DescribeListItem("TestMarkerGame", false, true, palette, out text, out foreColor, out toolTip);
 
             bool ok = text == "TestMarkerGame" + VibranceGUI.SuppressedMarkerSuffix &&
-                      foreColor == VibranceGUI.SuppressedForeColor &&
+                      foreColor == palette.StatusSuppressed &&
                       toolTip == VibranceGUI.ToolTipSuppressed;
             checklist.Check(ok,
                 string.Format("M3: suppressed only -> \"{0}\", the dedicated suppressed colour, the suppressed tooltip verbatim, got text=\"{1}\" foreColor={2} toolTip=\"{3}\"",
@@ -1219,7 +1231,7 @@ namespace vibrance.GUI.common
             string text;
             Color foreColor;
             string toolTip;
-            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, out text, out foreColor, out toolTip);
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, ThemePalette.Light(), out text, out foreColor, out toolTip);
 
             string expected = "TestMarkerGame" + VibranceGUI.SuppressedMarkerSuffix + VibranceGUI.UnconfirmedMarkerSuffix;
             checklist.Check(text == expected,
@@ -1232,13 +1244,14 @@ namespace vibrance.GUI.common
         // "reads as broken, not switched off" failure the architect flagged.
         private static void CheckDescribeListItemBothFlagsSuppressionWinsTheColour(Checklist checklist)
         {
+            ThemePalette palette = ThemePalette.Light();
             string text;
             Color foreColor;
             string toolTip;
-            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, out text, out foreColor, out toolTip);
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, palette, out text, out foreColor, out toolTip);
 
-            checklist.Check(foreColor == VibranceGUI.SuppressedForeColor,
-                string.Format("M5: both flags set -> the suppressed colour wins (not GrayText), got foreColor={0}", foreColor));
+            checklist.Check(foreColor == palette.StatusSuppressed,
+                string.Format("M5: both flags set -> the suppressed colour wins (not the secondary text), got foreColor={0}", foreColor));
         }
 
         // M6. Mutation this guards: only one tooltip paragraph survives when both flags are set
@@ -1249,7 +1262,7 @@ namespace vibrance.GUI.common
             string text;
             Color foreColor;
             string toolTip;
-            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, out text, out foreColor, out toolTip);
+            VibranceGUI.DescribeListItem("TestMarkerGame", true, true, ThemePalette.Light(), out text, out foreColor, out toolTip);
 
             int suppressedIndex = toolTip.IndexOf(VibranceGUI.ToolTipSuppressed, StringComparison.Ordinal);
             int unconfirmedIndex = toolTip.IndexOf(VibranceGUI.ToolTipExecutableUnconfirmed, StringComparison.Ordinal);
@@ -1260,15 +1273,44 @@ namespace vibrance.GUI.common
                     suppressedIndex, unconfirmedIndex, toolTip));
         }
 
-        // M7. Sanity check on the colour choice itself. Mutation this guards: SuppressedForeColor
-        // defined as (or reassigned to) SystemColors.GrayText or SystemColors.WindowText, silently
-        // undoing the "not GrayText" decision without any of M1-M6 necessarily catching it (M1/M2
-        // pass GrayText/WindowText legitimately in their OWN branch; only comparing the constant
-        // against both catches it being aliased to either).
-        private static void CheckDescribeListItemSuppressedColourIsNotGrayTextOrWindowText(Checklist checklist)
+        // M7. Sanity checks on the colour choices themselves, run against BOTH palettes rather
+        // than against whichever one this machine happens to be in - the three marker colours are
+        // written onto ListViewItems, which is the one place Theme.Apply's walk cannot reach (it
+        // assigns the ListView's own ForeColor and never the items inside it), so a wrong twin
+        // here is not a wart, it is text nobody can read until the user switches theme back.
+        //
+        // These are measured through ThemeContrast, the same arithmetic ThemePalette's own colours
+        // were picked with, rather than asserted against the ratios written in that file's
+        // comments: a comment cannot fail a build. The mutation the original single check guarded -
+        // the suppressed colour aliased to one of the two plain text colours, undoing the "not the
+        // secondary grey" decision that M1/M2 cannot catch, because each asserts one of those colours
+        // legitimately in its OWN branch - is now the second check below, made per theme:
+        // aliasing it in one palette only would otherwise slip through.
+        private static void CheckDescribeListItemMarkerColoursPerTheme(Checklist checklist)
         {
-            checklist.Check(VibranceGUI.SuppressedForeColor != SystemColors.GrayText && VibranceGUI.SuppressedForeColor != SystemColors.WindowText,
-                string.Format("M7: the suppressed marker's own colour is neither GrayText nor WindowText, got {0}", VibranceGUI.SuppressedForeColor));
+            CheckMarkerColoursForPalette(checklist, ThemePalette.Light(), "light");
+            CheckMarkerColoursForPalette(checklist, ThemePalette.Dark(), "dark");
+        }
+
+        // Each colour is measured against ITS OWN palette's list background, never the other
+        // one's: the light suppressed orange on the dark list background measures 2.72:1 and the
+        // dark one on white 2.10:1, so a twin taken from the wrong palette fails here rather than
+        // reading as "a bit pale".
+        private static void CheckMarkerColoursForPalette(Checklist checklist, ThemePalette palette, string themeName)
+        {
+            double suppressedRatio = ThemeContrast.Ratio(palette.StatusSuppressed, palette.ListBackground);
+            checklist.Check(suppressedRatio >= ThemeContrast.AaTextRatio,
+                string.Format("M7a ({0}): the suppressed marker's colour clears AA against its own list background, got {1} on {2} = {3:0.00}:1, needs {4}:1",
+                    themeName, palette.StatusSuppressed, palette.ListBackground, suppressedRatio, ThemeContrast.AaTextRatio));
+
+            checklist.Check(palette.StatusSuppressed != palette.TextPrimary && palette.StatusSuppressed != palette.TextSecondary,
+                string.Format("M7b ({0}): the suppressed marker's colour is neither the primary nor the secondary text colour - \"switched off\" must not render identically to \"normal\" or to \"this entry is broken\", got {1} against TextPrimary={2} TextSecondary={3}",
+                    themeName, palette.StatusSuppressed, palette.TextPrimary, palette.TextSecondary));
+
+            double unconfirmedRatio = ThemeContrast.Ratio(palette.TextSecondary, palette.ListBackground);
+            checklist.Check(unconfirmedRatio >= ThemeContrast.AaTextRatio,
+                string.Format("M7c ({0}): the unconfirmed marker's colour clears AA against its own list background, got {1} on {2} = {3:0.00}:1, needs {4}:1",
+                    themeName, palette.TextSecondary, palette.ListBackground, unconfirmedRatio, ThemeContrast.AaTextRatio));
         }
 
         // M8. A null name never throws (C#'s null-tolerant "+=" already makes that true whether or
@@ -1286,7 +1328,7 @@ namespace vibrance.GUI.common
             {
                 Color foreColor;
                 string toolTip;
-                VibranceGUI.DescribeListItem(null, false, false, out text, out foreColor, out toolTip);
+                VibranceGUI.DescribeListItem(null, false, false, ThemePalette.Light(), out text, out foreColor, out toolTip);
             }
             catch (Exception)
             {
@@ -1316,6 +1358,45 @@ namespace vibrance.GUI.common
             checklist.Check(VibranceGUI.SuppressedMarkerSuffix != VibranceGUI.UnconfirmedMarkerSuffix,
                 string.Format("M9: the suppressed and unconfirmed suffixes are not the same text, got SuppressedMarkerSuffix=\"{0}\" UnconfirmedMarkerSuffix=\"{1}\"",
                     VibranceGUI.SuppressedMarkerSuffix, VibranceGUI.UnconfirmedMarkerSuffix));
+        }
+
+        // M10. The palette parameter has to be the one DescribeListItem actually reads. Mutation
+        // this guards: the method ignoring its own argument and going back to Theme.Current (or to
+        // any other single source), which every check from M1 to M7 would still pass on a machine
+        // in light mode - and which is exactly the bug that leaves a dark list painted in the light
+        // theme's markers after a live theme switch. Driven through both palettes in one run,
+        // because the two produce different colours only if the argument is honoured.
+        private static void CheckDescribeListItemUsesThePaletteItIsGiven(Checklist checklist)
+        {
+            ThemePalette light = ThemePalette.Light();
+            ThemePalette dark = ThemePalette.Dark();
+            string text;
+            string toolTip;
+            Color lightColor;
+            Color darkColor;
+            VibranceGUI.DescribeListItem("TestMarkerGame", false, true, light, out text, out lightColor, out toolTip);
+            VibranceGUI.DescribeListItem("TestMarkerGame", false, true, dark, out text, out darkColor, out toolTip);
+
+            bool ok = lightColor == light.StatusSuppressed &&
+                      darkColor == dark.StatusSuppressed &&
+                      lightColor != darkColor;
+            checklist.Check(ok,
+                string.Format("M10: the same flags described through the light and the dark palette produce that palette's own suppressed colour, got light={0} (expected {1}) dark={2} (expected {3})",
+                    lightColor, light.StatusSuppressed, darkColor, dark.StatusSuppressed));
+        }
+
+        // M11. VibranceGUI.SuppressedForeColor is the role name the checks above and the production
+        // comment both talk about, and it forwards to the live palette instead of holding a colour
+        // of its own. Mutation this guards: it going back to the 192/80/0 literal it shipped as - a
+        // light-theme orange that measures 3.16:1 on the dark list background, below the 4.5:1 AA
+        // wants and below even the 3:1 bar for non-text. Nothing else here would catch it: M1-M10
+        // measure palette values directly and would all keep passing while this property handed a
+        // stale colour to anything that still read it.
+        private static void CheckSuppressedForeColorFollowsTheLivePalette(Checklist checklist)
+        {
+            checklist.Check(VibranceGUI.SuppressedForeColor == Theme.Current.StatusSuppressed,
+                string.Format("M11: the suppressed marker's role colour is the live palette's own StatusSuppressed, got {0} against Theme.Current.StatusSuppressed={1}",
+                    VibranceGUI.SuppressedForeColor, Theme.Current.StatusSuppressed));
         }
 
         // N1-N3. Mutation this guards: RefreshToggledListItemAppearance's gate refreshing on every
@@ -1563,7 +1644,7 @@ namespace vibrance.GUI.common
             string expectedText;
             Color expectedColor;
             string expectedToolTip;
-            VibranceGUI.DescribeListItem("TestResolveGame", true, false, out expectedText, out expectedColor, out expectedToolTip);
+            VibranceGUI.DescribeListItem("TestResolveGame", true, false, Theme.Current, out expectedText, out expectedColor, out expectedToolTip);
 
             bool ok = result.Count == 1 &&
                       result[0].Text == expectedText &&
@@ -1765,7 +1846,7 @@ namespace vibrance.GUI.common
             string expectedText;
             Color expectedColor;
             string expectedToolTip;
-            VibranceGUI.DescribeListItem("TestApplyRepaintGame", true, false, out expectedText, out expectedColor, out expectedToolTip);
+            VibranceGUI.DescribeListItem("TestApplyRepaintGame", true, false, Theme.Current, out expectedText, out expectedColor, out expectedToolTip);
 
             ApplicationListItemAppearance applied;
             bool found = rows.Applied.TryGetValue(setting.FileName, out applied);

@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 1406 automated checks across twenty fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 1582 automated checks across twenty-one fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture, and neither has the NVIDIA display-scaling write
@@ -451,13 +451,13 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 1406 of them across twenty
-  `*Fixture.cs` files — sixteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
+- **There is no test project**, but there are automated checks: 1582 of them across twenty-one
+  `*Fixture.cs` files — seventeen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
   (`NvidiaInteropFixture.cs`, §7.3, and `DisplayScalingFixture.cs`, §7.10) in `vibrance.GUI/NVIDIA/` —
-  compiled into the app and run through twenty `--selftest-*` flags (one per fixture except
+  compiled into the app and run through twenty-one `--selftest-*` flags (one per fixture except
   `UpdateCheckFixture`, which has none and runs only through the reflection harness, plus the opt-in
   hardware variant `--selftest-gamma-display`) dispatched early in `Program.cs`, but *after* the
-  single-instance mutex (`Program.cs:87`, second-instance bail at `:122-123`, the flags at `:173-401`), so a fixture will not run
+  single-instance mutex (`Program.cs:89`, second-instance bail at `:124-125`, the flags at `:196-433`), so a fixture will not run
   while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
   reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`
   at all, since every `--selftest-*` flag does) instead has its `Run()` called directly by reflection —

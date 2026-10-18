@@ -145,7 +145,13 @@
             // labelSkipped
             //
             this.labelSkipped.AutoSize = true;
-            this.labelSkipped.ForeColor = System.Drawing.SystemColors.GrayText;
+            // The role, not the colour: Theme.Apply resolves ThemeTextRole.Secondary against
+            // whichever palette is live, here and on any later re-apply. The
+            // Theme.Current.TextSecondary this replaced did nothing at all - the Theme.Apply at the
+            // end of this form's constructor overwrote every Label with TextPrimary before either
+            // hint was painted, so this line and labelNote below rendered as ordinary body text and
+            // the secondary hierarchy was gone.
+            vibrance.GUI.common.theme.Theme.SetTextRole(this.labelSkipped, vibrance.GUI.common.theme.ThemeTextRole.Secondary);
             this.labelSkipped.Location = new System.Drawing.Point(18, 702);
             this.labelSkipped.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelSkipped.Name = "labelSkipped";
@@ -156,7 +162,8 @@
             //
             this.labelNote.AutoSize = true;
             this.labelNote.Font = new System.Drawing.Font("Microsoft Sans Serif", 8.25F, System.Drawing.FontStyle.Italic, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.labelNote.ForeColor = System.Drawing.SystemColors.GrayText;
+            // Secondary, declared as a role - see labelSkipped above for why this is not a colour.
+            vibrance.GUI.common.theme.Theme.SetTextRole(this.labelNote, vibrance.GUI.common.theme.ThemeTextRole.Secondary);
             this.labelNote.Location = new System.Drawing.Point(18, 738);
             this.labelNote.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
             this.labelNote.Name = "labelNote";
