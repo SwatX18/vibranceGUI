@@ -667,10 +667,9 @@ namespace vibrance.GUI.common
             {
                 // The apply branch (neverChangeResolution cleared by SeedApplied) asks
                 // ResolutionHelper.IsResolutionChangeNeeded about the display, which reads the REAL
-                // one unless overridden. AMD borrows the real foreground window, so its screen can
-                // be any monitor whose real mode differs from the fake game mode: the apply then
-                // tried a real mode change (and failed, clearing isResolutionChangeApplied).
-                // Answering from the fake display makes the outcome independent of the machine.
+                // one unless overridden: the apply would try a real mode change (and fail, clearing
+                // isResolutionChangeApplied) on any monitor whose real mode differs from the fake
+                // game mode. Answering from the fake display makes the outcome independent of the machine.
                 ResolutionHelper.DeviceOverrideForTests = Modes;
                 Modes.SetCurrentMode(GameDevice, ResolutionChangeFixture.BuildDevmode(2560, 1440, 32, 144, 0));
                 ResolutionRestoreHelper.RecordModeApplied(GameDevice, GameTarget, DesktopTarget);
@@ -680,11 +679,6 @@ namespace vibrance.GUI.common
             {
                 get { return GameTarget.MatchesAchievedMode(Modes.GetCurrentMode(GameDevice)); }
             }
-
-            // False when a precondition the scenario borrowed from the real machine no longer holds
-            // (AMD: the real foreground window moved). Checks that expect a revert emit [SKIP]
-            // instead of failing for a reason that is not a defect.
-            public virtual bool ForegroundStillTheSame { get { return true; } }
 
             public bool DesktopRestored
             {
@@ -786,19 +780,9 @@ namespace vibrance.GUI.common
             private readonly MethodInfo _onWinEventHook = typeof(AmdDynamicVibranceProxy).GetMethod("OnWinEventHook", BindingFlags.NonPublic | BindingFlags.Instance);
             private readonly FieldInfo _vibranceInfoField = typeof(AmdDynamicVibranceProxy).GetField("_vibranceInfo", BindingFlags.NonPublic | BindingFlags.Instance);
 
-            // The AMD revert branch re-reads the REAL foreground window and bails unless it is the
-            // event's window, so this scenario borrows whatever window is really in front.
-            public static AmdScenario TryCreate(string gameName)
+            public AmdScenario(string gameName) : base(gameName)
             {
-                IntPtr foreground = AmdDynamicVibranceProxy.GetForegroundWindow();
-                if (foreground == IntPtr.Zero)
-                    return null;
-                return new AmdScenario(gameName, foreground);
-            }
-
-            private AmdScenario(string gameName, IntPtr foreground) : base(gameName)
-            {
-                Hwnd = foreground;
+                Hwnd = GetDesktopWindow();
                 GameDevice = Screen.FromHandle(Hwnd).DeviceName;
                 Proxy = new AmdDynamicVibranceProxy(Adapter, new List<ApplicationSetting> { BuildApplicationSetting(250) }, BuildWindowsSettings());
                 Proxy.SetAffectPrimaryMonitorOnly(true);
@@ -806,9 +790,10 @@ namespace vibrance.GUI.common
                 Proxy.SetNeverChangeColorSettings(true);
                 Proxy.SetNeverSwitchResolution(true);
                 Proxy.SetGameExitWatcherForTests(null, Modes);
+                // The revert branch bails unless the event's window is in front; answer that with the
+                // event's own (fake) window rather than whatever is really in front on this machine.
+                Proxy.SetForegroundWindowForTests(delegate { return Hwnd; });
             }
-
-            public override bool ForegroundStillTheSame { get { return AmdDynamicVibranceProxy.GetForegroundWindow() == Hwnd; } }
 
             public override void SetNeverChangeResolution(bool value)
             {
@@ -870,7 +855,7 @@ namespace vibrance.GUI.common
             checklist.Lines.Add("AMD (real OnWinEventHook via reflection, fake display, fake adapter, fake timer):");
             try
             {
-                RunVendorChecks(checklist, delegate (string name) { return AmdScenario.TryCreate(name); }, "A", 250);
+                RunVendorChecks(checklist, delegate (string name) { return new AmdScenario(name); }, "A", 250);
             }
             finally
             {
@@ -890,42 +875,13 @@ namespace vibrance.GUI.common
             Func<Scenario> armedGame = delegate
             {
                 Scenario s = create(game);
-                if (s == null)
-                    return null;
                 s.UseTimer();
                 s.Game();
                 s.SeedApplied();
                 return s;
             };
 
-            // armedGame, or null plus a [SKIP] when there is no foreground window to borrow (AMD)
-            // so the group below is skipped instead of dereferencing null.
-            Func<string, Scenario> begin = delegate (string label)
-            {
-                Scenario s = armedGame();
-                if (s == null)
-                    checklist.Skip(p + "-" + label + ": no foreground window to borrow - group not run");
-                return s;
-            };
-
-            // False plus a [SKIP] when the real foreground window moved off the one the scenario
-            // borrowed (AMD only: its revert gate reads the REAL foreground, so a revert the check
-            // expects would silently not happen and the check would fail for a reason that is not
-            // a defect). NVIDIA's fake device answers IsWindowActive itself, so it is always true.
-            Func<Scenario, string, bool> stillValid = delegate (Scenario s, string label)
-            {
-                if (s.ForegroundStillTheSame)
-                    return true;
-                checklist.Skip(p + "-" + label + ": the real foreground window changed mid-run - the precondition was destroyed by a real focus change");
-                return false;
-            };
-
             Scenario scenario = armedGame();
-            if (scenario == null)
-            {
-                checklist.Skip(p + ": no foreground window to borrow (AMD's revert gate reads the real foreground) - vendor checks not run");
-                return;
-            }
 
             // Baseline sanity: the apply happened and was synchronous (Timer saw no deferral).
             checklist.Check(scenario.Level == ingame && !scenario.Timer.Armed && scenario.Timer.RestartCalls == 0,
@@ -943,247 +899,184 @@ namespace vibrance.GUI.common
             // F3
             scenario.Reader.Name = NonGameName;
             scenario.Timer.Fire();
-            if (stillValid(scenario, "F3/F6"))
-            {
-                checklist.Check(scenario.Level == WindowsLevel && scenario.Writes > writes,
-                    string.Format("{0}-F3: the fire restores the Windows vibrance level, got {1}", p, scenario.Level));
-                checklist.Check(scenario.DesktopRestored && !scenario.IsResolutionApplied && scenario.ModeWrites == 1,
-                    string.Format("{0}-F3: the fire reverts the resolution exactly once (mode writes {1})", p, scenario.ModeWrites));
-                checklist.Check(!scenario.IsColorApplied, p + "-F3: the fire runs the gamma restore (isColorSettingApplied cleared)");
-                checklist.Check(!scenario.Timer.Armed && scenario.Timer.RestartCalls == 1, p + "-F3: the re-dispatched event is settled - it does not arm the timer again");
-                int afterWrites = scenario.Writes;
-                int afterModeWrites = scenario.ModeWrites;
-                scenario.Timer.Fire();
-                checklist.Check(scenario.Writes == afterWrites && scenario.ModeWrites == afterModeWrites,
-                    p + "-F3: a second fire has nothing pending and changes nothing (revert is once only)");
+            checklist.Check(scenario.Level == WindowsLevel && scenario.Writes > writes,
+                string.Format("{0}-F3: the fire restores the Windows vibrance level, got {1}", p, scenario.Level));
+            checklist.Check(scenario.DesktopRestored && !scenario.IsResolutionApplied && scenario.ModeWrites == 1,
+                string.Format("{0}-F3: the fire reverts the resolution exactly once (mode writes {1})", p, scenario.ModeWrites));
+            checklist.Check(!scenario.IsColorApplied, p + "-F3: the fire runs the gamma restore (isColorSettingApplied cleared)");
+            checklist.Check(!scenario.Timer.Armed && scenario.Timer.RestartCalls == 1, p + "-F3: the re-dispatched event is settled - it does not arm the timer again");
+            int afterWrites = scenario.Writes;
+            int afterModeWrites = scenario.ModeWrites;
+            scenario.Timer.Fire();
+            checklist.Check(scenario.Writes == afterWrites && scenario.ModeWrites == afterModeWrites,
+                p + "-F3: a second fire has nothing pending and changes nothing (revert is once only)");
 
-                // End to end loop breaker: the revert is a mode change, so the game event it provokes
-                // is deferred (F6), and a non-game event inside the hold waits it out (F7).
-                writes = scenario.Writes;
-                scenario.Clock[0] += 300;
-                scenario.Game();
-                checklist.Check(scenario.Timer.Armed && scenario.Timer.LastDelay == 1200 && scenario.Level == WindowsLevel && scenario.Writes == writes,
-                    string.Format("{0}-F6: a game event 300ms after our own revert is deferred by the remaining hold (1200) and writes nothing, delay {1}", p, scenario.Timer.LastDelay));
-                scenario.Reader.Name = game;
-                scenario.Timer.Fire();
-                checklist.Check(scenario.Level == ingame, string.Format("{0}-F6: when the deferred apply fires with the game in front it applies, level {1}", p, scenario.Level));
-            }
+            // End to end loop breaker: the revert is a mode change, so the game event it provokes
+            // is deferred (F6), and a non-game event inside the hold waits it out (F7).
+            writes = scenario.Writes;
+            scenario.Clock[0] += 300;
+            scenario.Game();
+            checklist.Check(scenario.Timer.Armed && scenario.Timer.LastDelay == 1200 && scenario.Level == WindowsLevel && scenario.Writes == writes,
+                string.Format("{0}-F6: a game event 300ms after our own revert is deferred by the remaining hold (1200) and writes nothing, delay {1}", p, scenario.Timer.LastDelay));
+            scenario.Reader.Name = game;
+            scenario.Timer.Fire();
+            checklist.Check(scenario.Level == ingame, string.Format("{0}-F6: when the deferred apply fires with the game in front it applies, level {1}", p, scenario.Level));
             scenario.Dispose();
 
             // F7 end to end.
-            scenario = begin("F7");
-            if (scenario != null)
-            {
-                scenario.NonGame();
-                scenario.Timer.Fire();
-                scenario.Clock[0] += 200;
-                scenario.NonGame();
-                if (stillValid(scenario, "F7"))
-                {
-                    checklist.Check(scenario.Timer.LastDelay == 1300 && scenario.Timer.LastDelay > ForegroundSettler.SettleDelayMs,
-                        string.Format("{0}-F7: a non-game event 200ms after our own revert waits the remaining hold (1300 > 400), got {1}", p, scenario.Timer.LastDelay));
-                }
-                scenario.Dispose();
-            }
+            scenario = armedGame();
+            scenario.NonGame();
+            scenario.Timer.Fire();
+            scenario.Clock[0] += 200;
+            scenario.NonGame();
+            checklist.Check(scenario.Timer.LastDelay == 1300 && scenario.Timer.LastDelay > ForegroundSettler.SettleDelayMs,
+                string.Format("{0}-F7: a non-game event 200ms after our own revert waits the remaining hold (1300 > 400), got {1}", p, scenario.Timer.LastDelay));
+            scenario.Dispose();
 
             // F6, the other half: after the hold an apply is immediate.
-            scenario = begin("F6b");
-            if (scenario != null)
-            {
-                scenario.NonGame();
-                scenario.Timer.Fire();
-                scenario.Clock[0] += ForegroundSettler.ModeChangeHoldMs;
-                int restarts = scenario.Timer.RestartCalls;
-                scenario.Game();
-                if (stillValid(scenario, "F6b"))
-                {
-                    checklist.Check(scenario.Level == ingame && scenario.Timer.RestartCalls == restarts && !scenario.Timer.Armed,
-                        p + "-F6: 1500ms after our own revert a game event applies immediately");
-                }
-                scenario.Dispose();
-            }
+            scenario = armedGame();
+            scenario.NonGame();
+            scenario.Timer.Fire();
+            scenario.Clock[0] += ForegroundSettler.ModeChangeHoldMs;
+            int restarts = scenario.Timer.RestartCalls;
+            scenario.Game();
+            checklist.Check(scenario.Level == ingame && scenario.Timer.RestartCalls == restarts && !scenario.Timer.Armed,
+                p + "-F6: 1500ms after our own revert a game event applies immediately");
+            scenario.Dispose();
 
             // F2: Win key / Alt+Tab bounce.
-            scenario = begin("F2");
-            if (scenario != null)
-            {
-                writes = scenario.Writes;
-                modeCalls = scenario.Modes.CallLog.Count;
-                scenario.NonGame();
-                checklist.Check(scenario.Timer.Armed, p + "-F2: (setup) the transient event armed a revert");
-                scenario.Game();
-                checklist.Check(!scenario.Timer.Armed, p + "-F2: a game event before the fire cancels the pending revert");
-                scenario.Timer.Fire();
-                checklist.Check(scenario.Level == ingame && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied && scenario.IsColorApplied,
-                    p + "-F2: a late fire after the bounce changes neither vibrance, resolution nor gamma");
-                scenario.Dispose();
-            }
+            scenario = armedGame();
+            writes = scenario.Writes;
+            modeCalls = scenario.Modes.CallLog.Count;
+            scenario.NonGame();
+            checklist.Check(scenario.Timer.Armed, p + "-F2: (setup) the transient event armed a revert");
+            scenario.Game();
+            checklist.Check(!scenario.Timer.Armed, p + "-F2: a game event before the fire cancels the pending revert");
+            scenario.Timer.Fire();
+            checklist.Check(scenario.Level == ingame && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied && scenario.IsColorApplied,
+                p + "-F2: a late fire after the bounce changes neither vibrance, resolution nor gamma");
+            scenario.Dispose();
 
             // F4: focus bounced back to the game by the time the timer fires.
-            scenario = begin("F4");
-            if (scenario != null)
-            {
-                modeCalls = scenario.Modes.CallLog.Count;
-                scenario.NonGame();
-                scenario.Reader.Name = game;
-                scenario.Timer.Fire();
-                checklist.Check(scenario.Level == ingame && scenario.IsResolutionApplied && scenario.IsColorApplied && scenario.Modes.CallLog.Count == modeCalls,
-                    p + "-F4: a fire with the game back in front runs the apply branch - no revert, no display call");
-                int restarts = scenario.Timer.RestartCalls;
-                scenario.Game();
-                checklist.Check(!scenario.Timer.Armed && scenario.Timer.RestartCalls == restarts,
-                    p + "-F4: the bounce noted no mode change (the next game event is not held)");
-                scenario.Dispose();
-            }
+            scenario = armedGame();
+            modeCalls = scenario.Modes.CallLog.Count;
+            scenario.NonGame();
+            scenario.Reader.Name = game;
+            scenario.Timer.Fire();
+            checklist.Check(scenario.Level == ingame && scenario.IsResolutionApplied && scenario.IsColorApplied && scenario.Modes.CallLog.Count == modeCalls,
+                p + "-F4: a fire with the game back in front runs the apply branch - no revert, no display call");
+            int restartsF4 = scenario.Timer.RestartCalls;
+            scenario.Game();
+            checklist.Check(!scenario.Timer.Armed && scenario.Timer.RestartCalls == restartsF4,
+                p + "-F4: the bounce noted no mode change (the next game event is not held)");
+            scenario.Dispose();
 
             // F5: the foreground cannot be read at the fire.
-            scenario = begin("F5");
-            if (scenario != null)
-            {
-                writes = scenario.Writes;
-                modeCalls = scenario.Modes.CallLog.Count;
-                scenario.NonGame();
-                scenario.Reader.Ok = false;
-                scenario.Timer.Fire();
-                checklist.Check(scenario.Level == ingame && scenario.Writes == writes && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied && scenario.IsColorApplied,
-                    p + "-F5: a fire with TryGetForeground false does nothing at all");
+            scenario = armedGame();
+            writes = scenario.Writes;
+            modeCalls = scenario.Modes.CallLog.Count;
+            scenario.NonGame();
+            scenario.Reader.Ok = false;
+            scenario.Timer.Fire();
+            checklist.Check(scenario.Level == ingame && scenario.Writes == writes && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied && scenario.IsColorApplied,
+                p + "-F5: a fire with TryGetForeground false does nothing at all");
 
-                // The retry: nothing else re-arms after that fire, so it re-arms itself once.
-                checklist.Check(scenario.Timer.Armed && scenario.Timer.LastDelay == ForegroundSettler.SettleDelayMs && scenario.Timer.RestartCalls == 2,
-                    string.Format("{0}-F5: the failed read re-arms once at {1}, got armed={2} delay={3} restarts={4}", p, ForegroundSettler.SettleDelayMs, scenario.Timer.Armed, scenario.Timer.LastDelay, scenario.Timer.RestartCalls));
-                scenario.Reader.Ok = true;
-                scenario.Timer.Fire();
-                if (stillValid(scenario, "F5-retry"))
-                {
-                    checklist.Check(scenario.DesktopRestored && !scenario.IsResolutionApplied && scenario.ModeWrites == 1 && scenario.Level == WindowsLevel,
-                        p + "-F5: when the retry's read succeeds the revert that would have been dropped runs");
-                }
-                scenario.Dispose();
-            }
+            // The retry: nothing else re-arms after that fire, so it re-arms itself once.
+            checklist.Check(scenario.Timer.Armed && scenario.Timer.LastDelay == ForegroundSettler.SettleDelayMs && scenario.Timer.RestartCalls == 2,
+                string.Format("{0}-F5: the failed read re-arms once at {1}, got armed={2} delay={3} restarts={4}", p, ForegroundSettler.SettleDelayMs, scenario.Timer.Armed, scenario.Timer.LastDelay, scenario.Timer.RestartCalls));
+            scenario.Reader.Ok = true;
+            scenario.Timer.Fire();
+            checklist.Check(scenario.DesktopRestored && !scenario.IsResolutionApplied && scenario.ModeWrites == 1 && scenario.Level == WindowsLevel,
+                p + "-F5: when the retry's read succeeds the revert that would have been dropped runs");
+            scenario.Dispose();
 
             // F5, both reads fail: one retry only, then nothing.
-            scenario = begin("F5b");
-            if (scenario != null)
-            {
-                modeCalls = scenario.Modes.CallLog.Count;
-                scenario.NonGame();
-                scenario.Reader.Ok = false;
-                scenario.Timer.Fire();
-                scenario.Timer.Fire();
-                checklist.Check(!scenario.Timer.Armed && scenario.Timer.RestartCalls == 2 && scenario.Level == ingame && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied,
-                    string.Format("{0}-F5: when the retry's read fails too nothing more is armed or done (restarts {1})", p, scenario.Timer.RestartCalls));
-                scenario.Dispose();
-            }
+            scenario = armedGame();
+            modeCalls = scenario.Modes.CallLog.Count;
+            scenario.NonGame();
+            scenario.Reader.Ok = false;
+            scenario.Timer.Fire();
+            scenario.Timer.Fire();
+            checklist.Check(!scenario.Timer.Armed && scenario.Timer.RestartCalls == 2 && scenario.Level == ingame && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied,
+                string.Format("{0}-F5: when the retry's read fails too nothing more is armed or done (restarts {1})", p, scenario.Timer.RestartCalls));
+            scenario.Dispose();
 
             // Last event wins: two transient events, one revert.
-            scenario = begin("last-wins");
-            if (scenario != null)
-            {
-                scenario.NonGame();
-                scenario.NonGame();
-                checklist.Check(scenario.Timer.RestartCalls == 2, p + "-last-wins: each non-game event restarts the one timer");
-                scenario.Timer.Fire();
-                if (stillValid(scenario, "last-wins"))
-                {
-                    checklist.Check(scenario.DesktopRestored && scenario.ModeWrites == 1, p + "-last-wins: two transient events produce exactly one revert");
-                }
-                scenario.Dispose();
-            }
+            scenario = armedGame();
+            scenario.NonGame();
+            scenario.NonGame();
+            checklist.Check(scenario.Timer.RestartCalls == 2, p + "-last-wins: each non-game event restarts the one timer");
+            scenario.Timer.Fire();
+            checklist.Check(scenario.DesktopRestored && scenario.ModeWrites == 1, p + "-last-wins: two transient events produce exactly one revert");
+            scenario.Dispose();
 
             // F12: a stream of non-game events 300ms apart (each under the 400 settle delay) must not
             // postpone the revert past the maximum wait, measured from the first of them.
-            scenario = begin("F12");
-            if (scenario != null)
+            scenario = armedGame();
+            int start = scenario.Clock[0];
+            bool bounded = true;
+            int lastDelay = 0;
+            for (int i = 0; i <= ForegroundSettler.MaxSettleWaitMs / 300; i++)
             {
-                int start = scenario.Clock[0];
-                bool bounded = true;
-                int lastDelay = 0;
-                for (int i = 0; i <= ForegroundSettler.MaxSettleWaitMs / 300; i++)
-                {
-                    scenario.NonGame();
-                    int elapsed = scenario.Clock[0] - start;
-                    lastDelay = scenario.Timer.LastDelay;
-                    if (elapsed < ForegroundSettler.MaxSettleWaitMs && elapsed + lastDelay > ForegroundSettler.MaxSettleWaitMs)
-                        bounded = false;
-                    scenario.Clock[0] += 300;
-                }
-                checklist.Check(bounded && lastDelay == 1,
-                    string.Format("{0}-F12: ten events 300ms apart never schedule the fire past first arm + {1}; the one at {1} fires at the 1ms floor, last delay {2}", p, ForegroundSettler.MaxSettleWaitMs, lastDelay));
-                scenario.Timer.Fire();
-                if (stillValid(scenario, "F12"))
-                {
-                    checklist.Check(scenario.DesktopRestored && !scenario.IsResolutionApplied,
-                        p + "-F12: the revert that the stream was postponing runs");
-                }
-                scenario.Dispose();
+                scenario.NonGame();
+                int elapsed = scenario.Clock[0] - start;
+                lastDelay = scenario.Timer.LastDelay;
+                if (elapsed < ForegroundSettler.MaxSettleWaitMs && elapsed + lastDelay > ForegroundSettler.MaxSettleWaitMs)
+                    bounded = false;
+                scenario.Clock[0] += 300;
             }
+            checklist.Check(bounded && lastDelay == 1,
+                string.Format("{0}-F12: ten events 300ms apart never schedule the fire past first arm + {1}; the one at {1} fires at the 1ms floor, last delay {2}", p, ForegroundSettler.MaxSettleWaitMs, lastDelay));
+            scenario.Timer.Fire();
+            checklist.Check(scenario.DesktopRestored && !scenario.IsResolutionApplied,
+                p + "-F12: the revert that the stream was postponing runs");
+            scenario.Dispose();
 
             // F10 end to end: shutdown cancel.
-            scenario = begin("F10");
-            if (scenario != null)
-            {
-                modeCalls = scenario.Modes.CallLog.Count;
-                scenario.NonGame();
-                ForegroundSettler.Shared.Cancel();
-                scenario.Timer.Fire();
-                checklist.Check(!scenario.Timer.Armed && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied && scenario.Level == ingame,
-                    p + "-F10: Cancel() after a deferral means the revert never runs");
-                scenario.Dispose();
-            }
+            scenario = armedGame();
+            modeCalls = scenario.Modes.CallLog.Count;
+            scenario.NonGame();
+            ForegroundSettler.Shared.Cancel();
+            scenario.Timer.Fire();
+            checklist.Check(!scenario.Timer.Armed && scenario.Modes.CallLog.Count == modeCalls && scenario.IsResolutionApplied && scenario.Level == ingame,
+                p + "-F10: Cancel() after a deferral means the revert never runs");
+            scenario.Dispose();
 
             // F11: the APPLY is a mode change too. Every scenario above sets neverChangeResolution, so
             // the apply-side NoteModeChanged() was never reached; here the apply really changes the
             // mode (through the fake display, via ResolutionHelper.DeviceOverrideForTests) and the next
             // non-game event must wait out the hold instead of the plain settle delay.
             scenario = create(game);
-            if (scenario == null)
+            try
             {
-                checklist.Skip(p + "-F11: no foreground window to borrow - group not run");
+                scenario.UseTimer();
+                scenario.SetNeverChangeResolution(false);
+                scenario.Modes.SetCurrentMode(scenario.GameDevice, ResolutionChangeFixture.BuildDevmode(1920, 1080, 32, 60, 0));
+                ResolutionHelper.DeviceOverrideForTests = scenario.Modes;
+                int before = scenario.ModeWrites;
+                scenario.Game();
+                checklist.Check(scenario.ModeWrites == before + 1 && scenario.IsResolutionApplied && scenario.GameModeLanded && !scenario.Timer.Armed,
+                    string.Format("{0}-F11: (setup) the apply changed the mode through the fake display, mode writes {1}", p, scenario.ModeWrites - before));
+                scenario.Clock[0] += 300;
+                scenario.NonGame();
+                checklist.Check(scenario.Timer.Armed && scenario.Timer.LastDelay == 1200,
+                    string.Format("{0}-F11: a non-game event 300ms after our own APPLY waits the remaining hold (1200), got {1}", p, scenario.Timer.LastDelay));
             }
-            else
+            finally
             {
-                try
-                {
-                    scenario.UseTimer();
-                    scenario.SetNeverChangeResolution(false);
-                    scenario.Modes.SetCurrentMode(scenario.GameDevice, ResolutionChangeFixture.BuildDevmode(1920, 1080, 32, 60, 0));
-                    ResolutionHelper.DeviceOverrideForTests = scenario.Modes;
-                    int before = scenario.ModeWrites;
-                    scenario.Game();
-                    if (stillValid(scenario, "F11"))
-                    {
-                        checklist.Check(scenario.ModeWrites == before + 1 && scenario.IsResolutionApplied && scenario.GameModeLanded && !scenario.Timer.Armed,
-                            string.Format("{0}-F11: (setup) the apply changed the mode through the fake display, mode writes {1}", p, scenario.ModeWrites - before));
-                        scenario.Clock[0] += 300;
-                        scenario.NonGame();
-                        checklist.Check(scenario.Timer.Armed && scenario.Timer.LastDelay == 1200,
-                            string.Format("{0}-F11: a non-game event 300ms after our own APPLY waits the remaining hold (1200), got {1}", p, scenario.Timer.LastDelay));
-                    }
-                }
-                finally
-                {
-                    ResolutionHelper.DeviceOverrideForTests = null;
-                }
-                scenario.Dispose();
+                ResolutionHelper.DeviceOverrideForTests = null;
             }
+            scenario.Dispose();
 
             // F8 end to end: no timer installed -> the revert is immediate, on the raw event.
             scenario = create(game);
-            if (scenario == null)
-            {
-                checklist.Skip(p + "-F8/F9: the foreground window went away mid-run");
-                return;
-            }
             scenario.UseNoTimer();
             scenario.Reader.Hwnd = scenario.Hwnd;
             scenario.Game();
             scenario.SeedApplied();
             scenario.NonGame();
-            if (stillValid(scenario, "F8"))
-            {
-                checklist.Check(scenario.Level == WindowsLevel && scenario.DesktopRestored && !scenario.IsResolutionApplied && !scenario.IsColorApplied && !scenario.Timer.Armed,
-                    p + "-F8: with no timer installed a non-game event reverts vibrance, resolution and gamma synchronously");
-            }
+            checklist.Check(scenario.Level == WindowsLevel && scenario.DesktopRestored && !scenario.IsResolutionApplied && !scenario.IsColorApplied && !scenario.Timer.Armed,
+                p + "-F8: with no timer installed a non-game event reverts vibrance, resolution and gamma synchronously");
             scenario.Dispose();
 
             // F9 end to end: the shell desktop on a secondary screen.
@@ -1194,9 +1087,7 @@ namespace vibrance.GUI.common
                 return;
             }
 
-            scenario = begin("F9");
-            if (scenario == null)
-                return;
+            scenario = armedGame();
             Screen gameScreen = Screen.FromHandle(scenario.Hwnd);
             Screen secondary = null;
             foreach (Screen s in screens)
@@ -1218,37 +1109,28 @@ namespace vibrance.GUI.common
 
                 // The mouse moves on to the game's screen after the click, before the timer fires:
                 // the cursor captured at the click still decides.
-                scenario = begin("F9b");
-                if (scenario != null)
-                {
-                    // Scenario's constructor clears the seam, so it is set again for each scenario.
-                    DesktopScreenResolver.IsShellDesktopOverride = delegate (IntPtr h) { return h == desktopHwnd; };
-                    scenario.Cursor = Center(secondary);
-                    scenario.NonGame();
-                    modeCalls = scenario.Modes.CallLog.Count;
-                    scenario.Cursor = Center(gameScreen);
-                    scenario.Timer.Fire();
-                    checklist.Check(scenario.IsResolutionApplied && scenario.Modes.CallLog.Count == modeCalls,
-                        p + "-F9: the cursor is taken when the event arrives, not when the timer fires");
-                    scenario.Dispose();
-                }
+                scenario = armedGame();
+                // Scenario's constructor clears the seam, so it is set again for each scenario.
+                DesktopScreenResolver.IsShellDesktopOverride = delegate (IntPtr h) { return h == desktopHwnd; };
+                scenario.Cursor = Center(secondary);
+                scenario.NonGame();
+                modeCalls = scenario.Modes.CallLog.Count;
+                scenario.Cursor = Center(gameScreen);
+                scenario.Timer.Fire();
+                checklist.Check(scenario.IsResolutionApplied && scenario.Modes.CallLog.Count == modeCalls,
+                    p + "-F9: the cursor is taken when the event arrives, not when the timer fires");
+                scenario.Dispose();
 
                 // Control: the same desktop with the cursor ON the game's screen does revert, so the
                 // checks above are not passing merely because nothing ever reverts.
-                scenario = begin("F9c");
-                if (scenario != null)
-                {
-                    DesktopScreenResolver.IsShellDesktopOverride = delegate (IntPtr h) { return h == desktopHwnd; };
-                    scenario.Cursor = Center(gameScreen);
-                    scenario.NonGame();
-                    scenario.Timer.Fire();
-                    if (stillValid(scenario, "F9c"))
-                    {
-                        checklist.Check(!scenario.IsResolutionApplied && scenario.DesktopRestored,
-                            p + "-F9: control - the shell desktop with the cursor on the game's own screen does revert");
-                    }
-                    scenario.Dispose();
-                }
+                scenario = armedGame();
+                DesktopScreenResolver.IsShellDesktopOverride = delegate (IntPtr h) { return h == desktopHwnd; };
+                scenario.Cursor = Center(gameScreen);
+                scenario.NonGame();
+                scenario.Timer.Fire();
+                checklist.Check(!scenario.IsResolutionApplied && scenario.DesktopRestored,
+                    p + "-F9: control - the shell desktop with the cursor on the game's own screen does revert");
+                scenario.Dispose();
             }
             finally
             {

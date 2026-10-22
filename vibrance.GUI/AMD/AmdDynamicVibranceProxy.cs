@@ -302,7 +302,7 @@ namespace vibrance.GUI.AMD
                     return;
 
                 IntPtr processHandle = e.Handle;
-                if (GetForegroundWindow() != processHandle)
+                if (_foregroundWindow() != processHandle)
                     return;
 
                 //apply Windows saturation
@@ -344,6 +344,18 @@ namespace vibrance.GUI.AMD
         {
             SetGameExitWatcher(watcher);
             _displayModeDevice = displayModeDevice ?? ResolutionHelper.RealDevice;
+        }
+
+        // What the revert branch's "is the event's window still in front" gate reads. NVIDIA's gate
+        // goes through its device (IsWindowActive), so a fixture fakes it there; AMD has no device
+        // for it, so without this seam a fixture had to borrow whatever window was really in front.
+        // Production always reads the real foreground window; a fixture swaps it through
+        // SetForegroundWindowForTests (null restores the real one).
+        private Func<IntPtr> _foregroundWindow = GetForegroundWindow;
+
+        internal void SetForegroundWindowForTests(Func<IntPtr> foregroundWindow)
+        {
+            _foregroundWindow = foregroundWindow ?? GetForegroundWindow;
         }
 
         // The revert half of HandleForeground's old else-branch, extracted so the foreground path and

@@ -229,8 +229,8 @@ namespace vibrance.GUI.common
             {
                 //preserves today's behaviour, where a throwing GetProcessById skipped dispatch
                 //entirely. Without this, an unreadable foreground process would still reach the
-                //match decision at NvidiaDynamicVibranceProxy.cs:268-272 /
-                //AmdDynamicVibranceProxy.cs:151-155, match nothing, and fall into the revert branch
+                //match decision in HandleForeground (both vendor proxies),
+                //match nothing, and fall into the revert branch
                 //below - a visible flicker for a process that was never actually the game losing focus
                 return;
             }
