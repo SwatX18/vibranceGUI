@@ -151,6 +151,13 @@ namespace vibrance.GUI.common
         // ever needs to know a fake exists.
         internal static IDisplayModeDevice RealDevice { get { return _realDevice; } }
 
+        // Test-only, null in production: the proxies' apply branch calls the public
+        // ChangeResolutionEx/IsResolutionChangeNeeded overloads below, which have no device
+        // parameter, so without this a fixture could not watch the apply branch change the mode
+        // except by really changing the display. When set, those two public overloads (and only
+        // those two) use it instead of _realDevice. Cleared by ResetForTests().
+        internal static IDisplayModeDevice DeviceOverrideForTests;
+
         public static event EventHandler<ResolutionFailureEventArgs> ResolutionChangeFailed;
 
         // Consecutive-failure counts, keyed by device + target + direction (BuildFailureKey below)
@@ -223,7 +230,7 @@ namespace vibrance.GUI.common
         /// </summary>
         public static bool IsResolutionChangeNeeded(string deviceName, ResolutionModeWrapper target)
         {
-            return IsResolutionChangeNeeded(_realDevice, deviceName, target);
+            return IsResolutionChangeNeeded(DeviceOverrideForTests ?? _realDevice, deviceName, target);
         }
 
         internal static bool IsResolutionChangeNeeded(IDisplayModeDevice device, string deviceName, ResolutionModeWrapper target)
@@ -255,6 +262,7 @@ namespace vibrance.GUI.common
             _loggedFailures.Clear();
             _notifiedFailures.Clear();
             LoggedLineCountForTests = 0;
+            DeviceOverrideForTests = null;
         }
 
         /// <summary>
@@ -265,7 +273,7 @@ namespace vibrance.GUI.common
         /// </summary>
         public static ResolutionChangeResult ChangeResolutionEx(ResolutionModeWrapper target, string deviceName, bool isRevert)
         {
-            return ChangeResolutionEx(_realDevice, target, deviceName, isRevert);
+            return ChangeResolutionEx(DeviceOverrideForTests ?? _realDevice, target, deviceName, isRevert);
         }
 
         // The seam ResolutionChangeFixture drives directly - see ChangeResolutionEx's public
@@ -440,9 +448,9 @@ namespace vibrance.GUI.common
 
         // The last-chance resolution restore at vibranceGUI's own shutdown (upstream #98). Called
         // from each proxy's HandleDvcExit (via RestoreResolutionOnExit, passing RealDevice), never
-        // from OnWinEventHook. Deliberately has no separate public, hardware-touching overload the
+        // from HandleForeground. Deliberately has no separate public, hardware-touching overload the
         // way ChangeResolutionEx/IsResolutionChangeNeeded do - those two are called directly by both
-        // proxies with no explicit device (OnWinEventHook's apply/revert branches), so their public
+        // proxies with no explicit device (HandleForeground's apply/revert branches), so their public
         // overloads have real production callers to be symmetric with. RestoreOnExit has exactly one
         // production call shape - a proxy handing in RealDevice through RestoreResolutionOnExit -
         // so a second, device-less overload here would be dead surface no caller has ever needed;

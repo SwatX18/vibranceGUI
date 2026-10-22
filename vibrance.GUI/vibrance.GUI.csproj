@@ -170,6 +170,8 @@
     <Compile Include="common\WindowsResolutionRefresher.cs" />
     <Compile Include="common\ResolutionAdoptionDebouncer.cs" />
     <Compile Include="common\FormsResolutionAdoptionTimer.cs" />
+    <Compile Include="common\ForegroundSettler.cs" />
+    <Compile Include="common\DesktopScreenResolver.cs" />
     <Compile Include="common\ResolutionModeWrapper.cs" />
     <Compile Include="common\ResolutionCatalog.cs" />
     <Compile Include="common\ResolutionCatalogFixture.cs" />
@@ -192,6 +194,7 @@
     <Compile Include="common\ResolutionChangeFixture.cs" />
     <Compile Include="common\GameExitWatcher.cs" />
     <Compile Include="common\GameExitFixture.cs" />
+    <Compile Include="common\ForegroundSettleFixture.cs" />
     <Compile Include="common\ResolutionChangeNotifier.cs" />
     <Compile Include="NVIDIA\NvidiaDisplayScaling.cs" />
     <Compile Include="NVIDIA\DisplayScalingFixture.cs" />

@@ -7,7 +7,7 @@ namespace vibrance.GUI.common
     /// <summary>
     /// The seam over vibranceRestore.xml - the exact shape ILogSink.cs already uses, for the same
     /// reason (see that file's own header comment): VibranceRestoreHelper is a static class
-    /// reached only from PRIVATE STATIC proxy methods (NvidiaDynamicVibranceProxy.OnWinEventHook
+    /// reached only from PRIVATE STATIC proxy methods (NvidiaDynamicVibranceProxy.HandleForeground
     /// and its AMD counterpart), so there is no constructor anywhere on that call path to inject a
     /// dependency into. RealVibranceRestoreStore (below) is the only production implementation;
     /// NullVibranceRestoreStore is the default, so a headless fixture run or a --selftest-* run

@@ -17,7 +17,7 @@
 > be repeated as fact.
 >
 > **Most of this was established by reading the source, not by running it.** There is no test project,
-> but there are now 1406 automated checks across twenty fixtures (see [§3.7](#37-tests-and-ci)) — they
+> but there are now 1527 automated checks across twenty-one fixtures (see [§3.7](#37-tests-and-ci)) — they
 > drive fakes and stubs, not a real driver, display or game. Exactly one change has been watched
 > working in a real game session (vibrance applied on focus and restored on exit); the resolution
 > and gamma paths have never run outside a fixture, and neither has the NVIDIA display-scaling write
@@ -442,7 +442,7 @@ specifically so that a locked `%APPDATA%\vibranceGUI\x86\vibranceDLL.dll` or `\x
 | `--help`, `-h`, `/?` | show every flag in a message box and exit (`CliOptions.cs`, `IsHelpRequested`). Dispatched **before** the mutex, so it answers while another instance is running. |
 | `--set-vibrance <n>` | set the Windows-level vibrance and continue. With an instance already running, the value is relayed to it rather than opening a second one (`VibranceCliRelay.cs`); otherwise applied in-process after `ReadVibranceSettings` populates the trackbar. Range-checked per vendor (NVIDIA 0–63, AMD 0–300). |
 | `--force-nvidia`, `--force-amd` | skip vendor detection (§6.1). |
-| `--selftest-*` | run one fixture and exit (§3.7) — for example `--selftest-gameexit` (`GameExitFixture`, §6.11), `--selftest-scaling` (`DisplayScalingFixture`, §7.10) or `--selftest-cs2video` (`Cs2VideoSettingsFixture`, §9.10). |
+| `--selftest-*` | run one fixture and exit (§3.7) — for example `--selftest-gameexit` (`GameExitFixture`, §6.11), `--selftest-foreground-settle` (`ForegroundSettleFixture`), `--selftest-scaling` (`DisplayScalingFixture`, §7.10) or `--selftest-cs2video` (`Cs2VideoSettingsFixture`, §9.10). |
 
 Anything else is ignored. Upstream feature request #120 asked for the options above and is
 addressed by them. Only one instance may run
@@ -451,17 +451,17 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
 
 ### 3.7 Tests and CI
 
-- **There is no test project**, but there are automated checks: 1406 of them across twenty
-  `*Fixture.cs` files — sixteen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
+- **There is no test project**, but there are automated checks: 1527 of them across twenty-one
+  `*Fixture.cs` files — seventeen in `vibrance.GUI/common/`, two in `vibrance.GUI/common/gamefinder/`, two
   (`NvidiaInteropFixture.cs`, §7.3, and `DisplayScalingFixture.cs`, §7.10) in `vibrance.GUI/NVIDIA/` —
-  compiled into the app and run through twenty `--selftest-*` flags (one per fixture except
+  compiled into the app and run through twenty-one `--selftest-*` flags (one per fixture except
   `UpdateCheckFixture`, which has none and runs only through the reflection harness, plus the opt-in
   hardware variant `--selftest-gamma-display`) dispatched early in `Program.cs`, but *after* the
-  single-instance mutex (`Program.cs:87`, second-instance bail at `:122-123`, the flags at `:173-401`), so a fixture will not run
+  single-instance mutex (`Program.cs:88`, second-instance bail at `:123-124`, the flags at `:174-414`), so a fixture will not run
   while vibranceGUI is already open - a normal `--selftest-nvapi` run bails out at the mutex and never
   reaches the fixture at all. A fixture that must not depend on that (or must not show a `MessageBox`
   at all, since every `--selftest-*` flag does) instead has its `Run()` called directly by reflection —
-  see the note at `Program.cs:139-146` and `NvidiaInteropFixture.cs`'s own header comment for why it
+  see the note at `Program.cs:140-147` and `NvidiaInteropFixture.cs`'s own header comment for why it
   extracts `vibranceDLL.dll` to a private temp directory and loads it by absolute path, rather than
   calling `CommonUtils.LoadUnmanagedLibraryFromResource` against the shared `%APPDATA%\vibranceGUI`
   Program.cs itself uses: that call's `File.WriteAllBytes` would throw a sharing-violation `IOException`
@@ -473,13 +473,13 @@ per session, enforced with a `Mutex` named `vibranceGUI~Mutex` (`Program.cs:76`,
   searching for `Assert.` or
   `*Test*` finds nothing and wrongly suggests the project is untested.
 - **Per-fixture totals as last run for this revision** (self-reported `PASSED n/n`, from one full pass of
-  all twenty fixtures through the headless reflection harness over the x86 `Release` build; x64 was
+  all twenty-one fixtures through the headless reflection harness (a 32-bit PowerShell loading the x86 `Debug` build); x64 and `Release` were
   **not** re-run for this revision):
-  CliOptions 52, Cs2Video 155, DisplayScaling 98, ExecutablePicker 7, GameExit 70, GammaRestore 21,
+  CliOptions 52, Cs2Video 155, DisplayScaling 98, ExecutablePicker 7, ForegroundSettle 121, GameExit 70, GammaRestore 21,
   GraphicsAdapter 55, HdrVibrance 58, Matching 55, NvidiaInterop 53, ProfileToggle 91,
   ResolutionCatalog 255, ResolutionChange 221, ResolutionRestorePersistence 40, Stability 6,
   StartMenuShortcutSource 14, StartupForeground 11, VibranceRestore 38, VibranceRestorePersistence 40,
-  UpdateCheck 66 — **1406 across twenty fixtures**, all observed in that one pass. Unlike the
+  UpdateCheck 66 — **1527 across twenty-one fixtures**, all observed in that one pass. Unlike the
   previous revision's count, `GammaRestoreFixture` **was** run this time, but only its pure half
   (`Run()`, the same code `--selftest-gamma` runs, on fake displays); its hardware half
   (`RunWithDisplay()`, `--selftest-gamma-display`, which writes a probe ramp to a real monitor) was
@@ -692,7 +692,11 @@ vibranceGUI/
     │   │
     │   │   foreground detection
     │   ├── WinEventHook.cs            THE foreground detector (§6.2)
-    │   ├── WinEventHookEventArgs.cs   event payload; all 3 fields are live (§11.6)
+    │   ├── WinEventHookEventArgs.cs   event payload; all 4 fields are live (§11.6)
+    │   ├── ForegroundSettler.cs       debounces the non-game revert / post-mode-change apply:
+    │   │                               400 ms settle, 1500 ms hold, 3000 ms max wait (§6.2)
+    │   ├── DesktopScreenResolver.cs   which monitor a foreground window is on; the shell desktop
+    │   │                               is placed by the cursor (§6.2)
     │   ├── GraphicsAdapter.cs         vendor enum + detection (§6.1)
     │   │
     │   │   self-test fixtures — compiled in, run via --selftest-* (§3.7)
@@ -700,6 +704,7 @@ vibranceGUI/
     │   ├── Cs2VideoSettingsFixture.cs  155 checks — run via --selftest-cs2video (§9.10)
     │   ├── Cs2VideoConfigPatcher.cs    pure text edit of cs2_video.txt (§9.10)
     │   ├── Cs2VideoSettingsWriter.cs   finds the Steam accounts' files and writes them (§9.10)
+    │   ├── ForegroundSettleFixture.cs  121 checks — run via --selftest-foreground-settle
     │   ├── GameExitFixture.cs          70 checks — run via --selftest-gameexit (§6.11)
     │   ├── GammaRestoreFixture.cs      21 checks (pure half only; the hardware half,
     │   │                                --selftest-gamma-display, was not run)
@@ -1015,15 +1020,21 @@ flowchart TD
     C -->|"name still unresolved<br/>(no image path, and GetProcessById throws<br/>InvalidOperationException / ArgumentException)"| X["swallowed — NO event dispatched"]
     C --> D["raise WinEventHookHandler<br/>with ProcessName + hwnd"]
     D --> E{"_applicationSettings.Count &gt; 0 ?"}
-    E -->|"no — empty list, still reverts"| K
+    E -->|"no — empty list, still reverts"| R
     E -->|yes| F{"any ApplicationSetting.Name<br/>== e.ProcessName, case-insensitive?"}
 
-    F -->|"match — APPLY"| G{"resolution change<br/>configured and allowed?"}
+    F -->|"match — APPLY"| P{"settled re-dispatch, or outside the<br/>1500 ms hold after our own mode change?"}
+    P -->|yes| G{"resolution change<br/>configured and allowed?"}
+    P -->|"no — inside the hold"| S
     G -->|yes| H["ChangeDisplaySettingsEx to the game mode"]
     G -->|no| J
     H --> J["remember _gameScreen<br/>write ingame level to the driver"]
 
-    F -->|"no match — REVERT"| K{"is this hwnd still<br/>the foreground window?"}
+    F -->|"no match — REVERT"| R{"settled re-dispatch?"}
+    R -->|"no — the raw event"| S["ForegroundSettler arms ONE timer:<br/>max(400 ms, rest of the 1500 ms hold),<br/>clamped to 3000 ms from the first arm<br/>(last event wins)"]
+    S --> T["timer fires: re-read the LIVE foreground<br/>(one retry at 400 ms if it cannot be read)<br/>and call HandleForeground again, settled"]
+    T --> F
+    R -->|yes| K{"is this hwnd still<br/>the foreground window?"}
     K -->|no| Z["return — stale event"]
     K -->|yes| L{"a game resolution<br/>is still applied?"}
     L -->|yes| M["ChangeDisplaySettingsEx back to<br/>the mode captured at app start"]
@@ -1044,8 +1055,9 @@ The mechanism underneath:
 - **The delegate is rooted** in an instance field (`WinEventHook.cs:176`) and the instance in a static
   (`:174`), so the classic "GC collected my callback" crash is avoided — by luck rather than by a
   `GCHandle`.
-- **The match rule** is one call in each proxy (`NvidiaDynamicVibranceProxy.cs:295` (`OnWinEventHook`),
-  `AmdDynamicVibranceProxy.cs:152`, `OnWinEventHook`):
+- **The match rule** is one call in each proxy (`NvidiaDynamicVibranceProxy.cs:341-343` (`HandleForeground`,
+  the old `OnWinEventHook` body — `OnWinEventHook` is now a one-line wrapper that calls it with
+  `settled: false`), `AmdDynamicVibranceProxy.cs:212-214`, `HandleForeground`):
 
   ```csharp
   ApplicationSetting applicationSetting = _applicationSettings.Count > 0
@@ -1072,8 +1084,8 @@ The mechanism underneath:
 - **The `_applicationSettings.Count > 0` test no longer gates the whole handler.** **Fixed** on
   `work/stability-pass` (`466de41`, issue #138): it is now only a short-circuit around the match
   lookup, so an empty list yields a `null` `ApplicationSetting` and falls straight through to the
-  revert branch (`NvidiaDynamicVibranceProxy.cs:294-298` (`OnWinEventHook`),
-  `AmdDynamicVibranceProxy.cs:151-155`, `OnWinEventHook`). Deleting your last watched application
+  revert branch (`NvidiaDynamicVibranceProxy.cs:338-343` (`HandleForeground`),
+  `AmdDynamicVibranceProxy.cs:209-214`, `HandleForeground`). Deleting your last watched application
   while its game holds the foreground now restores vibrance, the resolution and the gamma ramp on
   the next foreground change (**D9**).
 - **`WinEventHookEventArgs` no longer carries dead fields.** `MainWindowTitle`, `WindowText` and
@@ -1089,13 +1101,76 @@ The mechanism underneath:
 - **Startup now gets a second, one-shot entry point into this same flow** (upstream #81; see
   [§6.8](#68-known-blind-spots-in-detection) item 1). `IVibranceProxy.ApplyStartupForegroundProfile`,
   called at most once from `VibranceGUI.backgroundWorker_DoWork` right after startup reconciles
-  `_applicationSettings` and the Windows level, drives the SAME `OnWinEventHook` a real foreground
-  event would, via a synthesised `WinEventHookEventArgs` — never a second copy of the apply logic.
+  `_applicationSettings` and the Windows level, drives the SAME `HandleForeground` body a real foreground
+  event would, via a synthesised `WinEventHookEventArgs` and with `settled: true` (so the startup
+  apply is never held back by the settle below) — never a second copy of the apply logic. It no
+  longer goes through `OnWinEventHook` itself, which is now only the event-handler wrapper.
   It is apply-only **by construction**: a `null` `FindMatch` returns before ever synthesising an
   event, so the automatic handler's own revert branch is unreachable from this entry point.
   Marshalled onto the UI thread with `this.Invoke`, because `backgroundWorker_DoWork` runs on a
   ThreadPool thread (the `while (!this.IsHandleCreated)` spin just above it in that method) while
   every driver call in this flow assumes the UI thread.
+
+#### The foreground settle: why the revert no longer runs on the raw event
+
+Added on `work/foreground-settle`. **Verified by fixture only** (`ForegroundSettleFixture`: a
+hand-fired timer, a fake foreground reader, clock and cursor, a fake display) — it has not been
+watched against a real game, and the Win-key loop below is a *reported* failure, not one this
+revision reproduced.
+
+- **The loop it breaks.** The Win key (or the first half of a quick Alt+Tab) hands the foreground to a
+  transient shell window for a few tens of milliseconds. The revert branch used to react to that at
+  once — a real mode change — which made Windows bounce focus back to the fullscreen game, whose
+  foreground event applied the game mode (a second mode change), and the shell window grabbed focus
+  again while the display was still re-syncing. Repeat.
+- **Rule 1: a revert never runs on the event itself.** `NvidiaDynamicVibranceProxy.HandleForeground` /
+  `AmdDynamicVibranceProxy.HandleForeground` call `ForegroundSettler.Shared.TryDeferRevert` first. With
+  the real settler that *always* defers: one timer (the existing `IResolutionAdoptionTimer`, backed by
+  `FormsResolutionAdoptionTimer`, despite its name) is `Restart`ed — last event wins — and when it
+  fires the settler **re-reads the live foreground** and calls `HandleForeground(…, settled: true)`.
+  If focus has already bounced back to the game, that re-dispatch is an apply that finds the mode
+  already right, and no mode change ever happened. A superseded event can never act on stale state.
+- **The delays.** `SettleDelayMs = 400` (chosen, not measured). `ModeChangeHoldMs = 1500`: after *any*
+  `ChangeResolutionEx` of ours that returned `Applied` / `AppliedUnverified` — apply or revert — the
+  settler notes the tick (`NoteModeChanged`), and for the next 1500 ms a revert waits the longer of 400
+  and what is left of the hold. **Rule 2:** a game (apply) event arriving inside that same hold is
+  deferred the same way (`TryDeferApply`) instead of stacking a second mode set on the first; a
+  non-deferred apply instead `Cancel()`s any revert still pending, which would otherwise fire later and
+  undo it. Tick arithmetic is `unchecked`, so `Environment.TickCount` wrapping (about every 49.7 days)
+  is harmless, and a clock reading earlier than the note counts as no hold.
+- **Maximum wait.** `MaxSettleWaitMs = 3000`. A trailing debounce that every non-game event under
+  400 ms apart re-arms would postpone a revert forever, so each re-arm is clamped so the fire is no
+  later than the **first arm of the pending chain** + 3000 ms, with a 1 ms floor once the budget is
+  spent. The chain resets when it fires or is cancelled.
+- **Retry.** If the fire-time read fails (a NULL foreground during a UAC / secure desktop, a process
+  Windows will not name) nothing else would re-arm, so the revert would be dropped. The settler re-arms
+  **once** at 400 ms; if that read fails too it does nothing, as the code did before. A new event gets
+  its own retry.
+- **The shell desktop is placed by the cursor.** `DesktopScreenResolver.Resolve` replaces
+  `Screen.FromHandle` in the revert gate. The shell window (`Progman`, or a `WorkerW` owned by the
+  shell's process) has a rect that spans the whole virtual desktop — measured on the dev box:
+  `GetShellWindow()` is `Progman` with rect `-1920,0,4480,1440` — so it names no one monitor, and
+  `MonitorFromWindow` picks the largest overlap, the primary. A desktop click on the secondary monitor
+  therefore looked like "focus is on the primary", which was the game's screen, and the primary's game
+  resolution was reverted. `WinEventProc` now captures `Cursor.Position` into
+  `WinEventHookEventArgs.CursorPosition` when the event is raised, the settler keeps the cursor from
+  *arm* time (the mouse may move before the timer fires) as long as the live foreground at fire is the
+  same window, and only a shell desktop uses it.
+- **What the user can see.** The desktop vibrance and gamma restore after leaving a game now waits at
+  least 400 ms, and up to about 1.5 s after our own mode change (3 s at the very most under a stream
+  of events), where it used to be immediate. The resolution revert moved with it. With no settler
+  installed — the default `ForegroundSettler.Shared`, which is what every pre-existing fixture drives
+  — everything is still immediate; only `VibranceGUI`'s constructor installs the real one, **before**
+  the proxy is built, because the proxy subscribes to the hook in its constructor.
+- **Trade-off: Win+D.** With the cursor on a *secondary* monitor, Show Desktop now resolves to that
+  monitor, so the game's screen (the primary) is not reverted — it keeps the game resolution until a
+  later foreground change moves focus somewhere that resolves to it. That is the same cursor rule that
+  fixes the desktop-click case, seen from the other side; it was judged the lesser evil, not proven so.
+- **Shutdown.** `VibranceGUI.CleanUp` calls `ForegroundSettler.Shared.Cancel()` next to
+  `_resolutionAdoptionDebouncer.Cancel()` so a deferred revert cannot fire into a proxy after
+  shutdown began. A deferred event's exception does *not* escape into the native WinEvent callback (as
+  an unhandled one from the raw event would): it surfaces from the WinForms timer's `Tick`, i.e.
+  `Application.ThreadException`.
 
 ### 6.3 Vendor divergence in the same flow
 
@@ -1472,6 +1547,7 @@ exists.
 | Thread | What runs on it |
 |---|---|
 | **UI / STA main thread** (`Application.Run`, `Program.cs:355`, `Main`) | all WinForms work; **all WinEvent callbacks** and therefore all vibrance writes and all `ChangeDisplaySettingsEx` calls; both proxy constructors |
+| the foreground settle's timer (`ForegroundSettler`, a `FormsResolutionAdoptionTimer`) | a `System.Windows.Forms.Timer`: its `Tick` is delivered by the message loop of the thread that **arms** it (`Restart`), which is the UI thread — armed from the WinEvent callback and UI-thread posts, never from a background thread. The deferred `HandleForeground` runs there, so it keeps the UI-thread assumption every driver call makes; see [§6.2](#62-the-foreground-change-flow--the-heart-of-the-app) |
 | `backgroundWorker` (`VibranceGUI.cs:422-485`, `backgroundWorker_DoWork`) | one-shot startup load: busy-wait for the handle, `Invoke` the settings read, then push configuration into the proxy |
 | `settingsBackgroundWorker` (`VibranceGUI.cs:540-544`, `settingsBackgroundWorker_DoWork`) | `Thread.Sleep(5000)` then save ([§9.6](#96-the-debounced-save)) |
 | `ProcessExplorer.backgroundWorker` (`ProcessExplorer.cs:107-110`) | enumerate running processes, report each entry back to the UI thread |
@@ -3268,8 +3344,11 @@ no `IDisposable` despite owning an `Icon`.
 
 ### 11.6 `WinEventHookEventArgs`
 
-`vibrance.GUI/common/WinEventHookEventArgs.cs` — `ProcessName`, `ProcessImagePath`, `Handle`. All
-three are consumed. `Process`, `WindowText`, `MainWindowTitle` and `ProcessId` — `Process` never
+`vibrance.GUI/common/WinEventHookEventArgs.cs` — `ProcessName`, `ProcessImagePath`, `Handle` and
+`CursorPosition` (a `System.Drawing.Point`, `Cursor.Position` when `WinEventProc` raised the event, or
+the one `ForegroundSettler` captured at arm time for a deferred re-dispatch). All four are consumed;
+`CursorPosition` only by `DesktopScreenResolver` in the revert gate, and only for the shell desktop
+([§6.2](#62-the-foreground-change-flow--the-heart-of-the-app)). `Process`, `WindowText`, `MainWindowTitle` and `ProcessId` — `Process` never
 even assigned; `WindowText` and `MainWindowTitle` assigned and never read; `ProcessId` assigned and
 never read either — were deleted on `work/156-foreground-hot-path` along with the
 `GetWindowTextLength`/`GetWindowTextA` calls that fed the first two

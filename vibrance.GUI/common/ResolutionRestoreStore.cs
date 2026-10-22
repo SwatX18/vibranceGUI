@@ -8,7 +8,7 @@ namespace vibrance.GUI.common
     /// The seam over resolutionRestore.xml - the exact shape IVibranceRestoreStore.cs already
     /// uses, for the same reason (see that file's own header comment): ResolutionRestoreHelper is
     /// a static class reached only from PRIVATE STATIC proxy methods (NvidiaDynamicVibranceProxy.
-    /// OnWinEventHook and its AMD counterpart), so there is no constructor anywhere on that call
+    /// HandleForeground and its AMD counterpart), so there is no constructor anywhere on that call
     /// path to inject a dependency into. RealResolutionRestoreStore (below) is the only production
     /// implementation; NullResolutionRestoreStore is the default, so a headless fixture run or a
     /// --selftest-* run that never reaches Program.Main gets the same protection LogSink.Current/

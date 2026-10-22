@@ -5,10 +5,12 @@ namespace vibrance.GUI.common
 {
     /// <summary>
     /// The seam between a caller that only has GetForegroundWindow() to go on and the real
-    /// foreground window - the toggle hotkey's WM_HOTKEY handler AND VibranceGUI's own startup
-    /// foreground apply (upstream #81) both go through this. Same shape as
-    /// IHotkeyRegistrar/IDisplayModeDevice/IGammaDevice: RealForegroundWindowReader (below) is
-    /// the only production implementation; neither ProfileToggleFixture nor
+    /// foreground window - the toggle hotkey's WM_HOTKEY handler, VibranceGUI's own startup
+    /// foreground apply (upstream #81) AND ForegroundSettler (which re-reads the live foreground
+    /// when its settle timer fires, and again for its one retry) all go through this. Same shape
+    /// as IHotkeyRegistrar/IDisplayModeDevice/IGammaDevice: RealForegroundWindowReader (below) is
+    /// the only production implementation. ForegroundSettleFixture fakes it (its FakeReader) - it
+    /// has to, to script what the foreground is at fire time. Neither ProfileToggleFixture nor
     /// StartupForegroundFixture needs a fake of this one at all, because both reflect into the
     /// real proxy entry points (OnWinEventHook/ToggleForegroundProfile/
     /// ApplyStartupForegroundProfile) with synthetic WinEventHookEventArgs/IntPtr values
