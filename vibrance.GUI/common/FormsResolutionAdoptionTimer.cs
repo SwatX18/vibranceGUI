@@ -12,18 +12,20 @@ namespace vibrance.GUI.common
     // issue #156 exists to enforce for this permanently-tray-resident app: Windows only holds a
     // native timer resource open while Enabled is true (Timer.Enabled = true calls SetTimer;
     // = false calls KillTimer), so an idle instance of this class - the overwhelmingly common case,
-    // since it is only ever armed while a resolution-adoption decision is genuinely pending - costs
+    // since it is only armed while a decision is genuinely pending (a resolution-adoption
+    // decision, or a foreground revert/apply waiting out ForegroundSettler's settle delay) - costs
     // nothing beyond the small managed Timer object itself. Nothing here polls; the Tick event is
     // the OS telling this class time has passed, not this class asking.
     //
-    // _timer is never Dispose()'d anywhere in this class or its one caller (VibranceGUI holds
-    // exactly one instance, for its own lifetime). Deliberate, not an oversight: this is a
+    // _timer is never Dispose()'d anywhere in this class or its callers (VibranceGUI holds two
+    // instances, each for its own lifetime: one behind ResolutionAdoptionDebouncer, one behind
+    // ForegroundSettler). Deliberate, not an oversight: this is a
     // tray-resident Form that only ever goes away at process exit, at which point Windows tears
     // down every native resource this process holds regardless, including whatever SetTimer left
     // open. A Dispose() call here would have nothing meaningful to run before that point in
-    // practice, and CleanUp() already stops the timer via ResolutionAdoptionDebouncer.Cancel() (see
-    // that method's own comment), which is what actually matters: no further Tick after shutdown
-    // begins.
+    // practice, and CleanUp() already stops each timer via ResolutionAdoptionDebouncer.Cancel() (see
+    // that method's own comment) and ForegroundSettler.Cancel(), which is what actually matters: no
+    // further Tick after shutdown begins.
     internal sealed class FormsResolutionAdoptionTimer : IResolutionAdoptionTimer
     {
         private readonly Timer _timer = new Timer();
@@ -45,11 +47,14 @@ namespace vibrance.GUI.common
             // Tick through a hidden window's message loop on whichever thread first sets Enabled =
             // true, and that thread must actually be pumping messages or Tick simply never fires -
             // silently, no exception, nothing to observe. Nothing in this class checks that Restart
-            // is being called from such a thread; today's only caller (VibranceGUI.OnDisplaySettingsChanged,
-            // itself already marshaled onto the UI thread before it ever reaches
-            // ResolutionAdoptionDebouncer) is what actually guarantees it. A future caller arming
-            // this from a background thread would create the hidden window there instead, where
-            // nothing pumps, and the countdown would simply never elapse.
+            // is being called from such a thread; the callers are what guarantee it. There are two:
+            // VibranceGUI.OnDisplaySettingsChanged (already marshaled onto the UI thread before it
+            // reaches ResolutionAdoptionDebouncer) and ForegroundSettler, armed from the WinEvent
+            // foreground callback (delivered on the UI thread by a WINEVENT_OUTOFCONTEXT hook's
+            // message loop) and from UI-thread posts such as its own fire-time retry. The
+            // thread that ARMS the timer is what matters, not the one that constructed it: a
+            // caller arming this from a background thread would create the hidden window there
+            // instead, where nothing pumps, and the countdown would simply never elapse.
             _timer.Enabled = false;
             _onElapsed = onElapsed;
             _timer.Interval = delayMs;

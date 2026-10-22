@@ -263,6 +263,14 @@ namespace vibrance.GUI.common
             _hdrRecheckTimer.Start(HdrRecheckIntervalMs, OnHdrRecheckTick);
 
             _applicationSettings = new List<ApplicationSetting>();
+            // Installed BEFORE getProxy: the proxy subscribes to the foreground hook inside its
+            // constructor, and an event landing in that window must already see the real settler
+            // rather than the immediate default. FormsResolutionAdoptionTimer needs the thread that
+            // ARMS it (Restart) to pump messages, since its Tick is delivered by that thread's
+            // message loop; where it is constructed does not matter. The settler arms it from the
+            // WinEvent callback and UI-thread posts, which are on the UI thread.
+            ForegroundSettler.Install(new ForegroundSettler(new FormsResolutionAdoptionTimer(),
+                new RealForegroundWindowReader(), () => Environment.TickCount));
             _v = getProxy(_applicationSettings, _windowsResolutionSettings);
 
             // Marshals the watcher's exit callbacks onto the UI thread with BeginInvoke rather than
@@ -1829,6 +1837,9 @@ namespace vibrance.GUI.common
                 // its own regardless - this stops one already in flight from firing after the form
                 // is disposed (see ResolutionAdoptionDebouncer.Cancel's own comment).
                 _resolutionAdoptionDebouncer.Cancel();
+                // Same reason: a deferred foreground revert/apply already armed must not fire into
+                // a proxy after shutdown has begun.
+                ForegroundSettler.Shared.Cancel();
                 // Upstream #147 part 2 - stops the HDR re-check poll from ticking after this form
                 // is disposed, the same reason _resolutionAdoptionDebouncer is cancelled above.
                 _hdrRecheckTimer.Stop();

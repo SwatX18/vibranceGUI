@@ -721,9 +721,8 @@ namespace vibrance.GUI.common
             }
 
             public abstract void ApplyEvent();
-            // A foreground event for a non-game window on the game's screen; false when the
-            // machine cannot provide one (AMD reads the real foreground window).
-            public abstract bool ForegroundEvent();
+            // A foreground event for a non-game window on the game's screen.
+            public abstract void ForegroundEvent();
             public abstract void SeedResolutionApplied();
             public abstract bool IsResolutionApplied { get; }
             public abstract int ObservedVibranceLevelForGameDevice { get; }
@@ -763,10 +762,9 @@ namespace vibrance.GUI.common
                 _onWinEventHook.Invoke(null, new object[] { null, BuildEventArgs(GameName) });
             }
 
-            public override bool ForegroundEvent()
+            public override void ForegroundEvent()
             {
                 _onWinEventHook.Invoke(null, new object[] { null, BuildEventArgs("NotAGameProcess") });
-                return true;
             }
 
             public override void SeedResolutionApplied()
@@ -902,10 +900,10 @@ namespace vibrance.GUI.common
             scenario.ApplyEvent();
             scenario.SeedResolutionApplied();
             ResolutionChangeNotifier.OnApplied(scenario.GameName, scenario.GameDevice, scenario.GameTarget, ResolutionHelper.ResolutionChangeResult.Applied);
-            bool ran = scenario.ForegroundEvent();
-            if (!ran || !scenario.DesktopRestored)
+            scenario.ForegroundEvent();
+            checklist.Check(scenario.DesktopRestored, prefix + ": alt-tab cycle - the foreground event reverted the game screen's resolution (setup)");
+            if (!scenario.DesktopRestored)
             {
-                checklist.Skip(prefix + ": alt-tab cycle - no foreground window on the game's screen to drive the real foreground branch");
                 ResolutionChangeNotifier.ResetForTests();
                 return;
             }
@@ -922,10 +920,10 @@ namespace vibrance.GUI.common
             scenario.ApplyEvent();
             scenario.SeedResolutionApplied();
             ResolutionChangeNotifier.OnApplied(scenario.GameName, scenario.GameDevice, scenario.GameTarget, ResolutionHelper.ResolutionChangeResult.Applied);
-            ran = scenario.ForegroundEvent();
-            if (!ran || !scenario.DesktopRestored)
+            scenario.ForegroundEvent();
+            checklist.Check(scenario.DesktopRestored, prefix + ": alt-tab cycle without a watcher - the foreground event reverted the game screen's resolution (setup)");
+            if (!scenario.DesktopRestored)
             {
-                checklist.Skip(prefix + ": alt-tab cycle without a watcher - no foreground window on the game's screen");
                 ResolutionChangeNotifier.ResetForTests();
                 return;
             }
@@ -954,6 +952,9 @@ namespace vibrance.GUI.common
                 Proxy.SetNeverChangeColorSettings(true);
                 Proxy.SetNeverSwitchResolution(true);
                 Proxy.SetGameExitWatcherForTests(Watcher, Modes);
+                // The revert branch only runs while the event's window is in front; answer that from
+                // the event's own (fake) window instead of the machine's real foreground.
+                Proxy.SetForegroundWindowForTests(delegate { return Desktop; });
             }
 
             public override void ApplyEvent()
@@ -961,16 +962,9 @@ namespace vibrance.GUI.common
                 _onWinEventHook.Invoke(Proxy, new object[] { null, BuildEventArgs(GameName) });
             }
 
-            public override bool ForegroundEvent()
+            public override void ForegroundEvent()
             {
-                IntPtr foreground = AmdDynamicVibranceProxy.GetForegroundWindow();
-                if (foreground == IntPtr.Zero || Screen.FromHandle(foreground).DeviceName != GameDevice)
-                {
-                    return false;
-                }
-                _onWinEventHook.Invoke(Proxy, new object[] { null, new WinEventHookEventArgs { Handle = foreground, ProcessName = "NotAGameProcess", ProcessImagePath = null } });
-                // The real foreground window can change under a run; the revert only counts if it ran.
-                return AmdDynamicVibranceProxy.GetForegroundWindow() == foreground;
+                _onWinEventHook.Invoke(Proxy, new object[] { null, BuildEventArgs("NotAGameProcess") });
             }
 
             public override void SeedResolutionApplied()

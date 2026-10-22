@@ -6,7 +6,7 @@ namespace vibrance.GUI.common
     /// <summary>
     /// D4's resolution half - VibranceRestoreHelper's counterpart for
     /// %APPDATA%\vibranceGUI\resolutionRestore.xml. Vendor-agnostic, unlike vibrance: the apply/
-    /// revert branch that journals through this class lives in each proxy's OnWinEventHook, but
+    /// revert branch that journals through this class lives in each proxy's HandleForeground, but
     /// the actual driver work underneath it (ResolutionHelper.ChangeResolutionEx) is a shared
     /// static both proxies drive - there is no INvidiaVibranceDevice-shaped seam restricting this
     /// to one vendor, so AMD users get this restore too, not just NVIDIA.
@@ -43,7 +43,7 @@ namespace vibrance.GUI.common
     /// There is deliberately NO batch overload here, unlike VibranceRestoreHelper.
     /// RecordGameLevelsApplied: AMD's vibrance fan-out loops iterate Screen.AllScreens because a
     /// single non-game foreground event can owe a restore to every attached display at once, but
-    /// the resolution apply branch (both proxies' OnWinEventHook) only ever targets ONE screen -
+    /// the resolution apply branch (both proxies' HandleForeground) only ever targets ONE screen -
     /// Screen.FromHandle(e.Handle), the game's own - so a batch overload here would be dead surface
     /// with no call site that could ever use it.
     ///
@@ -90,7 +90,7 @@ namespace vibrance.GUI.common
         // why this single dictionary plays both the membership-set and last-persisted-value roles
         // VibranceRestoreHelper splits across two structures. Static and shared by whichever vendor
         // proxy this process constructed, exactly like VibranceRestoreHelper's own statics -
-        // everything on this call path (OnWinEventHook, Form1_FormClosing) already runs on the UI
+        // everything on this call path (HandleForeground, Form1_FormClosing) already runs on the UI
         // thread, so deliberately unsynchronised. Keys are \\.\DISPLAYn, the same namespace
         // VibranceRestoreHelper's own keys use.
         private static readonly Dictionary<string, Tuple<ResolutionModeWrapper, ResolutionModeWrapper>> _persistedModes =

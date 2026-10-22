@@ -326,6 +326,15 @@ namespace vibrance.GUI.NVIDIA
 
         private static void OnWinEventHook(object sender, WinEventHookEventArgs e)
         {
+            HandleForeground(e, false);
+        }
+
+        // The old OnWinEventHook body. settled is true only when ForegroundSettler re-dispatches an
+        // event it deferred (the foreground was re-read after the settle delay), or for a caller
+        // that must not be delayed (the startup recheck) - it skips the deferral checks so the
+        // event cannot be deferred twice.
+        internal static void HandleForeground(WinEventHookEventArgs e, bool settled)
+        {
             //an empty list still has to reach the restore branch below. Gating the whole handler on
             //Count > 0 stranded vibrance, the resolution and the gamma ramp whenever the last entry was
             //removed while its game held the foreground, with no way back short of restarting.
@@ -350,6 +359,14 @@ namespace vibrance.GUI.NVIDIA
                     // reasons about.
                     return;
                 }
+
+                // A mode change of ours is still settling (focus churn it caused, e.g. the Win key
+                // or a quick Alt+Tab): wait it out rather than stacking a second mode set on it.
+                // Past this point the apply is going ahead now, so it also supersedes any revert
+                // still waiting its turn - that one would fire later and undo it.
+                if (!settled && ForegroundSettler.Shared.TryDeferApply(ev => HandleForeground(ev, true)))
+                    return;
+                ForegroundSettler.Shared.Cancel();
 
                 Screen screen = Screen.FromHandle(e.Handle);
                 _gameScreen = screen;
@@ -409,6 +426,8 @@ namespace vibrance.GUI.NVIDIA
                     _vibranceInfo.isResolutionChangeApplied =
                         result == ResolutionHelper.ResolutionChangeResult.Applied ||
                         result == ResolutionHelper.ResolutionChangeResult.AppliedUnverified;
+                    if (_vibranceInfo.isResolutionChangeApplied)
+                        ForegroundSettler.Shared.NoteModeChanged();
 
                     // D4's resolution half (persisted restore, ResolutionRestoreHelper's own
                     // header) - journals this display's (game mode, Windows mode) pair iff the
@@ -444,13 +463,21 @@ namespace vibrance.GUI.NVIDIA
             }
             else
             {
+                // Never revert on the raw event: a transient shell window (Win key, quick Alt+Tab)
+                // would revert, bounce focus to the fullscreen game, re-apply, and loop. The
+                // settler re-reads the real foreground after a delay and re-dispatches it.
+                if (!settled && ForegroundSettler.Shared.TryDeferRevert(ev => HandleForeground(ev, true)))
+                    return;
+
                 IntPtr processHandle = e.Handle;
 
                 if (!_device.IsWindowActive(ref processHandle))
                     return;
 
-                //test if a resolution change is needed
-                Screen currentScreen = Screen.FromHandle(processHandle);
+                //test if a resolution change is needed. The shell desktop is placed by the cursor,
+                //not Screen.FromHandle - that resolves it to the primary monitor, so a desktop
+                //click on the secondary would revert the primary's game resolution.
+                Screen currentScreen = DesktopScreenResolver.Resolve(processHandle, e.CursorPosition);
 
                 // Deliberately does NOT scope this to currentScreen (issues #95, #144): restoring
                 // only "the screen that currently has focus" left a game's monitor saturated after
@@ -489,7 +516,7 @@ namespace vibrance.GUI.NVIDIA
         private static int _trackedToken;
         private static string _trackedGameName;
 
-        // The revert half of OnWinEventHook's old else-branch, extracted so the foreground path and
+        // The revert half of HandleForeground's old else-branch, extracted so the foreground path and
         // the game-exit path share every guard. Returns null when no revert was attempted (the
         // guards said there was nothing to do), otherwise ChangeResolutionEx's own result.
         internal static ResolutionHelper.ResolutionChangeResult? RevertGameResolution(IDisplayModeDevice device, string deviceName)
@@ -513,6 +540,12 @@ namespace vibrance.GUI.NVIDIA
                 if (result != ResolutionHelper.ResolutionChangeResult.Failed &&
                     result != ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
                     _vibranceInfo.isResolutionChangeApplied = false;
+
+                // A revert is a mode change too: the focus churn it provokes must not trigger an
+                // immediate re-apply (ForegroundSettler.TryDeferApply).
+                if (result == ResolutionHelper.ResolutionChangeResult.Applied ||
+                    result == ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
+                    ForegroundSettler.Shared.NoteModeChanged();
 
                 // D4's resolution half, journaling rule 4 - see
                 // ResolutionRestoreHelper.ShouldClearResolutionRestoreRecord's own header for
@@ -592,12 +625,12 @@ namespace vibrance.GUI.NVIDIA
         //
         // Deduped: a driver stuck returning the same handle repeatedly would otherwise fill the
         // list with copies of it, each one then getting its own setDVCLevel call on every restore
-        // (OnWinEventHook's displayHandles.ForEach(...) below). That is a latent cost on the
+        // (HandleForeground's displayHandles.ForEach(...) below). That is a latent cost on the
         // restore path now that the loop above is bounded - it did not cause #138: pre-fix, the
         // unbounded loop kept InitializeProxy() from ever returning, so OnWinEventHook was never
         // even subscribed and the restore path could not run regardless of duplicates.
         //
-        // Always returns an allocated (possibly empty) list, never null: OnWinEventHook calls
+        // Always returns an allocated (possibly empty) list, never null: HandleForeground calls
         // TrueForAll/ForEach on _vibranceInfo.displayHandles unconditionally on the restore path.
         internal static List<IntPtr> EnumerateDisplayHandles(Func<int, IntPtr> enumerateDisplayHandle)
         {
@@ -657,7 +690,7 @@ namespace vibrance.GUI.NVIDIA
         /// Writes windowsLevel to every display owing a restore (VibranceRestoreHelper's
         /// work-list), plus the display the Windows Vibrance Level itself owns, and nothing else -
         /// deliberately not scoped to whichever screen currently has focus (see the call site in
-        /// OnWinEventHook for why: issues #95 and #144). A no-op while isWindowsLevelKnown is
+        /// HandleForeground for why: issues #95 and #144). A no-op while isWindowsLevelKnown is
         /// false (see VibranceInfo) - windowsLevel is meaningless before SetVibranceWindowsLevel
         /// has actually run once, and writing it anyway would re-introduce the arbitrary-0 write
         /// InitializeProxy used to make (issue #60/#36) at one remove. allDisplayHandles is
@@ -791,7 +824,7 @@ namespace vibrance.GUI.NVIDIA
             if (decision.Action == ProfileToggleAction.ApplyGameLevel)
             {
                 // Resolved against deviceName - the same screen the write below targets - exactly
-                // like OnWinEventHook's own apply branch (upstream #147, part 2).
+                // like HandleForeground's own apply branch (upstream #147, part 2).
                 int resolvedIngameLevel = HdrVibranceHelper.ResolveIngameLevel(decision.Setting, HdrStateTracker.GetState(deviceName));
                 if (!ApplyGameVibranceLevel(_device, deviceName, resolvedIngameLevel))
                 {
@@ -817,7 +850,7 @@ namespace vibrance.GUI.NVIDIA
         /// <summary>
         /// See IVibranceProxy.RecheckForegroundHdrLevel for the full contract (upstream #147, part
         /// 2's re-check path). Consults ProfileToggleHelper.IsSuppressed the same way the apply
-        /// branch of OnWinEventHook does - a suppressed profile has already been forced to the
+        /// branch of HandleForeground does - a suppressed profile has already been forced to the
         /// Windows level and owes nothing here; re-applying its HDR level on top of that would
         /// undo the toggle hotkey's own effect the next time HDR state happens to change while the
         /// game is still suppressed. The caller (VibranceGUI) only ever reaches this after
@@ -879,7 +912,7 @@ namespace vibrance.GUI.NVIDIA
         // internal, not private: VibranceRestorePersistenceFixture drives this directly as a pure
         // function (see its own P21 check), the same way VibranceRestoreFixture already drives
         // ApplyGameVibranceLevel/RestoreWindowsVibranceLevel directly rather than only indirectly
-        // through OnWinEventHook.
+        // through HandleForeground.
         internal static bool ShouldJournalGameLevel(int resolvedIngameLevel)
         {
             return resolvedIngameLevel != _vibranceInfo.userVibranceSettingDefault;
@@ -889,11 +922,11 @@ namespace vibrance.GUI.NVIDIA
         /// See IVibranceProxy.ApplyStartupForegroundProfile for the full contract (upstream #81,
         /// the last blind spot #137 left open). FindMatch decides everything: a null match
         /// returns false having done nothing at all, never touching _device, HdrStateTracker,
-        /// VibranceRestoreHelper or _gameScreen - the same statics OnWinEventHook itself only
-        /// mutates once a match exists. A match routes through OnWinEventHook itself via a
+        /// VibranceRestoreHelper or _gameScreen - the same statics HandleForeground itself only
+        /// mutates once a match exists. A match routes through HandleForeground itself via a
         /// synthesised WinEventHookEventArgs, exactly as a real foreground event would, so this
         /// gets HDR resolution (HdrVibranceHelper.ResolveIngameLevel), the suppression gate and
-        /// restore bookkeeping for free - see OnWinEventHook's own comments for all of it. No new
+        /// restore bookkeeping for free - see HandleForeground's own comments for all of it. No new
         /// apply logic lives here.
         /// </summary>
         public bool ApplyStartupForegroundProfile(IntPtr hWnd, string processName, string processImagePath)
@@ -903,12 +936,14 @@ namespace vibrance.GUI.NVIDIA
                 return false;
             }
 
-            OnWinEventHook(this, new WinEventHookEventArgs
+            // settled = true: the startup apply must happen now, not after a settle delay (and it
+            // is a match, so it never takes the revert path the delay exists for anyway).
+            HandleForeground(new WinEventHookEventArgs
             {
                 Handle = hWnd,
                 ProcessName = processName,
                 ProcessImagePath = processImagePath
-            });
+            }, true);
             return true;
         }
 
@@ -1155,6 +1190,9 @@ namespace vibrance.GUI.NVIDIA
             _trackedToken = 0;
             _trackedGameName = null;
             _displayModeDevice = ResolutionHelper.RealDevice;
+            // Immediate again, so no settler a previous check installed can defer this one's events.
+            ForegroundSettler.Install(null);
+            DesktopScreenResolver.IsShellDesktopOverride = null;
             _loggedDisplayFailures.Clear();
             VibranceRestoreHelper.ResetForTests();
             // The toggle hotkey's own suppression state (upstream #143) - reset here too so a
@@ -1300,7 +1338,7 @@ namespace vibrance.GUI.NVIDIA
         }
 
         // Color -> vibrance -> resolution, in that order - deliberately the REVERSE of
-        // OnWinEventHook's own revert branch, which does resolution-then-colour (see that branch's
+        // HandleForeground's own revert branch, which does resolution-then-colour (see that branch's
         // own comment, and RestoreWindowsColorSettings's "restored first" rationale just above).
         // There, a resolution revert that fails or gives up is retried by the very next foreground
         // event, so skipping the colour restore below it costs nothing permanent. Here there is no
@@ -1346,7 +1384,7 @@ namespace vibrance.GUI.NVIDIA
                 _vibranceInfo.neverChangeResolution, _vibranceInfo.isResolutionChangeApplied);
 
             // Never claim a restore that did not land - Failed leaves the flag exactly as
-            // OnWinEventHook's own revert branch already treats a Failed/AppliedUnverified result
+            // HandleForeground's own revert branch already treats a Failed/AppliedUnverified result
             // (see that branch's comment): still worth acting on later if anything ever could. Unlike
             // that branch, nothing here ever WILL act on it again - vibranceGUI is exiting - but
             // leaving the flag true costs nothing at this point and telling the user (or a future

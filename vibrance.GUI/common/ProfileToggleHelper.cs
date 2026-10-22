@@ -63,7 +63,7 @@ namespace vibrance.GUI.common
         // every alt-tab out of a game (see its own class comment), but a suppression must
         // survive exactly that - the whole point is that the automatic restore-on-alt-tab-out
         // keeps happening for a suppressed game (see the "restore branch stays ungated" note in
-        // both proxies' OnWinEventHook) while the apply-on-alt-tab-in does not. Two different
+        // both proxies' HandleForeground) while the apply-on-alt-tab-in does not. Two different
         // lifetimes, so two different pieces of state.
         //
         // NameComparer is the single source for that OrdinalIgnoreCase choice - the HashSet below
@@ -128,7 +128,7 @@ namespace vibrance.GUI.common
         /// events.
         ///
         /// Matches with the same overload the automatic WinEvent handlers use
-        /// (NvidiaDynamicVibranceProxy.OnWinEventHook), including processImagePath - a directory-
+        /// (NvidiaDynamicVibranceProxy.HandleForeground), including processImagePath - a directory-
         /// matched profile (no exact Name match) must be just as reachable by the hotkey as by
         /// the automatic path, or a guessed executable is invisible to the toggle even though the
         /// automatic apply already recognises it. Matching on Name alone here is PR #153's bug.

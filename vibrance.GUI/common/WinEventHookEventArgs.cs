@@ -9,5 +9,8 @@ namespace vibrance.GUI.common
         // - a protected or elevated process. Consumers fall back to ProcessName when it is null.
         public string ProcessImagePath { get; set; }
         public IntPtr Handle { get; set; }
+        // Where the pointer was when the event was raised. The shell desktop has no rect that names
+        // one monitor (it spans all of them), so DesktopScreenResolver needs this to say which monitor a desktop click was on.
+        public System.Drawing.Point CursorPosition { get; set; }
     }
 }

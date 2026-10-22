@@ -137,7 +137,7 @@ namespace vibrance.GUI.AMD
         }
 
         // Color -> vibrance -> resolution, in that order - deliberately the REVERSE of
-        // OnWinEventHook's own revert branch, which does resolution-then-colour (see that branch's
+        // HandleForeground's own revert branch, which does resolution-then-colour (see that branch's
         // own comment, and the matching header comment on NvidiaDynamicVibranceProxy.HandleDvcExit
         // for the full reasoning). There, a resolution revert that fails or gives up is retried by
         // the very next foreground event, so skipping the colour restore below it costs nothing
@@ -199,6 +199,13 @@ namespace vibrance.GUI.AMD
 
         private void OnWinEventHook(object sender, WinEventHookEventArgs e)
         {
+            HandleForeground(e, false);
+        }
+
+        // The old OnWinEventHook body - see NvidiaDynamicVibranceProxy.HandleForeground for what
+        // settled means.
+        internal void HandleForeground(WinEventHookEventArgs e, bool settled)
+        {
             //an empty list still has to reach the restore branch below. Gating the whole handler on
             //Count > 0 stranded vibrance, the resolution and the gamma ramp whenever the last entry was
             //removed while its game held the foreground, with no way back short of restarting.
@@ -222,6 +229,11 @@ namespace vibrance.GUI.AMD
                     // reasons about.
                     return;
                 }
+
+                // See the matching comment in NvidiaDynamicVibranceProxy's HandleForeground.
+                if (!settled && ForegroundSettler.Shared.TryDeferApply(ev => HandleForeground(ev, true)))
+                    return;
+                ForegroundSettler.Shared.Cancel();
 
                 Screen screen = Screen.FromHandle(e.Handle);
                 _gameScreen = screen;
@@ -250,14 +262,16 @@ namespace vibrance.GUI.AMD
                         applicationSetting.ResolutionSettings, result);
                     // AppliedUnverified means CDS_UPDATEREGISTRY itself reported success but the
                     // post-apply readback did not confirm it - see the matching comment in
-                    // NvidiaDynamicVibranceProxy's OnWinEventHook.
+                    // NvidiaDynamicVibranceProxy's HandleForeground.
                     _vibranceInfo.isResolutionChangeApplied =
                         result == ResolutionHelper.ResolutionChangeResult.Applied ||
                         result == ResolutionHelper.ResolutionChangeResult.AppliedUnverified;
+                    if (_vibranceInfo.isResolutionChangeApplied)
+                        ForegroundSettler.Shared.NoteModeChanged();
 
                     // D4's resolution half - vendor-agnostic (ResolutionHelper is a shared static
                     // both proxies drive), so AMD journals this exactly like NVIDIA does - see the
-                    // matching comment in NvidiaDynamicVibranceProxy's OnWinEventHook and
+                    // matching comment in NvidiaDynamicVibranceProxy's HandleForeground and
                     // ResolutionRestoreHelper's own header.
                     if (_vibranceInfo.isResolutionChangeApplied)
                     {
@@ -277,21 +291,26 @@ namespace vibrance.GUI.AMD
                 }
 
                 // Watch the game's process so everything applied above is undone the moment it
-                // exits - see the matching comment in NvidiaDynamicVibranceProxy's OnWinEventHook.
+                // exits - see the matching comment in NvidiaDynamicVibranceProxy's HandleForeground.
                 _trackedToken = _gameExitWatcher != null ? _gameExitWatcher.Watch(e.Handle) : 0;
                 _trackedGameName = applicationSetting.Name;
             }
             else
             {
+                // See the matching comment in NvidiaDynamicVibranceProxy's HandleForeground.
+                if (!settled && ForegroundSettler.Shared.TryDeferRevert(ev => HandleForeground(ev, true)))
+                    return;
+
                 IntPtr processHandle = e.Handle;
-                if (GetForegroundWindow() != processHandle)
+                if (_foregroundWindow() != processHandle)
                     return;
 
                 //apply Windows saturation
                 RestoreWindowsVibranceLevel();
 
-                //test if a resolution change is needed
-                Screen currentScreen = Screen.FromHandle(processHandle);
+                //test if a resolution change is needed. The shell desktop is placed by the cursor
+                //(Screen.FromHandle resolves it to the primary monitor).
+                Screen currentScreen = DesktopScreenResolver.Resolve(processHandle, e.CursorPosition);
                 if (_gameScreen != null && _gameScreen.Equals(currentScreen))
                 {
                     ResolutionHelper.ResolutionChangeResult? revertResult = RevertGameResolution(_displayModeDevice, currentScreen.DeviceName);
@@ -327,7 +346,19 @@ namespace vibrance.GUI.AMD
             _displayModeDevice = displayModeDevice ?? ResolutionHelper.RealDevice;
         }
 
-        // The revert half of OnWinEventHook's old else-branch, extracted so the foreground path and
+        // What the revert branch's "is the event's window still in front" gate reads. NVIDIA's gate
+        // goes through its device (IsWindowActive), so a fixture fakes it there; AMD has no device
+        // for it, so without this seam a fixture had to borrow whatever window was really in front.
+        // Production always reads the real foreground window; a fixture swaps it through
+        // SetForegroundWindowForTests (null restores the real one).
+        private Func<IntPtr> _foregroundWindow = GetForegroundWindow;
+
+        internal void SetForegroundWindowForTests(Func<IntPtr> foregroundWindow)
+        {
+            _foregroundWindow = foregroundWindow ?? GetForegroundWindow;
+        }
+
+        // The revert half of HandleForeground's old else-branch, extracted so the foreground path and
         // the game-exit path share every guard. Returns null when no revert was attempted (the
         // guards said there was nothing to do), otherwise ChangeResolutionEx's own result.
         internal ResolutionHelper.ResolutionChangeResult? RevertGameResolution(IDisplayModeDevice device, string deviceName)
@@ -346,6 +377,11 @@ namespace vibrance.GUI.AMD
                 if (result != ResolutionHelper.ResolutionChangeResult.Failed &&
                     result != ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
                     _vibranceInfo.isResolutionChangeApplied = false;
+
+                // A revert is a mode change too - see NvidiaDynamicVibranceProxy.RevertGameResolution.
+                if (result == ResolutionHelper.ResolutionChangeResult.Applied ||
+                    result == ResolutionHelper.ResolutionChangeResult.AppliedUnverified)
+                    ForegroundSettler.Shared.NoteModeChanged();
 
                 // D4's resolution half, journaling rule 4 - see the matching comment in
                 // NvidiaDynamicVibranceProxy and
@@ -390,7 +426,7 @@ namespace vibrance.GUI.AMD
         }
 
         /// <summary>
-        /// The write OnWinEventHook's apply branch and RecheckForegroundHdrLevel both need - the
+        /// The write HandleForeground's apply branch and RecheckForegroundHdrLevel both need - the
         /// single source both call, so the "don't rewrite the game level onto its own Windows
         /// default" guard and the actual write can never drift apart between the two call sites
         /// (upstream #147, part 2's most likely defect in this class). Deliberately compares
@@ -406,7 +442,7 @@ namespace vibrance.GUI.AMD
         /// affectPrimaryMonitorOnly==false has no single device name of its own - it broadcasts
         /// resolvedLevel to every attached display via SetSaturationOnAllDisplays. deviceName here
         /// is still the GAME's own screen (the caller resolves once against it before reaching this
-        /// method - see OnWinEventHook's own comment), so a second monitor in a different HDR state
+        /// method - see HandleForeground's own comment), so a second monitor in a different HDR state
         /// gets the game screen's own answer, not its own - the same "one value per game" scope
         /// IngameLevel itself already had before this feature existed. Documented explicitly here,
         /// not left implicit, because a reviewer could reasonably expect a per-display resolve
@@ -414,7 +450,7 @@ namespace vibrance.GUI.AMD
         ///
         /// Returns true only when this call actually attempted a write (the guard did not skip
         /// it) - RecheckForegroundHdrLevel uses that to decide whether its own log line is
-        /// warranted; OnWinEventHook's apply branch does not need the return value at all, exactly
+        /// warranted; HandleForeground's apply branch does not need the return value at all, exactly
         /// as it never checked SetSaturationOnDisplay/OnAllDisplays' own bool return before this
         /// PR (see RestoreWindowsVibranceLevel's comment on this class not having a read-back).
         /// </summary>
@@ -446,7 +482,7 @@ namespace vibrance.GUI.AMD
             return true;
         }
 
-        // Same restore this proxy now runs from both its OnWinEventHook restore branch and
+        // Same restore this proxy now runs from both its HandleForeground restore branch and
         // HandleDvcExit, in place of the old unconditional SetSaturationOnAllDisplays(...) both
         // used to call regardless of affectPrimaryMonitorOnly (issue #60/#36 on AMD: the flag was
         // never consulted here, so a second monitor's level was stomped on every restore and every
@@ -494,7 +530,7 @@ namespace vibrance.GUI.AMD
         /// write that never landed would strand the game at whatever level it was already at
         /// while telling the engine (and the user) the opposite.
         ///
-        /// Branches on affectPrimaryMonitorOnly, mirroring OnWinEventHook's own apply branch
+        /// Branches on affectPrimaryMonitorOnly, mirroring HandleForeground's own apply branch
         /// above - unlike NVIDIA, the AMD apply is NOT single-display with the flag off (the
         /// DEFAULT): it writes every attached screen via SetSaturationOnAllDisplays and records
         /// all of them. A toggle that only ever touched deviceName would write one display back
@@ -577,7 +613,7 @@ namespace vibrance.GUI.AMD
         /// <summary>
         /// See IVibranceProxy.RecheckForegroundHdrLevel for the full contract (upstream #147, part
         /// 2's re-check path). Consults ProfileToggleHelper.IsSuppressed the same way the apply
-        /// branch of OnWinEventHook does - a suppressed profile has already been forced to the
+        /// branch of HandleForeground does - a suppressed profile has already been forced to the
         /// Windows level and owes nothing here; re-applying its HDR level on top of that would
         /// undo the toggle hotkey's own effect the next time HDR state happens to change while the
         /// game is still suppressed. The write itself goes through the exact same
@@ -615,11 +651,11 @@ namespace vibrance.GUI.AMD
         /// See IVibranceProxy.ApplyStartupForegroundProfile for the full contract (upstream #81,
         /// the last blind spot #137 left open). FindMatch decides everything: a null match
         /// returns false having done nothing at all, never touching _amdAdapter,
-        /// HdrStateTracker, VibranceRestoreHelper or _gameScreen - the same statics OnWinEventHook
-        /// itself only mutates once a match exists. A match routes through OnWinEventHook itself
+        /// HdrStateTracker, VibranceRestoreHelper or _gameScreen - the same statics HandleForeground
+        /// itself only mutates once a match exists. A match routes through HandleForeground itself
         /// via a synthesised WinEventHookEventArgs, exactly as a real foreground event would, so
         /// this gets HDR resolution (HdrVibranceHelper.ResolveIngameLevel), the suppression gate
-        /// and restore bookkeeping for free - see OnWinEventHook's own comments for all of it. No
+        /// and restore bookkeeping for free - see HandleForeground's own comments for all of it. No
         /// new apply logic lives here.
         /// </summary>
         public bool ApplyStartupForegroundProfile(IntPtr hWnd, string processName, string processImagePath)
@@ -629,12 +665,13 @@ namespace vibrance.GUI.AMD
                 return false;
             }
 
-            OnWinEventHook(this, new WinEventHookEventArgs
+            // settled = true: the startup apply must not be delayed - see the NVIDIA twin.
+            HandleForeground(new WinEventHookEventArgs
             {
                 Handle = hWnd,
                 ProcessName = processName,
                 ProcessImagePath = processImagePath
-            });
+            }, true);
             return true;
         }
 

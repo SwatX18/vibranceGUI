@@ -229,8 +229,8 @@ namespace vibrance.GUI.common
             {
                 //preserves today's behaviour, where a throwing GetProcessById skipped dispatch
                 //entirely. Without this, an unreadable foreground process would still reach the
-                //match decision at NvidiaDynamicVibranceProxy.cs:268-272 /
-                //AmdDynamicVibranceProxy.cs:151-155, match nothing, and fall into the revert branch
+                //match decision in HandleForeground (both vendor proxies),
+                //match nothing, and fall into the revert branch
                 //below - a visible flicker for a process that was never actually the game losing focus
                 return;
             }
@@ -239,13 +239,18 @@ namespace vibrance.GUI.common
             {
                 Handle = hwnd,
                 ProcessName = processName,
-                ProcessImagePath = imagePath
+                ProcessImagePath = imagePath,
+                CursorPosition = Cursor.Position
             };
 
             //dispatch sits outside any try/catch here. The old code's single try also wrapped this
             //call, so an InvalidOperationException/ArgumentException thrown by either proxy's
             //OnWinEventHook was silently swallowed along with the ones that try actually targeted.
-            //A handler bug of that shape now escapes into the native WinEvent callback instead
+            //A handler bug of that shape now escapes into the native WinEvent callback instead - but
+            //only for an event handled right here. A deferred one (ForegroundSettler re-dispatches
+            //after its timer fires, long after this callback returned) throws from the WinForms
+            //timer's Tick instead, so it goes through Application.ThreadException, not the native
+            //callback
             GetInstance().DispatchWinEventHookEvent(e);
         }
 

@@ -44,6 +44,7 @@ namespace vibrance.GUI
         private const string HotkeySelfTestMessageBoxCaption = "vibranceGUI toggle hotkey self test";
         private const string HdrSelfTestMessageBoxCaption = "vibranceGUI HDR vibrance self test";
         private const string StartupSelfTestMessageBoxCaption = "vibranceGUI startup foreground apply self test";
+        private const string ForegroundSettleSelfTestMessageBoxCaption = "vibranceGUI foreground settle self test";
         private const string CliSelfTestMessageBoxCaption = "vibranceGUI command line self test";
         private const string NvapiSelfTestMessageBoxCaption = "vibranceGUI NVIDIA interop self test";
         private const string HelpMessageBoxCaption = "vibranceGUI command line options";
@@ -374,6 +375,19 @@ namespace vibrance.GUI
             {
                 MessageBox.Show(string.Join(Environment.NewLine, StartupForegroundFixture.Run().ToArray()),
                     StartupSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Same placement again: the foreground settle (the debounce that stops a Win-key or quick
+            // Alt+Tab shell window from churning the display mode) and the shell-desktop screen
+            // resolution are fully fake-driven - a hand-fired timer, a fake foreground reader, clock and
+            // cursor, the vendor proxies' own ResetForTests/constructor seams and a fake display - so,
+            // like --selftest-startup, there is deliberately no hardware variant of this one, and there
+            // must never be one. See ForegroundSettleFixture's own header comment.
+            if (args.Contains("--selftest-foreground-settle"))
+            {
+                MessageBox.Show(string.Join(Environment.NewLine, ForegroundSettleFixture.Run().ToArray()),
+                    ForegroundSettleSelfTestMessageBoxCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
